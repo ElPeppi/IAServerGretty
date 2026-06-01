@@ -6,26 +6,30 @@
         "httpMethod": "POST",
         "path": "generar-singular",
         "responseMode": "responseNode",
-        "options": {
-          "binaryData": true
-        }
+        "options": {}
       },
-      "id": "wh-01",
+      "id": "a09ce801-f4e5-4b65-9d19-ea326e773f0c",
       "name": "Webhook - Recibir Excel",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [-800, 300],
+      "position": [
+        -960,
+        128
+      ],
       "webhookId": "singular-excel-webhook"
     },
     {
       "parameters": {
         "jsCode": "// Extrae el buffer del Excel recibido como binario o campo de formulario\n// y prepara los parámetros para enviar al servidor.\n\nconst item = $input.first();\n\n// El webhook con binaryData:true guarda archivos en $binary\n// El campo se llama 'excelFile' (multipart form-data)\nconst binaryKey = Object.keys(item.binary || {}).find(\n  k => k === 'excelFile' || k === 'data' || k.endsWith('.xlsx') || k.endsWith('.xls')\n);\n\nif (!binaryKey) {\n  throw new Error(\n    'No se encontró el archivo Excel. Envíe un archivo en el campo \"excelFile\" ' +\n    '(multipart/form-data). Campos binarios disponibles: ' +\n    JSON.stringify(Object.keys(item.binary || {}))\n  );\n}\n\nconst mime = item.binary[binaryKey].mimeType || 'application/octet-stream';\nconst fn   = item.binary[binaryKey].fileName  || 'entrada.xlsx';\n\nreturn [{\n  json: {\n    binaryKey,\n    mimeType:         mime,\n    fileName:         fn,\n    fechaAsignacion:  item.json.body?.fechaAsignacion || '',\n    plantillaPath:    item.json.body?.plantillaPath   || '',\n  },\n  binary: item.binary,\n}];"
       },
-      "id": "code-01",
+      "id": "473c1f5b-0081-45ea-a0be-4aed89a7fb6f",
       "name": "Preparar Datos",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-560, 300]
+      "position": [
+        -720,
+        128
+      ]
     },
     {
       "parameters": {
@@ -41,12 +45,10 @@
               "inputDataFieldName": "={{ $json.binaryKey }}"
             },
             {
-              "parameterType": "formData",
               "name": "fechaAsignacion",
               "value": "={{ $json.fechaAsignacion }}"
             },
             {
-              "parameterType": "formData",
               "name": "plantillaPath",
               "value": "={{ $json.plantillaPath }}"
             }
@@ -56,11 +58,14 @@
           "timeout": 600000
         }
       },
-      "id": "http-01",
+      "id": "075a17de-eef3-4ae4-979e-0cbe919f8abd",
       "name": "HTTP - Generar Singular",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
-      "position": [-320, 300]
+      "position": [
+        -480,
+        128
+      ]
     },
     {
       "parameters": {
@@ -68,7 +73,8 @@
           "options": {
             "caseSensitive": true,
             "leftValue": "",
-            "typeValidation": "loose"
+            "typeValidation": "strict",
+            "version": 1
           },
           "conditions": [
             {
@@ -85,24 +91,31 @@
         },
         "options": {}
       },
-      "id": "if-01",
+      "id": "16532508-d034-476a-a2d7-d6232561cb8d",
       "name": "¿Generación Exitosa?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [-80, 300]
+      "position": [
+        -240,
+        128
+      ]
     },
     {
       "parameters": {
         "jsCode": "// Convierte el xlsxBase64 de la respuesta del servidor en un item binario\n// para que el webhook pueda devolverlo como descarga.\n\nconst base64   = $json.xlsxBase64 || '';\nconst clientes = $json.clientes   || [];\nconst errores  = $json.errores    || [];\n\nif (!base64) throw new Error('xlsxBase64 vacío en la respuesta del servidor');\n\nconst mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';\nconst fileName = `Plantilla_Singular_${new Date().toISOString().slice(0,10)}.xlsx`;\n\nreturn [{\n  json: {\n    success:    true,\n    totalFilas: $json.totalFilas,\n    clientes:   clientes.length,\n    errores:    errores.length,\n    resumen: clientes.map(c =>\n      `${c.cedula} | ${c.nombre} | ${c.cuantia} | ${c.vehiculos} veh. | ${c.correoJuzgado || 'sin correo'}`\n    ).join('\\n'),\n    mimeType,\n    fileName,\n  },\n  binary: {\n    data: {\n      data:     base64,\n      mimeType,\n      fileName,\n    }\n  }\n}];"
       },
-      "id": "code-02",
+      "id": "c0cf8d51-f465-4319-ad1a-dfbd84110548",
       "name": "Convertir a Binario",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [160, 180]
+      "position": [
+        0,
+        0
+      ]
     },
     {
       "parameters": {
+        "respondWith": "binary",
         "options": {
           "responseCode": 200,
           "responseHeaders": {
@@ -117,65 +130,130 @@
               }
             ]
           }
-        },
-        "respondWith": "binary",
-        "responseBinaryPropertyName": "data"
+        }
       },
-      "id": "resp-01",
+      "id": "fcb8dd8c-e7c2-4705-be34-e3785f5e0f72",
       "name": "Responder con Excel",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [400, 180]
+      "position": [
+        240,
+        0
+      ]
     },
     {
       "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error || 'Error generando Plantilla Singular', errores: $json.errores || [], clientes: $json.clientes || [] }) }}",
         "options": {
           "responseCode": 422
-        },
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error || 'Error generando Plantilla Singular', errores: $json.errores || [], clientes: $json.clientes || [] }) }}"
+        }
       },
-      "id": "resp-02",
+      "id": "a161101e-ef95-49e5-9a02-953e87d33706",
       "name": "Responder con Error",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [160, 420]
+      "position": [
+        0,
+        240
+      ]
     }
   ],
+  "pinData": {},
   "connections": {
     "Webhook - Recibir Excel": {
-      "main": [[{ "node": "Preparar Datos", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Preparar Datos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Preparar Datos": {
-      "main": [[{ "node": "HTTP - Generar Singular", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HTTP - Generar Singular",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "HTTP - Generar Singular": {
-      "main": [[{ "node": "¿Generación Exitosa?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "¿Generación Exitosa?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "¿Generación Exitosa?": {
       "main": [
-        [{ "node": "Convertir a Binario", "type": "main", "index": 0 }],
-        [{ "node": "Responder con Error", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Convertir a Binario",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder con Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Convertir a Binario": {
-      "main": [[{ "node": "Responder con Excel", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Responder con Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1",
+    "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "versionId": "171cbc26-b252-40c0-beb2-b922d1a3dfa8",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "2086f5604f78ab72178a188953881065520e9b5cb7d84882d04ff1ab9d9a5546"
   },
-  "id": "SingularPlanWorkflow01",
+  "id": "kMFw1DUDJmpMlK2G",
   "tags": [
-    { "id": "M2xNaBd6Z5pHqImP", "name": "sac" },
-    { "id": "P5VI55Jq1PlSfXtH", "name": "automatizacion" },
-    { "id": "hCG3LXYFaOQ9Gd26", "name": "finandina" }
+    {
+      "updatedAt": "2026-05-02T02:50:04.125Z",
+      "createdAt": "2026-05-02T02:50:04.125Z",
+      "id": "M2xNaBd6Z5pHqImP",
+      "name": "sac"
+    },
+    {
+      "updatedAt": "2026-05-02T00:58:51.286Z",
+      "createdAt": "2026-05-02T00:58:51.286Z",
+      "id": "P5VI55Jq1PlSfXtH",
+      "name": "automatizacion"
+    },
+    {
+      "updatedAt": "2026-05-02T02:50:04.089Z",
+      "createdAt": "2026-05-02T02:50:04.089Z",
+      "id": "hCG3LXYFaOQ9Gd26",
+      "name": "finandina"
+    }
   ]
 }
