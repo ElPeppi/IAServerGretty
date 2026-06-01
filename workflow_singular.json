@@ -1,0 +1,181 @@
+{
+  "name": "SAC - Generar Plantilla Singular",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generar-singular",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "id": "wh-01",
+      "name": "Webhook - Recibir Excel",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-800, 300],
+      "webhookId": "singular-excel-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrae el buffer del Excel recibido como binario o campo de formulario\n// y prepara los parámetros para enviar al servidor.\n\nconst item = $input.first();\n\n// El webhook con binaryData:true guarda archivos en $binary\n// El campo se llama 'excelFile' (multipart form-data)\nconst binaryKey = Object.keys(item.binary || {}).find(\n  k => k === 'excelFile' || k === 'data' || k.endsWith('.xlsx') || k.endsWith('.xls')\n);\n\nif (!binaryKey) {\n  throw new Error(\n    'No se encontró el archivo Excel. Envíe un archivo en el campo \"excelFile\" ' +\n    '(multipart/form-data). Campos binarios disponibles: ' +\n    JSON.stringify(Object.keys(item.binary || {}))\n  );\n}\n\nconst mime = item.binary[binaryKey].mimeType || 'application/octet-stream';\nconst fn   = item.binary[binaryKey].fileName  || 'entrada.xlsx';\n\nreturn [{\n  json: {\n    binaryKey,\n    mimeType:         mime,\n    fileName:         fn,\n    fechaAsignacion:  item.json.body?.fechaAsignacion || '',\n    plantillaPath:    item.json.body?.plantillaPath   || '',\n  },\n  binary: item.binary,\n}];"
+      },
+      "id": "code-01",
+      "name": "Preparar Datos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-560, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3456/generar-singular",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "excelFile",
+              "inputDataFieldName": "={{ $json.binaryKey }}"
+            },
+            {
+              "parameterType": "formData",
+              "name": "fechaAsignacion",
+              "value": "={{ $json.fechaAsignacion }}"
+            },
+            {
+              "parameterType": "formData",
+              "name": "plantillaPath",
+              "value": "={{ $json.plantillaPath }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "http-01",
+      "name": "HTTP - Generar Singular",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-320, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-ok",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-01",
+      "name": "¿Generación Exitosa?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-80, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convierte el xlsxBase64 de la respuesta del servidor en un item binario\n// para que el webhook pueda devolverlo como descarga.\n\nconst base64   = $json.xlsxBase64 || '';\nconst clientes = $json.clientes   || [];\nconst errores  = $json.errores    || [];\n\nif (!base64) throw new Error('xlsxBase64 vacío en la respuesta del servidor');\n\nconst mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';\nconst fileName = `Plantilla_Singular_${new Date().toISOString().slice(0,10)}.xlsx`;\n\nreturn [{\n  json: {\n    success:    true,\n    totalFilas: $json.totalFilas,\n    clientes:   clientes.length,\n    errores:    errores.length,\n    resumen: clientes.map(c =>\n      `${c.cedula} | ${c.nombre} | ${c.cuantia} | ${c.vehiculos} veh. | ${c.correoJuzgado || 'sin correo'}`\n    ).join('\\n'),\n    mimeType,\n    fileName,\n  },\n  binary: {\n    data: {\n      data:     base64,\n      mimeType,\n      fileName,\n    }\n  }\n}];"
+      },
+      "id": "code-02",
+      "name": "Convertir a Binario",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 180]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "={{ 'attachment; filename=\"' + $json.fileName + '\"' }}"
+              }
+            ]
+          }
+        },
+        "respondWith": "binary",
+        "responseBinaryPropertyName": "data"
+      },
+      "id": "resp-01",
+      "name": "Responder con Excel",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [400, 180]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 422
+        },
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error || 'Error generando Plantilla Singular', errores: $json.errores || [], clientes: $json.clientes || [] }) }}"
+      },
+      "id": "resp-02",
+      "name": "Responder con Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [160, 420]
+    }
+  ],
+  "connections": {
+    "Webhook - Recibir Excel": {
+      "main": [[{ "node": "Preparar Datos", "type": "main", "index": 0 }]]
+    },
+    "Preparar Datos": {
+      "main": [[{ "node": "HTTP - Generar Singular", "type": "main", "index": 0 }]]
+    },
+    "HTTP - Generar Singular": {
+      "main": [[{ "node": "¿Generación Exitosa?", "type": "main", "index": 0 }]]
+    },
+    "¿Generación Exitosa?": {
+      "main": [
+        [{ "node": "Convertir a Binario", "type": "main", "index": 0 }],
+        [{ "node": "Responder con Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Convertir a Binario": {
+      "main": [[{ "node": "Responder con Excel", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2086f5604f78ab72178a188953881065520e9b5cb7d84882d04ff1ab9d9a5546"
+  },
+  "id": "SingularPlanWorkflow01",
+  "tags": [
+    { "id": "M2xNaBd6Z5pHqImP", "name": "sac" },
+    { "id": "P5VI55Jq1PlSfXtH", "name": "automatizacion" },
+    { "id": "hCG3LXYFaOQ9Gd26", "name": "finandina" }
+  ]
+}

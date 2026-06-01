@@ -1,0 +1,273 @@
+{
+  "name": "SAC - Procesar ZIPs y Automatizar SAC",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "filters": {}
+      },
+      "id": "4e350678-843e-490e-b782-5eef43df800c",
+      "name": "Gmail - Recibir Correo",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [-1600, 400],
+      "credentials": { "gmailOAuth2": { "id": "bhYcXlV6quCiVPmh", "name": "Gmail account" } }
+    },
+    {
+      "parameters": {
+        "url": "=https://gmail.googleapis.com/gmail/v1/users/me/messages/{{ $json.id }}?format=full",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gmailOAuth2",
+        "options": {}
+      },
+      "id": "141cdad0-cf4d-4bdb-9a5c-b4ff6ea94a76",
+      "name": "HTTP - Obtener Mensaje Completo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-1360, 400],
+      "credentials": { "gmailOAuth2": { "id": "bhYcXlV6quCiVPmh", "name": "Gmail account" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrae TODOS los adjuntos ZIP del mensaje (puede haber más de uno)\nconst payload    = $json.payload || {};\nconst messageId  = $json.id;\nconst headers    = payload.headers || [];\nconst getHeader  = (name) => (headers.find(h => h.name.toLowerCase() === name.toLowerCase()) || {}).value || '';\n\nconst emailFrom    = getHeader('From')    || '';\nconst emailSubject = getHeader('Subject') || '(sin asunto)';\n\nfunction extractParts(parts, depth) {\n  if (!parts || depth > 6) return [];\n  const found = [];\n  for (const part of parts) {\n    if (part.filename && part.filename.length > 0 && part.body && part.body.attachmentId) {\n      found.push(part);\n    }\n    if (part.parts) found.push(...extractParts(part.parts, depth + 1));\n  }\n  return found;\n}\n\nconst allParts = extractParts(payload.parts || [], 0);\n\nconst zips = allParts.filter(p => {\n  const fn = (p.filename || '').toLowerCase();\n  const mt = (p.mimeType  || '').toLowerCase();\n  return fn.endsWith('.zip') || mt.includes('zip') || mt.includes('x-zip') || mt.includes('compressed');\n});\n\nif (zips.length === 0) {\n  return [{ json: {\n    messageId, emailFrom, emailSubject,\n    hasZips: false,\n    zipIndex: 0, totalZips: 0,\n    zipAttachmentId: '', zipFileName: ''\n  }}];\n}\n\nreturn zips.map((z, i) => ({ json: {\n  messageId, emailFrom, emailSubject,\n  hasZips: true,\n  zipIndex: i,\n  totalZips: zips.length,\n  zipAttachmentId: z.body.attachmentId,\n  zipFileName:     z.filename || `adjunto_${i}.zip`,\n  zipMimeType:     z.mimeType || 'application/zip'\n}}));"
+      },
+      "id": "8c834a45-8561-4629-9cae-c61efd8b14cb",
+      "name": "Extraer Todos los ZIPs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1120, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{
+            "id": "cond-zip",
+            "leftValue": "={{ $json.hasZips }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6796e60c-b46b-4c8e-a32a-a01efeb98e31",
+      "name": "¿Tiene ZIPs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-880, 400]
+    },
+    {
+      "parameters": {
+        "url": "=https://gmail.googleapis.com/gmail/v1/users/me/messages/{{ $json.messageId }}/attachments/{{ $json.zipAttachmentId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gmailOAuth2",
+        "options": {}
+      },
+      "id": "af3582a4-b7f4-49c3-988a-434324005159",
+      "name": "HTTP - Descargar ZIP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-640, 272],
+      "credentials": { "gmailOAuth2": { "id": "bhYcXlV6quCiVPmh", "name": "Gmail account" } }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Agrega TODOS los ZIPs descargados en un solo JSON para envío batch al servidor.\nconst httpItems = $input.all();\nconst zipMetas  = $('Extraer Todos los ZIPs').all();\n\nif (!httpItems.length) throw new Error('No hay ZIPs descargados');\n\nconst infoBase = zipMetas[0]?.json ?? {};\n\nconst zipsBase64 = httpItems.map((item, i) => {\n  const raw  = item.json.data ?? '';\n  if (!raw) throw new Error(`ZIP #${i} (${zipMetas[i]?.json?.zipFileName}) tiene data vacía`);\n  const meta = zipMetas[i]?.json ?? {};\n  return {\n    data:     raw.replace(/-/g, '+').replace(/_/g, '/'),\n    fileName: meta.zipFileName ?? `adjunto_${i}.zip`,\n    mimeType: meta.zipMimeType ?? 'application/zip',\n  };\n});\n\nreturn [{\n  json: {\n    messageId:    infoBase.messageId    ?? '',\n    emailFrom:    infoBase.emailFrom    ?? '',\n    emailSubject: infoBase.emailSubject ?? '',\n    totalZips:    zipsBase64.length,\n    zipsBase64,\n  }\n}];"
+      },
+      "id": "b8e4f8ef-8aba-42b3-a203-e66a0a9b797a",
+      "name": "ZIP Base64 a Binario",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-128, 272]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3456/procesar-zips",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ zipsBase64: $json.zipsBase64, messageId: $json.messageId, emailFrom: $json.emailFrom, emailSubject: $json.emailSubject, totalZips: $json.totalZips, sacUser: 'jairramo', sacPass: '50846050', sacBaseUrl: 'https://servicios.bancofinandina.com/Sac', outputBaseDir: 'C:/SAC_Documentos' }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "242a2a74-227f-44c6-912e-6b121dd55d75",
+      "name": "Enviar ZIP al Servidor SAC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [112, 272]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 60,
+        "unit": "seconds",
+        "options": {}
+      },
+      "id": "wait-poll-60s",
+      "name": "Esperar 60s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [352, 272],
+      "webhookId": "sac-poll-wait"
+    },
+    {
+      "parameters": {
+        "url": "=http://host.docker.internal:3456/job-status/{{ $json.jobId }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "http-job-status",
+      "name": "HTTP - Verificar Estado Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [592, 272]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [{
+            "id": "cond-done",
+            "leftValue": "={{ $json.status }}",
+            "rightValue": "processing",
+            "operator": { "type": "string", "operation": "notEquals" }
+          }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-job-done",
+      "name": "¿Job Terminado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [832, 272]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Incrementa contador de intentos y evita loops infinitos.\n// Máximo 90 intentos × 60 s = 90 min de espera total.\nconst MAX_INTENTOS = 90;\nconst count = ($json._pollCount || 0) + 1;\nif (count > MAX_INTENTOS) {\n  throw new Error(\n    `Timeout: el job ${$json.jobId} no terminó tras ${MAX_INTENTOS} intentos (${MAX_INTENTOS} min). ` +\n    `Verifica el servidor en http://host.docker.internal:3456/job-status/${$json.jobId}`\n  );\n}\nreturn [{ json: { ...$json, _pollCount: count } }];"
+      },
+      "id": "code-poll-counter",
+      "name": "Incrementar Contador Poll",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1072, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [{
+            "id": "cond-ok",
+            "leftValue": "={{ ($json.clientes || []).filter(c => c.success).length }}",
+            "rightValue": 0,
+            "operator": { "type": "number", "operation": "gt" }
+          }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2aa1b899-167a-4258-be75-fa765c8be34f",
+      "name": "¿Procesamiento Exitoso?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1072, 160]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.emailFrom }}",
+        "subject": "=RE: {{ $json.emailSubject }} — {{ $json.clientes.length }} cliente(s) procesados ✔",
+        "emailType": "html",
+        "message": "=<p>Hola,</p><p>Se procesaron <strong>{{ $json.clientes.length }}</strong> cliente(s):</p>{{ $json.clientes.map(c => '<div style=\"margin-bottom:10px\"><b>Cédula:</b> ' + c.cedula + ' — <b>PDFs VIGENTE:</b> ' + (c.pdfs||[]).length + ((c.pdfs||[]).length ? '<br><small>' + c.pdfs.join(' | ') + '</small>' : '') + (c.contactosCsv ? '<br><b>Contactos:</b> <small>' + c.contactosCsv + '</small>' : '') + '</div>').join('<hr>') }}<br><p><em>Sistema automatizado SAC - Finandina.</em></p>",
+        "options": {}
+      },
+      "id": "node-09-gmail-ok",
+      "name": "Gmail - Notificación Exitosa",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1312, 48],
+      "credentials": { "gmailOAuth2": { "id": "bhYcXlV6quCiVPmh", "name": "Gmail account" } }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.emailFrom }}",
+        "subject": "=RE: {{ $json.emailSubject }} — Error procesando ZIPs ✖",
+        "emailType": "html",
+        "message": "=<p>Hola,</p><p>Ocurrió un error al procesar los ZIPs.</p><p><strong>Motivo:</strong> {{ $json.error || $json.errorPuppeteer || 'Error desconocido' }}</p>{{ ($json.erroresExtraccion||[]).length ? '<p><b>Errores de extracción:</b><br>' + $json.erroresExtraccion.map(e => e.fileName + ': ' + e.error).join('<br>') + '</p>' : '' }}<br><p><em>Sistema automatizado SAC - Finandina.</em></p>",
+        "options": {}
+      },
+      "id": "node-10-gmail-error",
+      "name": "Gmail - Error en Procesamiento",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1312, 272],
+      "credentials": { "gmailOAuth2": { "id": "bhYcXlV6quCiVPmh", "name": "Gmail account" } }
+    }
+  ],
+  "connections": {
+    "Gmail - Recibir Correo": {
+      "main": [[{ "node": "HTTP - Obtener Mensaje Completo", "type": "main", "index": 0 }]]
+    },
+    "HTTP - Obtener Mensaje Completo": {
+      "main": [[{ "node": "Extraer Todos los ZIPs", "type": "main", "index": 0 }]]
+    },
+    "Extraer Todos los ZIPs": {
+      "main": [[{ "node": "¿Tiene ZIPs?", "type": "main", "index": 0 }]]
+    },
+    "¿Tiene ZIPs?": {
+      "main": [
+        [{ "node": "HTTP - Descargar ZIP", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "HTTP - Descargar ZIP": {
+      "main": [[{ "node": "ZIP Base64 a Binario", "type": "main", "index": 0 }]]
+    },
+    "ZIP Base64 a Binario": {
+      "main": [[{ "node": "Enviar ZIP al Servidor SAC", "type": "main", "index": 0 }]]
+    },
+    "Enviar ZIP al Servidor SAC": {
+      "main": [[{ "node": "Esperar 60s", "type": "main", "index": 0 }]]
+    },
+    "Esperar 60s": {
+      "main": [[{ "node": "HTTP - Verificar Estado Job", "type": "main", "index": 0 }]]
+    },
+    "HTTP - Verificar Estado Job": {
+      "main": [[{ "node": "¿Job Terminado?", "type": "main", "index": 0 }]]
+    },
+    "¿Job Terminado?": {
+      "main": [
+        [{ "node": "¿Procesamiento Exitoso?", "type": "main", "index": 0 }],
+        [{ "node": "Incrementar Contador Poll", "type": "main", "index": 0 }]
+      ]
+    },
+    "Incrementar Contador Poll": {
+      "main": [[{ "node": "Esperar 60s", "type": "main", "index": 0 }]]
+    },
+    "¿Procesamiento Exitoso?": {
+      "main": [
+        [{ "node": "Gmail - Notificación Exitosa", "type": "main", "index": 0 }],
+        [{ "node": "Gmail - Error en Procesamiento", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "f1a2b3c4-d5e6-7890-abcd-ef1234567891",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2086f5604f78ab72178a188953881065520e9b5cb7d84882d04ff1ab9d9a5546"
+  },
+  "id": "ZuSQIQkRRc1hj9pm",
+  "tags": [
+    { "id": "M2xNaBd6Z5pHqImP", "name": "sac" },
+    { "id": "P5VI55Jq1PlSfXtH", "name": "automatizacion" },
+    { "id": "hCG3LXYFaOQ9Gd26", "name": "finandina" },
+    { "id": "whahN1KixdFzNpIe", "name": "zip" }
+  ]
+}

@@ -1,0 +1,30 @@
+# Dependencias Node
+node_modules/
+npm-debug.log*
+
+# Logs del servidor
+sac_scripts/server_out.log
+sac_scripts/server_err.log
+*.log
+
+# Archivos temporales / runtime
+C:/temp/
+C:/SAC_Documentos/
+sac_scripts/tmp/
+
+# Caché Rama Judicial (se regenera automáticamente)
+C:/SAC_Documentos/rama_judicial_cache.json
+
+# Variables de entorno y secretos
+.env
+.env.*
+
+# Configuración local de Claude Code
+.claude/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
