@@ -399,11 +399,9 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
       if (extraidos > 0) {
         console.log(`[${new Date().toISOString()}] ✓ ${cedula}: ${extraidos} archivo(s) extraídos del ZIP`);
       } else {
-        // ZIP cifrado con AES (adm-zip no puede descifrarlo sin la contraseña correcta).
-        // Guardar el ZIP completo en la carpeta para que el usuario acceda a los archivos.
-        const zipDestino = path.join(carpetaSalida, fileName);
-        fs.writeFileSync(zipDestino, buffer);
-        console.warn(`[WARN] ${cedula}: no se pudieron extraer archivos del ZIP (posiblemente AES). ZIP guardado como: ${path.basename(zipDestino)}`);
+        // No se pudo extraer nada — ZIP cifrado sin contraseña disponible.
+        // Configura SAC_ZIP_PASS en el .env con la contraseña de los ZIPs.
+        console.warn(`[WARN] ${cedula}: 0 archivos extraídos. ZIP cifrado sin contraseña. Configura SAC_ZIP_PASS en el .env`);
       }
 
       clientes.push({ cedula, outputDir: carpetaSalida, fileName });
@@ -513,12 +511,18 @@ app.post('/procesar-zips', async (req, res) => {
   const sacPass = reqPass || SAC_PASS;
   const outBase = OUT_DIR;
 
-  // Determinar contraseña del ZIP: campo explícito → extraer del cuerpo → sin contraseña
-  const zipPassword = reqZipPwd || extraerPasswordDelCorreo(emailBodyText) || null;
+  // Determinar contraseña del ZIP:
+  // 1. Campo explícito en el body   → reqZipPwd
+  // 2. Extraída del cuerpo del email → extraerPasswordDelCorreo
+  // 3. Variable de entorno SAC_ZIP_PASS → contraseña por defecto cuando el correo no la trae
+  const zipPassword = reqZipPwd
+    || extraerPasswordDelCorreo(emailBodyText)
+    || process.env.SAC_ZIP_PASS
+    || null;
   if (zipPassword) {
-    console.log(`[${new Date().toISOString()}] Contraseña ZIP detectada: "${zipPassword}"`);
+    console.log(`[${new Date().toISOString()}] Contraseña ZIP: "${zipPassword}"`);
   } else {
-    console.log(`[${new Date().toISOString()}] Sin contraseña ZIP (ZIPs no cifrados o contraseña no encontrada)`);
+    console.log(`[${new Date().toISOString()}] Sin contraseña ZIP (ZIPs sin cifrado)`);
   }
 
   if (!Array.isArray(zipsBase64) || !zipsBase64.length) {
