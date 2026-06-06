@@ -108,6 +108,9 @@ app.use(express.json({ limit: '100mb' }));
 
 // ─── Patrones cédula colombiana ───────────────────────────────────────────────
 const CEDULA_DATACREDITO_RE    = /N[uú]mero\s+Documento\s+(\d{6,11})/i;
+// "CC" standalone (tipo de documento) seguido del número — más específico que CEDULA_CC_RE.
+// En DECEVAL: "FENNER BERMUDEZ SANCHEZ CC 83089336" → captura 83089336 (no 635844).
+const CEDULA_CC_TIPO_RE        = /\bCC\s+(\d{6,12})\b/;
 const CEDULA_CC_RE             = /C\.?\s*C\.?[\s\S]{0,80}?(\d{6,11})/;
 const CEDULA_TEXTO_RE          = /[Cc][eé]dula\s*(?:de\s*[Cc]iudadan[ií]a)?\s*[:#Nn°\.]?\s*(\d{6,11})/i;
 const CEDULA_SOLO_RE           = /\b(\d{6,11})\b/;
@@ -165,12 +168,14 @@ async function extraerCedulaDePDFs(zip, zipFileName, password) {
       const texto  = (parsed.text || '').replace(/\s+/g, ' ').trim();
       console.log(`[DEBUG]   Texto PDF (300 chars): ${texto.slice(0, 300)}`);
 
-      const mND = texto.match(CEDULA_NUM_DOC_RE);        if (mND) { console.log(`[DEBUG]   Cédula NUM_DOC: ${mND[1]}`);        return limpiarNumero(mND[1]); }
-      const mDC = texto.match(CEDULA_DATACREDITO_RE);    if (mDC) { console.log(`[DEBUG]   Cédula DATACREDITO: ${mDC[1]}`);    return limpiarNumero(mDC[1]); }
-      const mID = texto.match(CEDULA_IDENTIFICACION_RE); if (mID) { console.log(`[DEBUG]   Cédula IDENTIFICACION: ${mID[1]}`); return limpiarNumero(mID[1]); }
-      const mCC = texto.match(CEDULA_CC_RE);              if (mCC) { console.log(`[DEBUG]   Cédula CC: ${mCC[1]}`);             return limpiarNumero(mCC[1]); }
-      const mTx = texto.match(CEDULA_TEXTO_RE);           if (mTx) { console.log(`[DEBUG]   Cédula TEXTO: ${mTx[1]}`);          return limpiarNumero(mTx[1]); }
-      const mS  = texto.match(CEDULA_SOLO_RE);            if (mS)  { console.log(`[DEBUG]   Cédula SOLO: ${mS[1]}`);            return mS[1]; }
+      const mND  = texto.match(CEDULA_NUM_DOC_RE);        if (mND)  { console.log(`[DEBUG]   Cédula NUM_DOC: ${mND[1]}`);         return limpiarNumero(mND[1]); }
+      const mDC  = texto.match(CEDULA_DATACREDITO_RE);    if (mDC)  { console.log(`[DEBUG]   Cédula DATACREDITO: ${mDC[1]}`);     return limpiarNumero(mDC[1]); }
+      const mID  = texto.match(CEDULA_IDENTIFICACION_RE); if (mID)  { console.log(`[DEBUG]   Cédula IDENTIFICACION: ${mID[1]}`);  return limpiarNumero(mID[1]); }
+      // CC como tipo de documento (ej. DECEVAL: "FENNER BERMUDEZ SANCHEZ CC 83089336")
+      const mCCT = texto.match(CEDULA_CC_TIPO_RE);        if (mCCT) { console.log(`[DEBUG]   Cédula CC tipo: ${mCCT[1]}`);        return limpiarNumero(mCCT[1]); }
+      const mCC  = texto.match(CEDULA_CC_RE);              if (mCC)  { console.log(`[DEBUG]   Cédula CC: ${mCC[1]}`);              return limpiarNumero(mCC[1]); }
+      const mTx  = texto.match(CEDULA_TEXTO_RE);           if (mTx)  { console.log(`[DEBUG]   Cédula TEXTO: ${mTx[1]}`);           return limpiarNumero(mTx[1]); }
+      const mS   = texto.match(CEDULA_SOLO_RE);            if (mS)   { console.log(`[DEBUG]   Cédula SOLO: ${mS[1]}`);             return mS[1]; }
       console.log(`[DEBUG]   Sin cédula en texto del PDF`);
     } catch (e) {
       // Si falla con password, intentar sin contraseña (ZIP no cifrado)
@@ -377,6 +382,53 @@ function extraerConPowerShell(zipBuffer, fileName, destDir) {
   }
 }
 
+// Detecta y renombra PDFs de pagaré que llegaron con nombre raro en el ZIP.
+// Regla: si el PDF contiene texto de pagaré pero su nombre NO tiene "PAGARE"/"PAGARÉ",
+//        se renombra a "{NOMBRE} PAGARE.pdf" usando el nombre del cliente.
+async function renombrarPagarePDFs(cedula, outputDir) {
+  let pdfs;
+  try { pdfs = fs.readdirSync(outputDir).filter(f => f.toLowerCase().endsWith('.pdf') && !f.startsWith('SAC_')); }
+  catch (_) { return; }
+
+  for (const archivo of pdfs) {
+    // Saltar los que ya tienen PAGARE en el nombre
+    if (/PAGARE|PAGAR[EÉ]/i.test(archivo)) continue;
+
+    const fullPath = path.join(outputDir, archivo);
+    try {
+      const buf    = fs.readFileSync(fullPath);
+      const parsed = await pdfParse(buf, { max: 3 });
+      const texto  = (parsed.text || '').replace(/\s+/g, ' ');
+
+      // ¿Contiene texto típico de un pagaré?
+      const esPagare = /DATOS\s+BASICOS\s+DEL\s+PAGARE|SUSCRIPTORES\s+DEL\s+PAGARE|No\.\s*PAGARE|PAGAR[EÉ]\s+No\./i.test(texto);
+      if (!esPagare) continue;
+
+      // Inferir nombre del cliente desde otro archivo del folder (DATACREDITO/DECEVAL)
+      const refFile = fs.readdirSync(outputDir).find(f =>
+        /DATACREDITO|DECEVAL/i.test(f) && f.toLowerCase().endsWith('.pdf')
+      );
+      let nombre = '';
+      if (refFile) {
+        nombre = refFile.replace(/\s*(DATACREDITO|DECEVAL)\.pdf$/i, '').trim();
+      } else {
+        // Extraer nombre del texto del propio pagaré (OTORGANTE)
+        const m = texto.match(/OTORGANTE\s+([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ ]{4,50}?)(?=\s{2,}|\bCC\b|\bNIT\b|\d)/);
+        nombre = m ? m[1].trim() : String(cedula);
+      }
+
+      const nuevoNombre = `${nombre} PAGARE.pdf`;
+      const nuevaRuta   = path.join(outputDir, nuevoNombre);
+      if (!fs.existsSync(nuevaRuta)) {
+        fs.renameSync(fullPath, nuevaRuta);
+        console.log(`[ZIP] Renombrado pagaré: "${archivo}" → "${nuevoNombre}"`);
+      }
+    } catch (e) {
+      console.warn(`[WARN] renombrarPagarePDFs ${archivo}: ${e.message.slice(0, 100)}`);
+    }
+  }
+}
+
 // Extrae cédulas y descomprime ZIPs; devuelve { clientes, erroresExtraccion }
 async function extraerClientesDeZips(zipsBase64, outBase, password) {
   const clientes = [], errores = [];
@@ -430,6 +482,9 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
           console.warn(`[WARN] ${cedula}: no se pudieron extraer los archivos del ZIP`);
         }
       }
+
+      // Renombrar pagarés con nombres raros a "{NOMBRE} PAGARE.pdf"
+      await renombrarPagarePDFs(cedula, carpetaSalida);
 
       clientes.push({ cedula, outputDir: carpetaSalida, fileName });
       console.log(`[${new Date().toISOString()}] ✓ ${cedula} ← ${fileName}`);
