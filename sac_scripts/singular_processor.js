@@ -24,7 +24,8 @@ const pdfParse  = require('pdf-parse');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const DEFAULT_SAC_DOCS = process.env.SAC_OUT_DIR        || 'C:/SAC_Documentos';
+const DEFAULT_SAC_DOCS = process.env.SAC_OUT_DIR
+  || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\GARANTIAS';
 const DEFAULT_PLANTILLA = process.env.PLANTILLA_SINGULAR
   || path.join(DEFAULT_SAC_DOCS, 'PLANTILLA SINGULAR GRETTY.xlsx');
 
@@ -176,11 +177,20 @@ function extraerCiudad(ciudadStr) {
   return (m ? m[1] : s).trim().toUpperCase();
 }
 
+// ─── Resolución de carpeta por cédula (lectura) ───────────────────────────────
+// Busca primero {cedula}_{añoActual}, luego {cedula}.
+// Si ninguna existe devuelve {cedula} (las funciones usan existsSync internamente).
+function resolverCarpetaCedula(sacDocsDir, cedula) {
+  const conAnio = path.join(sacDocsDir, `${cedula}_${new Date().getFullYear()}`);
+  const normal  = path.join(sacDocsDir, String(cedula));
+  return fs.existsSync(conAnio) ? conAnio : normal;
+}
+
 // ─── Contactos CSV ────────────────────────────────────────────────────────────
 
 function leerContactos(cedula, sacDocsDir) {
   const result = { direccion: '', email: '', dirs: [], emails: [] };
-  const p = path.join(sacDocsDir, String(cedula), `CONTACTOS_${cedula}.csv`);
+  const p = path.join(resolverCarpetaCedula(sacDocsDir, cedula), `CONTACTOS_${cedula}.csv`);
   if (!fs.existsSync(p)) return result;
 
   try {
@@ -755,7 +765,7 @@ async function leerDatosDeSACPdfs(cedula, sacDocsDir) {
     nombreEmpresa:    '',
   };
 
-  const dir = path.join(sacDocsDir, String(cedula));
+  const dir = resolverCarpetaCedula(sacDocsDir, cedula);
   if (!fs.existsSync(dir)) return result;
 
   const pdfs = fs.readdirSync(dir).filter(f =>
@@ -876,7 +886,7 @@ function parseFechaSuscripcion(texto) {
 
 async function leerDatosDeDeceval(cedula, sacDocsDir) {
   const result = { numeroPagare: '', fechaSuscripcion: '' };
-  const dir = path.join(sacDocsDir, String(cedula));
+  const dir = resolverCarpetaCedula(sacDocsDir, cedula);
   if (!fs.existsSync(dir)) return result;
 
   // PDFs de pagaré: DECEVAL.pdf, PAGARE.pdf, PAGARE 001.pdf, etc.

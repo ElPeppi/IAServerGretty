@@ -16,6 +16,8 @@
  *   SAC_PASS     ← OBLIGATORIO si no se envía por el body
  */
 
+require('dotenv').config();
+
 const express      = require('express');
 const multer       = require('multer');
 const AdmZip       = require('adm-zip');
@@ -62,13 +64,32 @@ setInterval(() => {
 // ─── Configuración ────────────────────────────────────────────────────────────
 const PORT     = process.env.SAC_PORT     || 3456;
 const TEMP_DIR = process.env.SAC_TEMP_DIR || 'C:/temp/sac_temp';
-const OUT_DIR  = process.env.SAC_OUT_DIR  || 'C:/SAC_Documentos';
+const OUT_DIR  = process.env.SAC_OUT_DIR
+  || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\GARANTIAS';
 const SAC_URL  = process.env.SAC_URL      || 'https://servicios.bancofinandina.com/Sac';
 const SAC_USER = process.env.SAC_USER     || 'jairramo';
 const SAC_PASS = process.env.SAC_PASS     || '';
 
 fs.mkdirSync(TEMP_DIR, { recursive: true });
-fs.mkdirSync(OUT_DIR,  { recursive: true });
+
+// ─── Resolución de carpeta por cédula ────────────────────────────────────────
+// Al ESCRIBIR (procesar ZIP nuevo): si ya existe {cedula}, usa {cedula}_{año}.
+// Así los documentos de un nuevo año no mezclan con los anteriores.
+function resolverCarpetaEscritura(outBase, cedula) {
+  const normal  = path.join(outBase, String(cedula));
+  if (!fs.existsSync(normal)) return normal;
+  // Ya existe → añadir el año actual
+  return path.join(outBase, `${cedula}_${new Date().getFullYear()}`);
+}
+
+// Al LEER (generar Plantilla Singular): busca la carpeta más reciente que exista.
+// Orden: {cedula}_{año} > {cedula}
+function resolverCarpetaLectura(outBase, cedula) {
+  const conAnio = path.join(outBase, `${cedula}_${new Date().getFullYear()}`);
+  const normal  = path.join(outBase, String(cedula));
+  if (fs.existsSync(conAnio)) return conAnio;
+  return normal; // puede no existir; cada función lo maneja con existsSync
+}
 
 const app    = express();
 const upload = multer({ dest: TEMP_DIR });
@@ -206,8 +227,8 @@ app.post('/procesar-zip', upload.single('zipFile'), async (req, res) => {
       });
     }
 
-    // Crear carpeta y extraer archivos del ZIP
-    const carpetaSalida = path.join(outBase, cedula);
+    // Crear carpeta: si ya existe {cedula} usa {cedula}_{año}
+    const carpetaSalida = resolverCarpetaEscritura(outBase, cedula);
     fs.mkdirSync(carpetaSalida, { recursive: true });
     zip.extractAllTo(carpetaSalida, true);
     fs.unlinkSync(zipPath);
@@ -336,7 +357,7 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
         continue;
       }
 
-      const carpetaSalida = path.join(outBase, cedula);
+      const carpetaSalida = resolverCarpetaEscritura(outBase, cedula);
       fs.mkdirSync(carpetaSalida, { recursive: true });
       extraerZipADirectorio(zip, carpetaSalida, password);
 
@@ -354,7 +375,7 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
 function enriquecerClientes(clientesPuppeteer, clientesMeta, outBase) {
   return (clientesPuppeteer || []).map(c => {
     const info    = clientesMeta.find(ci => ci.cedula === c.cedula) || {};
-    const carpeta = info.outputDir || path.join(outBase, c.cedula);
+    const carpeta = info.outputDir || resolverCarpetaLectura(outBase, c.cedula);
     let archivos  = [];
     try { archivos = fs.readdirSync(carpeta); } catch (_) {}
     return {
