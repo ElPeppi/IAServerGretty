@@ -184,10 +184,28 @@ async function extraerCedulaDePDFs(zip, zipFileName, password) {
   }
 
   // Intento 2: nombre del PDF dentro del ZIP
+  // A: número standalone de 6-12 dígitos.
+  // B: los últimos N dígitos de un número más largo (ej: "4533197914983089336" → "83089336").
+  //    Los números DECEVAL suelen terminar en la cédula del titular.
   for (const entry of pdfEntries) {
-    const nombre = path.basename(entry.entryName, '.pdf');
-    const m = nombre.match(/\b(\d{6,12})\b/);
-    if (m) { console.log(`[DEBUG]   Cédula del nombre PDF: ${m[1]}`); return m[1]; }
+    // Limpiar extensiones dobles como ".pdf2.pdffirmado" antes de buscar
+    const nombre = path.basename(entry.entryName).replace(/[.]pdf.*/i, '');
+    const numSeqs = nombre.match(/\d{6,}/g) || [];
+    for (const ns of numSeqs) {
+      // A: standalone 6-12 dígitos
+      if (ns.length <= 12) {
+        console.log(`[DEBUG]   Cédula del nombre PDF (A): ${ns}`);
+        return ns;
+      }
+      // B: número largo → probar sufijos de 8, 9, 10, 11 dígitos
+      for (const len of [8, 9, 10, 11]) {
+        const suf = ns.slice(-len);
+        if (/^[1-9]/.test(suf)) {
+          console.log(`[DEBUG]   Cédula del nombre PDF (B, sufijo ${len}): ${suf}`);
+          return suf;
+        }
+      }
+    }
   }
 
   // Intento 3: nombre del archivo ZIP
@@ -330,6 +348,8 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
     const item     = zipsBase64[i] || {};
     const data     = item.data     || '';
     const fileName = item.fileName || `adjunto_${i}.zip`;
+    // Cédula explícita enviada por n8n (evita tener que extraerla del PDF)
+    const cedulaExplicita = item.cedula ? String(item.cedula).trim().replace(/\D/g, '') : null;
 
     console.log(`[${new Date().toISOString()}] ZIP ${i + 1}/${zipsBase64.length}: "${fileName}" data.length=${data.length}${password ? ' [pwd: sí]' : ''}`);
 
@@ -349,13 +369,14 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
       }
 
       const zip    = new AdmZip(buffer);
-      const cedula = await extraerCedulaDePDFs(zip, fileName, password);
+      const cedula = cedulaExplicita || await extraerCedulaDePDFs(zip, fileName, password);
       if (!cedula) {
         const msg = `No se encontró cédula (${zip.getEntries().length} entradas)`;
         errores.push({ fileName, error: msg });
         console.warn(`[WARN] ZIP ${fileName}: ${msg}`);
         continue;
       }
+      if (cedulaExplicita) console.log(`[${new Date().toISOString()}] Cédula explícita: ${cedula} ← ${fileName}`);
 
       const carpetaSalida = resolverCarpetaEscritura(outBase, cedula);
       fs.mkdirSync(carpetaSalida, { recursive: true });
