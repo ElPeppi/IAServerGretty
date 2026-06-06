@@ -152,6 +152,10 @@ async function extraerCedulaDePDFs(zip, zipFileName, password) {
   console.log(`[DEBUG] ZIP "${zipFileName || '?'}": ${entries.length} entradas, ${pdfEntries.length} PDFs${password ? ' [cifrado]' : ''}`);
   pdfEntries.forEach(e => console.log(`[DEBUG]   PDF: ${e.entryName} (${e.header.size} bytes)`));
 
+  // Capturar nombres ANTES de Intento 1 — getData() para ZIPs AES puede
+  // corromper los entry objects, lo que haría fallar path.basename en Intento 2.
+  const pdfNames = pdfEntries.map(e => e.entryName);
+
   // Intento 1: texto dentro de cada PDF (descifrando con la contraseña si aplica)
   for (const entry of pdfEntries) {
     try {
@@ -183,13 +187,14 @@ async function extraerCedulaDePDFs(zip, zipFileName, password) {
     }
   }
 
-  // Intento 2: nombre del PDF dentro del ZIP
+  // Intento 2: nombre del PDF dentro del ZIP (usa pdfNames capturado antes de Intento 1)
   // A: número standalone de 6-12 dígitos.
   // B: los últimos N dígitos de un número más largo (ej: "4533197914983089336" → "83089336").
   //    Los números DECEVAL suelen terminar en la cédula del titular.
-  for (const entry of pdfEntries) {
-    // Limpiar extensiones dobles como ".pdf2.pdffirmado" antes de buscar
-    const nombre = path.basename(entry.entryName).replace(/[.]pdf.*/i, '');
+  console.log(`[DEBUG]   Intento 2: buscando cédula en ${pdfNames.length} nombre(s) de PDF`);
+  for (const entryName of pdfNames) {
+    const nombre  = path.basename(entryName).replace(/[.]pdf.*/i, '');
+    console.log(`[DEBUG]   Nombre limpio: "${nombre}"`);
     const numSeqs = nombre.match(/\d{6,}/g) || [];
     for (const ns of numSeqs) {
       // A: standalone 6-12 dígitos
@@ -320,25 +325,33 @@ app.get('/job-status/:jobId', (req, res) => {
 
 // ─── Helpers internos para /procesar-zips ────────────────────────────────────
 
-// Extrae entrada por entrada con soporte de contraseña ZIP
+// Extrae entrada por entrada con soporte de contraseña ZIP.
+// Devuelve el número de archivos extraídos con éxito.
 function extraerZipADirectorio(zip, destDir, password) {
+  let extraidos = 0;
   for (const entry of zip.getEntries()) {
-    const entryPath = path.join(destDir, entry.entryName);
     if (entry.isDirectory) {
-      fs.mkdirSync(entryPath, { recursive: true });
-    } else {
-      fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+      fs.mkdirSync(path.join(destDir, entry.entryName), { recursive: true });
+      continue;
+    }
+    // Aplanar la ruta: ignorar subdirectorios dentro del ZIP
+    const nombre    = path.basename(entry.entryName);
+    const destFile  = path.join(destDir, nombre);
+    try {
+      const data = password ? entry.getData(password) : entry.getData();
+      fs.writeFileSync(destFile, data);
+      extraidos++;
+    } catch (_) {
+      // Si falla con pwd, intentar sin (algunos entries no cifrados)
       try {
-        const data = password ? entry.getData(password) : entry.getData();
-        fs.writeFileSync(entryPath, data);
-      } catch (_) {
-        // Si falla con pwd, intentar sin (algunos entries no cifrados)
-        try { fs.writeFileSync(entryPath, entry.getData()); } catch (e2) {
-          console.warn(`[WARN] No se pudo extraer ${entry.entryName}: ${e2.message}`);
-        }
+        fs.writeFileSync(destFile, entry.getData());
+        extraidos++;
+      } catch (e2) {
+        console.warn(`[WARN] No se pudo extraer ${nombre}: ${e2.message}`);
       }
     }
   }
+  return extraidos;
 }
 
 // Extrae cédulas y descomprime ZIPs; devuelve { clientes, erroresExtraccion }
@@ -380,7 +393,18 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
 
       const carpetaSalida = resolverCarpetaEscritura(outBase, cedula);
       fs.mkdirSync(carpetaSalida, { recursive: true });
-      extraerZipADirectorio(zip, carpetaSalida, password);
+
+      // Extraer archivos del ZIP a la carpeta de salida
+      const extraidos = extraerZipADirectorio(zip, carpetaSalida, password);
+      if (extraidos > 0) {
+        console.log(`[${new Date().toISOString()}] ✓ ${cedula}: ${extraidos} archivo(s) extraídos del ZIP`);
+      } else {
+        // ZIP cifrado con AES (adm-zip no puede descifrarlo sin la contraseña correcta).
+        // Guardar el ZIP completo en la carpeta para que el usuario acceda a los archivos.
+        const zipDestino = path.join(carpetaSalida, fileName);
+        fs.writeFileSync(zipDestino, buffer);
+        console.warn(`[WARN] ${cedula}: no se pudieron extraer archivos del ZIP (posiblemente AES). ZIP guardado como: ${path.basename(zipDestino)}`);
+      }
 
       clientes.push({ cedula, outputDir: carpetaSalida, fileName });
       console.log(`[${new Date().toISOString()}] ✓ ${cedula} ← ${fileName}`);
@@ -396,7 +420,7 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
 function enriquecerClientes(clientesPuppeteer, clientesMeta, outBase) {
   return (clientesPuppeteer || []).map(c => {
     const info    = clientesMeta.find(ci => ci.cedula === c.cedula) || {};
-    const carpeta = info.outputDir || resolverCarpetaLectura(outBase, c.cedula);
+    const carpeta = resolverCarpetaLectura(outBase, c.cedula);
     let archivos  = [];
     try { archivos = fs.readdirSync(carpeta); } catch (_) {}
     return {
@@ -484,11 +508,10 @@ app.post('/procesar-zips', async (req, res) => {
     sacBaseUrl: reqUrl, sacUser: reqUser, sacPass: reqPass,
     outputBaseDir,
   } = req.body;
-
-  const sacUrl  = reqUrl  || SAC_URL;
-  const sacUser = reqUser || SAC_USER;
+  const sacUrl  = SAC_URL;
+  const sacUser = SAC_USER;
   const sacPass = reqPass || SAC_PASS;
-  const outBase = outputBaseDir || OUT_DIR;
+  const outBase = OUT_DIR;
 
   // Determinar contraseña del ZIP: campo explícito → extraer del cuerpo → sin contraseña
   const zipPassword = reqZipPwd || extraerPasswordDelCorreo(emailBodyText) || null;
