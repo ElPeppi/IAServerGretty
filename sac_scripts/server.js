@@ -24,7 +24,7 @@ const AdmZip       = require('adm-zip');
 const pdfParse     = require('pdf-parse');
 const path         = require('path');
 const fs           = require('fs');
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const { procesarSingular } = require('./singular_processor');
 
 // ─── Cola Puppeteer (una sesión SAC a la vez) ─────────────────────────────────
@@ -354,6 +354,29 @@ function extraerZipADirectorio(zip, destDir, password) {
   return extraidos;
 }
 
+// Fallback de extracción usando PowerShell (Expand-Archive).
+// Se usa cuando adm-zip no puede leer el ZIP (formato no estándar, AES, etc.).
+// Guarda el buffer en un archivo temporal, extrae con PowerShell y borra el temp.
+function extraerConPowerShell(zipBuffer, fileName, destDir) {
+  const tempZip = path.join(TEMP_DIR, `tmp_${Date.now()}_${path.basename(fileName)}`);
+  try {
+    fs.writeFileSync(tempZip, zipBuffer);
+    // Expand-Archive aplana la estructura si hay subcarpetas → extraemos a destDir directamente
+    execFileSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath '${tempZip.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
+    ], { timeout: 60000 });
+    const archivos = fs.readdirSync(destDir).filter(f => !f.startsWith('SAC_') && !f.startsWith('CONTACTOS_'));
+    console.log(`[ZIP-PS] Extraído con PowerShell: ${archivos.length} archivo(s) → ${path.basename(destDir)}`);
+    return archivos.length;
+  } catch (e) {
+    console.warn(`[WARN] PowerShell extraction falló: ${e.message.slice(0, 200)}`);
+    return 0;
+  } finally {
+    try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch (_) {}
+  }
+}
+
 // Extrae cédulas y descomprime ZIPs; devuelve { clientes, erroresExtraccion }
 async function extraerClientesDeZips(zipsBase64, outBase, password) {
   const clientes = [], errores = [];
@@ -395,13 +418,17 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
       fs.mkdirSync(carpetaSalida, { recursive: true });
 
       // Extraer archivos del ZIP a la carpeta de salida
-      const extraidos = extraerZipADirectorio(zip, carpetaSalida, password);
+      let extraidos = extraerZipADirectorio(zip, carpetaSalida, password);
       if (extraidos > 0) {
-        console.log(`[${new Date().toISOString()}] ✓ ${cedula}: ${extraidos} archivo(s) extraídos del ZIP`);
+        console.log(`[${new Date().toISOString()}] ✓ ${cedula}: ${extraidos} archivo(s) extraídos (adm-zip)`);
       } else {
-        // No se pudo extraer nada — ZIP cifrado sin contraseña disponible.
-        // Configura SAC_ZIP_PASS en el .env con la contraseña de los ZIPs.
-        console.warn(`[WARN] ${cedula}: 0 archivos extraídos. ZIP cifrado sin contraseña. Configura SAC_ZIP_PASS en el .env`);
+        // adm-zip no pudo leer el ZIP (formato no estándar, AES, etc.)
+        // → fallback a PowerShell que soporta cualquier ZIP nativo de Windows
+        console.warn(`[WARN] ${cedula}: adm-zip falló, intentando con PowerShell...`);
+        extraidos = extraerConPowerShell(buffer, fileName, carpetaSalida);
+        if (extraidos === 0) {
+          console.warn(`[WARN] ${cedula}: no se pudieron extraer los archivos del ZIP`);
+        }
       }
 
       clientes.push({ cedula, outputDir: carpetaSalida, fileName });
