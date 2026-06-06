@@ -115,6 +115,46 @@ async function extraerDirYTelSAC(page, cedula) {
   }
 }
 
+// ─── Generar PDF de la vista "Dir y Tel" (teléfonos + direcciones) ────────────
+// Se llama DESPUÉS de extraerDirYTelSAC, cuando la página ya muestra esa vista.
+// Captura "Lista De Teléfonos" + "Lista De Direcciónes" en un solo PDF A3.
+
+async function generarPDFDirecciones(page, cedula, outputDir) {
+  try {
+    // Dar tiempo a que Angular renderice completamente las dos tablas
+    await waitMs(1000);
+
+    // Verificar que la tabla de direcciones está en el DOM antes de imprimir
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('table')].some(t => {
+        const hs = [...t.querySelectorAll('thead th, thead td')]
+          .map(h => h.textContent.trim().toUpperCase());
+        return hs.some(h => h.includes('DIRECCI'));
+      }),
+      { timeout: 10000 }
+    ).catch(() => {
+      console.error(`[WARN] ${cedula}: tabla Direcciones no detectada antes de generar PDF`);
+    });
+
+    await waitMs(500);
+
+    const nomArchivo = `SAC_${cedula}_DIRYTEL.pdf`;
+    await page.pdf({
+      path:            path.join(outputDir, nomArchivo),
+      format:          'A3',
+      landscape:       true,
+      printBackground: true,
+      margin:          { top: '8mm', bottom: '8mm', left: '8mm', right: '8mm' },
+      scale:           0.75,
+    });
+    console.error(`[PDF] ${cedula}: generado ${nomArchivo} (Dir y Tel)`);
+    return nomArchivo;
+  } catch (e) {
+    console.error(`[PDF-ERR] ${cedula} Dir y Tel: ${e.message}`);
+    return null;
+  }
+}
+
 // ─── Extraer datos del PDF Datacredito (sección RECONOCER+) ──────────────────
 // Lee todos los PDFs no-SAC del outputDir (son los Datacredito del ZIP).
 // Emails  → regex confiable aplicado a todo el texto.
@@ -547,7 +587,13 @@ async function main() {
         // Así la tabla Dir y Tel aún no está en el DOM cuando buscamos
         // la tabla de obligaciones → sin contaminación de selectores.
         const pdfs         = await generarPDFsVigentes(page, cedula, outputDir);
-        const sacContactos = await extraerDirYTelSAC(page, cedula);
+
+        // extraerDirYTelSAC hace clic en "Dir y Tel" → la página queda en esa vista.
+        // generarPDFDirecciones aprovecha esa vista para generar el PDF sin navegar de nuevo.
+        const sacContactos  = await extraerDirYTelSAC(page, cedula);
+        const pdfDirecciones = await generarPDFDirecciones(page, cedula, outputDir);
+        if (pdfDirecciones) pdfs.push(pdfDirecciones);
+
         const dcContactos  = await extraerDatacredito(outputDir);
         const contactoFile = guardarContactos(cedula, outputDir, {
           sac_dir:   sacContactos.sac_dir,
