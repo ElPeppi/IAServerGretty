@@ -495,11 +495,8 @@ async function main() {
     console.error(`[INFO] URL actual tras goto: ${loginUrl}`);
 
     // Captura de pantalla de diagnóstico en C:/SAC_Documentos/debug_login.png
-    const debugDir = require('path').join(clientes[0]?.outputDir ? require('path').dirname(clientes[0].outputDir) : 'C:/SAC_Documentos');
-    try {
-      await page.screenshot({ path: require('path').join(debugDir, 'debug_login.png'), fullPage: true });
-      console.error('[INFO] Screenshot de login guardado en debug_login.png');
-    } catch (_) {}
+    
+    
 
     // Loguear todos los inputs encontrados para diagnóstico
     const allInputs = await page.evaluate(() =>

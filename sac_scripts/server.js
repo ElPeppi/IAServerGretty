@@ -72,6 +72,37 @@ const SAC_PASS = process.env.SAC_PASS     || '';
 
 fs.mkdirSync(TEMP_DIR, { recursive: true });
 
+// ─── mkdirpSync: mkdir robusto para rutas UNC en Windows ─────────────────────
+// Node.js fs.mkdirSync({ recursive: true }) falla con UNKNOWN en rutas UNC
+// (\\servidor\recurso\...) porque no puede determinar el "root" del UNC path.
+// Solución: intentar fs.mkdirSync primero; si falla con UNKNOWN en Windows,
+// usar cmd.exe /c md que soporta UNC natively.
+function mkdirpSync(dir) {
+  if (fs.existsSync(dir)) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    if (e.code === 'EEXIST') return; // ya existe — OK
+    // En Windows, rutas UNC pueden fallar con UNKNOWN aunque el share sea accesible.
+    // cmd.exe /c md maneja UNC paths de forma nativa.
+    if (process.platform === 'win32' && (e.code === 'UNKNOWN' || e.code === 'EPERM')) {
+      try {
+        execFileSync('cmd.exe', ['/c', 'md', dir], { timeout: 15000 });
+        if (!fs.existsSync(dir)) throw e; // si aún no existe, relanzar original
+        return;
+      } catch (e2) {
+        // cmd.exe sale con error si el directorio ya existe — ignorar ese caso
+        if (fs.existsSync(dir)) return;
+        // Si aún no existe y fue UNKNOWN, agregar contexto al error
+        const err = new Error(`No se pudo crear directorio "${dir}": ${e.message} (cmd fallback: ${e2.message})`);
+        err.code = e.code;
+        throw err;
+      }
+    }
+    throw e;
+  }
+}
+
 // ─── Resolución de carpeta por cédula ────────────────────────────────────────
 // Al ESCRIBIR (procesar ZIP nuevo): si ya existe {cedula}, usa {cedula}_{año}.
 // Así los documentos de un nuevo año no mezclan con los anteriores.
@@ -108,9 +139,12 @@ app.use(express.json({ limit: '100mb' }));
 
 // ─── Patrones cédula colombiana ───────────────────────────────────────────────
 const CEDULA_DATACREDITO_RE    = /N[uú]mero\s+Documento\s+(\d{6,11})/i;
-// "CC" standalone (tipo de documento) seguido del número — más específico que CEDULA_CC_RE.
-// En DECEVAL: "FENNER BERMUDEZ SANCHEZ CC 83089336" → captura 83089336 (no 635844).
-const CEDULA_CC_TIPO_RE        = /\bCC\s+(\d{6,12})\b/;
+// DECEVAL / pagaré: el deudor aparece como OTORGANTE con tipo CC.
+// Ej: "635844 OTORGANTE FENNER BERMUDEZ SANCHEZ CC 83089336"
+// Se busca OTORGANTE seguido de texto hasta CC (con o sin espacio) y el número.
+const CEDULA_DECEVAL_RE        = /OTORGANTE[\s\S]{1,150}?CC\s*(\d{6,12})/i;
+// "CC" standalone seguido del número (con o sin espacio entre ellos)
+const CEDULA_CC_TIPO_RE        = /\bCC\s*(\d{6,12})\b/;
 const CEDULA_CC_RE             = /C\.?\s*C\.?[\s\S]{0,80}?(\d{6,11})/;
 const CEDULA_TEXTO_RE          = /[Cc][eé]dula\s*(?:de\s*[Cc]iudadan[ií]a)?\s*[:#Nn°\.]?\s*(\d{6,11})/i;
 const CEDULA_SOLO_RE           = /\b(\d{6,11})\b/;
@@ -150,7 +184,14 @@ function extraerPasswordDelCorreo(bodyText) {
 // ─── Extrae cédula de los PDFs del ZIP (con soporte de contraseña) ────────────
 async function extraerCedulaDePDFs(zip, zipFileName, password) {
   const entries    = zip.getEntries();
-  const pdfEntries = entries.filter(e => e.entryName.toLowerCase().endsWith('.pdf') && !e.isDirectory);
+  const pdfEntries = entries
+    .filter(e => e.entryName.toLowerCase().endsWith('.pdf') && !e.isDirectory)
+    // Procesar DATACREDITO primero: tiene la cédula en formato claro.
+    // Los pagarés DECEVAL tienen múltiples números que confunden los regex genéricos.
+    .sort((a, b) => {
+      const score = e => /DATACREDITO/i.test(e.entryName) ? 0 : 1;
+      return score(a) - score(b);
+    });
 
   console.log(`[DEBUG] ZIP "${zipFileName || '?'}": ${entries.length} entradas, ${pdfEntries.length} PDFs${password ? ' [cifrado]' : ''}`);
   pdfEntries.forEach(e => console.log(`[DEBUG]   PDF: ${e.entryName} (${e.header.size} bytes)`));
@@ -168,14 +209,16 @@ async function extraerCedulaDePDFs(zip, zipFileName, password) {
       const texto  = (parsed.text || '').replace(/\s+/g, ' ').trim();
       console.log(`[DEBUG]   Texto PDF (300 chars): ${texto.slice(0, 300)}`);
 
-      const mND  = texto.match(CEDULA_NUM_DOC_RE);        if (mND)  { console.log(`[DEBUG]   Cédula NUM_DOC: ${mND[1]}`);         return limpiarNumero(mND[1]); }
-      const mDC  = texto.match(CEDULA_DATACREDITO_RE);    if (mDC)  { console.log(`[DEBUG]   Cédula DATACREDITO: ${mDC[1]}`);     return limpiarNumero(mDC[1]); }
-      const mID  = texto.match(CEDULA_IDENTIFICACION_RE); if (mID)  { console.log(`[DEBUG]   Cédula IDENTIFICACION: ${mID[1]}`);  return limpiarNumero(mID[1]); }
-      // CC como tipo de documento (ej. DECEVAL: "FENNER BERMUDEZ SANCHEZ CC 83089336")
-      const mCCT = texto.match(CEDULA_CC_TIPO_RE);        if (mCCT) { console.log(`[DEBUG]   Cédula CC tipo: ${mCCT[1]}`);        return limpiarNumero(mCCT[1]); }
-      const mCC  = texto.match(CEDULA_CC_RE);              if (mCC)  { console.log(`[DEBUG]   Cédula CC: ${mCC[1]}`);              return limpiarNumero(mCC[1]); }
-      const mTx  = texto.match(CEDULA_TEXTO_RE);           if (mTx)  { console.log(`[DEBUG]   Cédula TEXTO: ${mTx[1]}`);           return limpiarNumero(mTx[1]); }
-      const mS   = texto.match(CEDULA_SOLO_RE);            if (mS)   { console.log(`[DEBUG]   Cédula SOLO: ${mS[1]}`);             return mS[1]; }
+      const mND  = texto.match(CEDULA_NUM_DOC_RE);        if (mND)  { console.log(`[DEBUG]   Cédula NUM_DOC: ${mND[1]}`);          return limpiarNumero(mND[1]); }
+      const mDC  = texto.match(CEDULA_DATACREDITO_RE);    if (mDC)  { console.log(`[DEBUG]   Cédula DATACREDITO: ${mDC[1]}`);      return limpiarNumero(mDC[1]); }
+      const mID  = texto.match(CEDULA_IDENTIFICACION_RE); if (mID)  { console.log(`[DEBUG]   Cédula IDENTIFICACION: ${mID[1]}`);   return limpiarNumero(mID[1]); }
+      // DECEVAL pagaré: OTORGANTE con tipo CC (más específico que el regex genérico)
+      const mDEV = texto.match(CEDULA_DECEVAL_RE);        if (mDEV) { console.log(`[DEBUG]   Cédula DECEVAL OTORGANTE: ${mDEV[1]}`); return limpiarNumero(mDEV[1]); }
+      // CC standalone seguido del número (con o sin espacio)
+      const mCCT = texto.match(CEDULA_CC_TIPO_RE);        if (mCCT) { console.log(`[DEBUG]   Cédula CC tipo: ${mCCT[1]}`);         return limpiarNumero(mCCT[1]); }
+      const mCC  = texto.match(CEDULA_CC_RE);              if (mCC)  { console.log(`[DEBUG]   Cédula CC: ${mCC[1]}`);               return limpiarNumero(mCC[1]); }
+      const mTx  = texto.match(CEDULA_TEXTO_RE);           if (mTx)  { console.log(`[DEBUG]   Cédula TEXTO: ${mTx[1]}`);            return limpiarNumero(mTx[1]); }
+      const mS   = texto.match(CEDULA_SOLO_RE);            if (mS)   { console.log(`[DEBUG]   Cédula SOLO: ${mS[1]}`);              return mS[1]; }
       console.log(`[DEBUG]   Sin cédula en texto del PDF`);
     } catch (e) {
       // Si falla con password, intentar sin contraseña (ZIP no cifrado)
@@ -257,7 +300,7 @@ app.post('/procesar-zip', upload.single('zipFile'), async (req, res) => {
 
     // Crear carpeta: si ya existe {cedula} usa {cedula}_{año}
     const carpetaSalida = resolverCarpetaEscritura(outBase, cedula);
-    fs.mkdirSync(carpetaSalida, { recursive: true });
+    mkdirpSync(carpetaSalida);
     zip.extractAllTo(carpetaSalida, true);
     fs.unlinkSync(zipPath);
 
@@ -336,7 +379,7 @@ function extraerZipADirectorio(zip, destDir, password) {
   let extraidos = 0;
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) {
-      fs.mkdirSync(path.join(destDir, entry.entryName), { recursive: true });
+      mkdirpSync(path.join(destDir, entry.entryName));
       continue;
     }
     // Aplanar la ruta: ignorar subdirectorios dentro del ZIP
@@ -467,7 +510,7 @@ async function extraerClientesDeZips(zipsBase64, outBase, password) {
       if (cedulaExplicita) console.log(`[${new Date().toISOString()}] Cédula explícita: ${cedula} ← ${fileName}`);
 
       const carpetaSalida = resolverCarpetaEscritura(outBase, cedula);
-      fs.mkdirSync(carpetaSalida, { recursive: true });
+      mkdirpSync(carpetaSalida);
 
       // Extraer archivos del ZIP a la carpeta de salida
       let extraidos = extraerZipADirectorio(zip, carpetaSalida, password);
@@ -621,9 +664,13 @@ app.post('/procesar-zips', async (req, res) => {
       if (clientes.length === 0) {
         console.error(`[${new Date().toISOString()}] 0 clientes extraídos. Errores de extracción:`);
         erroresExtraccion.forEach((e, i) => console.error(`  [${i+1}] ${e.fileName}: ${e.error}`));
+        // Mensaje más descriptivo: distinguir "sin cédula" de "carpeta inaccesible"
+        const msgError = erroresExtraccion.some(e => /mkdir|UNKNOWN|EPERM|EACCES/i.test(e.error))
+          ? `Error de acceso a carpeta de salida: ${outBase} — verifique que la red sea accesible`
+          : 'Ningún ZIP tenía cédula válida';
         return {
           success: false,
-          error: 'Ningún ZIP tenía cédula válida',
+          error: msgError,
           erroresExtraccion,
           clientes: [],
         };
