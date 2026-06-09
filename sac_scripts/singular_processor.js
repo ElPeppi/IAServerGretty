@@ -17,6 +17,7 @@
 'use strict';
 
 const XLSX      = require('xlsx');
+const AdmZip    = require('adm-zip');
 const path      = require('path');
 const fs        = require('fs');
 const puppeteer = require('puppeteer');
@@ -28,6 +29,8 @@ const DEFAULT_SAC_DOCS = process.env.SAC_OUT_DIR
   || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\GARANTIAS';
 const DEFAULT_PLANTILLA = process.env.PLANTILLA_SINGULAR
   || path.join(DEFAULT_SAC_DOCS, 'PLANTILLA SINGULAR GRETTY.xlsx');
+const DEFAULT_DEMANDA_TEMPLATE = process.env.PLANTILLA_DEMANDA
+  || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PLANTILLAS\\PLANTILLA DEMANDA SINGULAR AI.docx';
 
 // Cuantía thresholds (usuario)
 const CUANTIA_MINIMA_MAX = 70_036_200;
@@ -421,7 +424,7 @@ function parsearExcelEntrada(buffer) {
 
     if (!fin[cedula]) {
       fin[cedula] = {
-        obligacion: obl, capital: cap, interes: int, total, abogado: abo, nombre,
+        obligacion: obl, obligaciones: obl ? [obl] : [], capital: cap, interes: int, total, abogado: abo, nombre,
         // obligación con mayor mora (para calcular FECHA MORA)
         maxMoraObl: obl, maxMoraVal: moraAmt,
       };
@@ -431,6 +434,8 @@ function parsearExcelEntrada(buffer) {
       fin[cedula].interes  += int;
       fin[cedula].total    += total;
       if (!fin[cedula].nombre && nombre) fin[cedula].nombre = nombre;
+      // Agregar obligación al listado (sin duplicados)
+      if (obl && !fin[cedula].obligaciones.includes(obl)) fin[cedula].obligaciones.push(obl);
       // Actualizar obligación con mayor mora
       if (moraAmt > fin[cedula].maxMoraVal) {
         fin[cedula].maxMoraVal = moraAmt;
@@ -515,6 +520,7 @@ const TEMPLATE_HEADERS = [
   'CIUDAD DE JUZGADO',
   'CUANTIA',
   'OBLIGACION',
+  'OBLIGACIONES',
   'IDENTIFICACION',
   'NOMBRE',
   'CAPITAL',
@@ -570,6 +576,11 @@ function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig,
 
   const tipoJ = tipoJuzgado(cuantiaLabel, courtInfo.hasSmallClaims, courtInfo.hasPromiscuo);
 
+  // OBLIGACIONES: todas separadas por coma, o la única obligación repetida
+  const obligacionesStr = (f.obligaciones && f.obligaciones.length > 1)
+    ? f.obligaciones.join(', ')
+    : (f.obligacion || '');
+
   // Fila principal (vehículo 1 o sin vehículo)
   const v0   = vehiculos[0] || {};
   const fila1 = {
@@ -578,6 +589,7 @@ function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig,
     'CIUDAD DE JUZGADO':    ciudad,
     'CUANTIA':              cuantiaLabel,
     'OBLIGACION':           f.obligacion || '',
+    'OBLIGACIONES':         obligacionesStr,
     'NUMERO PAGARE':        numeroPagare,
     'IDENTIFICACION':       cedula,
     'NOMBRE':               nombre,
@@ -669,35 +681,37 @@ function fillTemplate(filasTodas, plantillaPath, filasExtras = []) {
     XLSX.utils.book_append_sheet(wb, ws1, 'Hoja1');
   }
 
-  // ── Asegurar que la columna NUMERO PAGARE existe en la plantilla ─────────
-  // (Se añade después de OBLIGACION si no está presente)
+  // ── Asegurar que las columnas OBLIGACIONES y NUMERO PAGARE existen ────────
+  // Se insertan después de OBLIGACION si no están presentes.
   {
-    const range0  = XLSX.utils.decode_range(ws1['!ref'] || 'A1');
-    let   foundPagare = false;
-    let   oblCol  = -1;
-    for (let c = range0.s.c; c <= range0.e.c; c++) {
-      const cell = ws1[XLSX.utils.encode_cell({ r: range0.s.r, c })];
-      if (!cell) continue;
-      const v = String(cell.v || '').trim().toUpperCase().replace(/\s+/g, ' ');
-      if (v === 'NUMERO PAGARE' || v === 'NÚMERO PAGARÉ') { foundPagare = true; break; }
-      if (v === 'OBLIGACION')  oblCol = c;
-    }
-    if (!foundPagare) {
-      // Insertar después de OBLIGACION (o al final si no se encontró)
-      const insertAt = oblCol >= 0 ? oblCol + 1 : range0.e.c + 1;
-      // Desplazar columnas existentes a la derecha desde insertAt
+    const ensureCol = (ws, headerLabel, afterLabel) => {
+      const range0 = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+      let found    = false;
+      let afterCol = -1;
+      for (let c = range0.s.c; c <= range0.e.c; c++) {
+        const cell = ws[XLSX.utils.encode_cell({ r: range0.s.r, c })];
+        if (!cell) continue;
+        const v = String(cell.v || '').trim().toUpperCase().replace(/\s+/g, ' ');
+        if (v === headerLabel.toUpperCase()) { found = true; break; }
+        if (v === afterLabel.toUpperCase())  afterCol = c;
+      }
+      if (found) return;
+      const insertAt = afterCol >= 0 ? afterCol + 1 : range0.e.c + 1;
       for (let r = range0.s.r; r <= range0.e.r; r++) {
         for (let c = range0.e.c; c >= insertAt; c--) {
           const from = XLSX.utils.encode_cell({ r, c });
           const to   = XLSX.utils.encode_cell({ r, c: c + 1 });
-          if (ws1[from]) { ws1[to] = ws1[from]; delete ws1[from]; }
+          if (ws[from]) { ws[to] = ws[from]; delete ws[from]; }
         }
       }
-      ws1[XLSX.utils.encode_cell({ r: range0.s.r, c: insertAt })] = { v: 'NUMERO PAGARE', t: 's' };
-      ws1['!ref'] = XLSX.utils.encode_range({
+      ws[XLSX.utils.encode_cell({ r: range0.s.r, c: insertAt })] = { v: headerLabel, t: 's' };
+      ws['!ref'] = XLSX.utils.encode_range({
         s: range0.s, e: { r: range0.e.r, c: range0.e.c + 1 }
       });
-    }
+    };
+
+    ensureCol(ws1, 'OBLIGACIONES', 'OBLIGACION');
+    ensureCol(ws1, 'NUMERO PAGARE', 'OBLIGACIONES');
   }
 
   // ── Hoja 1: una fila por cliente (primer vehículo + todos los datos) ──────
@@ -932,14 +946,104 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
   return result;
 }
 
+// ─── Generación de Demandas Word (mail merge manual) ─────────────────────────
+
+function fmtCOP(val) {
+  const n = typeof val === 'number' ? val : parseFloat(String(val || '').replace(/[^0-9.]/g, '')) || 0;
+  return n.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+}
+
+function xmlEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function buildFieldMap(fila) {
+  return {
+    TIPO_DE_JUZGADO:                    fila['TIPO DE JUZGADO']                    || '',
+    CIUDAD_DE_JUZGADO:                  fila['CIUDAD DE JUZGADO']                  || '',
+    CUANTIA:                            fila['CUANTIA']                             || '',
+    OBLIGACION:                         fila['OBLIGACION']                          || '',
+    OBLIGACIONES:                       fila['OBLIGACIONES']                        || fila['OBLIGACION'] || '',
+    IDENTIFICACION:                     String(fila['IDENTIFICACION']               || ''),
+    NOMBRE:                             fila['NOMBRE']                              || '',
+    CAPITAL:                            fmtCOP(fila['CAPITAL']),
+    INTERES:                            fmtCOP(fila['INTERES']),
+    FECHA_MORA:                         fila['FECHA MORA']                          || '',
+    FECHA_DE_ASIGNACION:                fila['FECHA DE ASIGNACION']                 || '',
+    FECHA_DE_SUSCRIPCION:               fila['FECHA DE SUSCRIPCION']                || '',
+    VALOR_CUANTIA:                      fmtCOP(fila['VALOR CUANTIA']),
+    DIRECCION_DE_RESIDENCIA:            fila['DIRECCION DE RESIDENCIA']             || '',
+    DIRECCION_ELECTRONICA:              fila['DIRECCION ELECTRONICA']               || '',
+    NIT_EMPRESA_TT:                     String(fila['NIT EMPRESA TT']               || ''),
+    NOMBRE_EMPRESA_TT:                  fila['NOMBRE EMPRESA TT']                   || '',
+    DIRECCION_ELECTRONICA_EMPLEADOR:    fila['DIRECCION ELECTRONICA EMPLEADOR']     || '',
+    PLACA:                              fila['PLACA']                               || '',
+    SERVICIO:                           fila['SERVICIO']                            || '',
+    CLASE:                              fila['CLASE']                               || '',
+    MARCA:                              fila['MARCA']                               || '',
+    LINEA:                              fila['LINEA']                               || '',
+    MODELO:                             fila['MODELO']                              || '',
+    COLOR:                              fila['COLOR']                               || '',
+    SERIE:                              fila['SERIE']                               || '',
+    MOTOR:                              fila['MOTOR']                               || '',
+    CHASIS:                             fila['CHASIS']                              || '',
+    TIPO_DE_CARROCERIA:                 fila['TIPO DE CARROCERIA']                  || '',
+    STRIA_MCPAL_TTOyTTE:                fila['STRIA MCPAL\nTTOyTTE']               || '',
+    DIRECCION_ELECTRONICA_DEL_TRANSITO: fila['DIRECCION ELECTRONICA DEL TRANSITO']  || '',
+  };
+}
+
+function fillDocxTemplate(templateBuffer, fieldMap) {
+  const zip = new AdmZip(templateBuffer);
+  let xml = zip.readAsText('word/document.xml');
+  for (const [field, value] of Object.entries(fieldMap)) {
+    xml = xml.split(`«${field}»`).join(xmlEscape(value));
+  }
+  zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'));
+  return zip.toBuffer();
+}
+
+async function generarDemandasWord(filas, sacDocsDir, templateDocxPath) {
+  if (!fs.existsSync(templateDocxPath)) {
+    throw new Error(`Plantilla DOCX no encontrada: ${templateDocxPath}`);
+  }
+  const templateBuf = fs.readFileSync(templateDocxPath);
+  const generados   = [];
+
+  for (const fila of filas) {
+    const cedula = String(fila['IDENTIFICACION'] || '').trim();
+    if (!cedula) continue;
+    try {
+      const fieldMap  = buildFieldMap(fila);
+      const docxBuf   = fillDocxTemplate(templateBuf, fieldMap);
+      const clientDir = resolverCarpetaCedula(sacDocsDir, cedula);
+      if (!fs.existsSync(clientDir)) fs.mkdirSync(clientDir, { recursive: true });
+      const nombre  = (fila['NOMBRE'] || cedula).trim().replace(/[<>:"/\\|?*]/g, '_');
+      const outFile = path.join(clientDir, `DEMANDA EJECUTIVA SINGULAR ${nombre} - ${cedula}.docx`);
+      fs.writeFileSync(outFile, docxBuf);
+      generados.push({ cedula, path: outFile });
+      console.error(`[DEMANDA] ✓ ${cedula} → ${path.basename(outFile)}`);
+    } catch (e) {
+      console.error(`[DEMANDA] ✗ ${cedula}: ${e.message}`);
+    }
+  }
+  return generados;
+}
+
 // ─── Función principal exportada ──────────────────────────────────────────────
 
 async function procesarSingular(excelBuffer, options = {}) {
-  const sacDocsDir    = options.sacDocsDir    || DEFAULT_SAC_DOCS;
-  const plantillaPath = options.plantillaPath || DEFAULT_PLANTILLA;
+  const sacDocsDir      = options.sacDocsDir      || DEFAULT_SAC_DOCS;
+  const plantillaPath   = options.plantillaPath   || DEFAULT_PLANTILLA;
+  const demandaTemplate = options.demandaTemplate || DEFAULT_DEMANDA_TEMPLATE;
   // Convertir fecha de asignación al formato texto "12 de Mayo del 2026"
-  const fechaAsig     = parseAnyDate(options.fechaAsignacion) || todayString();
-  const cacheFile     = path.join(sacDocsDir, 'rama_judicial_cache.json');
+  const fechaAsig       = parseAnyDate(options.fechaAsignacion) || todayString();
+  const cacheFile       = path.join(sacDocsDir, 'rama_judicial_cache.json');
 
   loadRamaCache(cacheFile);
 
@@ -1085,7 +1189,7 @@ async function procesarSingular(excelBuffer, options = {}) {
     };
   }
 
-  // 3. Llenar plantilla y devolver buffer XLSX
+  // 3. Llenar plantilla Excel y devolver buffer XLSX
   let xlsxBuffer;
   try {
     xlsxBuffer = fillTemplate(filasTodas, plantillaPath, filasExtras);
@@ -1098,14 +1202,28 @@ async function procesarSingular(excelBuffer, options = {}) {
     };
   }
 
+  // 4. Generar un DOCX de demanda por cliente (guarda en {SAC_OUT_DIR}/{cedula}/)
+  let demandasGeneradas = [];
+  if (fs.existsSync(demandaTemplate)) {
+    try {
+      demandasGeneradas = await generarDemandasWord(filasTodas, sacDocsDir, demandaTemplate);
+      console.error(`[DEMANDA] ${demandasGeneradas.length} documento(s) Word generado(s)`);
+    } catch (e) {
+      console.error(`[DEMANDA] Error generando documentos Word: ${e.message}`);
+    }
+  } else {
+    console.error(`[DEMANDA] Plantilla DOCX no encontrada, se omite: ${demandaTemplate}`);
+  }
+
   return {
-    success:         true,
+    success:          true,
     xlsxBuffer,
-    totalFilas:      filasTodas.length,
-    totalExtras:     filasExtras.length,
-    clientes:        clientesSalida,
-    errores:         errores.length ? errores : undefined,
+    totalFilas:       filasTodas.length,
+    totalExtras:      filasExtras.length,
+    clientes:         clientesSalida,
+    demandas:         demandasGeneradas,
+    errores:          errores.length ? errores : undefined,
   };
 }
 
-module.exports = { procesarSingular };
+module.exports = { procesarSingular, generarDemandasWord };

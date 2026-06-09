@@ -17,6 +17,8 @@
  */
 
 require('dotenv').config();
+// Fallback: si no hay .env, intentar cargar el archivo "env" del mismo directorio
+if (!process.env.SAC_PORT) require('dotenv').config({ path: require('path').join(__dirname, 'env') });
 
 const express      = require('express');
 const multer       = require('multer');
@@ -741,6 +743,7 @@ app.post('/generar-singular', upload.single('excelFile'), async (req, res) => {
     const result = await procesarSingular(excelBuffer, {
       sacDocsDir:    OUT_DIR,
       plantillaPath,
+      // demandaTemplate se toma automáticamente de PLANTILLA_DEMANDA en el .env
       fechaAsignacion,
     });
 
@@ -753,7 +756,7 @@ app.post('/generar-singular', upload.single('excelFile'), async (req, res) => {
       });
     }
 
-    console.log(`[${new Date().toISOString()}] /generar-singular: OK — ${result.totalFilas} fila(s)`);
+    console.log(`[${new Date().toISOString()}] /generar-singular: OK — ${result.totalFilas} fila(s), ${result.demandas?.length || 0} demanda(s) Word`);
 
     // Devolver JSON con base64 para fácil consumo desde n8n
     return res.json({
@@ -761,6 +764,7 @@ app.post('/generar-singular', upload.single('excelFile'), async (req, res) => {
       totalFilas: result.totalFilas,
       clientes:   result.clientes,
       errores:    result.errores,
+      demandas:   result.demandas?.map(d => ({ cedula: d.cedula, archivo: d.path })) || [],
       xlsxBase64: result.xlsxBuffer.toString('base64'),
     });
 
