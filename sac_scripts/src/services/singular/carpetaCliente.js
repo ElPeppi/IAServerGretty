@@ -1,0 +1,232 @@
+/**
+ * services/singular/carpetaCliente.js — Lectura de la carpeta de documentos del cliente
+ *
+ * Todo lo que se extrae de {SAC_OUT_DIR}/{cedula}/ :
+ *   leerContactos      → CONTACTOS_{cedula}.csv (direcciones y emails)
+ *   leerDatosDeSACPdfs → PDFs SAC_*.pdf (nombre, juzgado, fecha mora más antigua)
+ *   leerDatosDeDeceval → PDF DECEVAL/PAGARÉ (número de pagaré, fecha suscripción)
+ */
+
+'use strict';
+
+const path     = require('path');
+const fs       = require('fs');
+const pdfParse = require('pdf-parse');
+
+const { resolverCarpetaCedula } = require('../../utils/carpetas');
+const { MESES_MAP } = require('../../utils/fechas');
+
+// ─── Contactos CSV ────────────────────────────────────────────────────────────
+
+function leerContactos(cedula, sacDocsDir) {
+  const result = { direccion: '', email: '', dirs: [], emails: [] };
+  const p = path.join(resolverCarpetaCedula(sacDocsDir, cedula), `CONTACTOS_${cedula}.csv`);
+  if (!fs.existsSync(p)) return result;
+
+  try {
+    const lines = fs.readFileSync(p, 'utf8')
+      .replace(/^﻿/, '')   // BOM
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+
+    for (let i = 1; i < lines.length; i++) {
+      // Formato: TIPO,"VALOR",FUENTE
+      const m = lines[i].match(/^([^,]+),"([^"]*)"/);
+      if (!m) continue;
+      const tipo  = m[1].trim().toUpperCase();
+      const valor = m[2].trim();
+      if (!valor) continue;
+      if (tipo === 'EMAIL') result.emails.push(valor);
+      else                  result.dirs.push(valor);
+    }
+    result.direccion = result.dirs[0] || '';
+    // Todos los correos separados por " - " para que aparezcan en la plantilla.
+    result.email     = result.emails.join(' - ');
+  } catch (e) {
+    console.error(`[CONTACTOS] ${cedula}: ${e.message}`);
+  }
+  return result;
+}
+
+// ─── Parseo de PDFs SAC descargados ──────────────────────────────────────────
+// Lee los PDFs SAC_*.pdf en {sacDocsDir}/{cedula}/ y extrae todos los
+// campos posibles: nombre, ciudad juzgado, capital, intereses, fechas, etc.
+
+async function leerDatosDeSACPdfs(cedula, sacDocsDir) {
+  const result = {
+    nombre:           '',
+    ciudadJuzgado:    '',
+    tipoJuzgado:      '',
+    capital:          0,
+    interes:          0,
+    total:            0,
+    fechaMora:        '',   // fecha inicio mora MÁS ANTIGUA de todas las obligaciones
+    fechaSuscripcion: '',
+    nitEmpresa:       '',
+    nombreEmpresa:    '',
+  };
+
+  const dir = resolverCarpetaCedula(sacDocsDir, cedula);
+  if (!fs.existsSync(dir)) return result;
+
+  const pdfs = fs.readdirSync(dir).filter(f =>
+    f.startsWith('SAC_') && f.toLowerCase().endsWith('.pdf')
+  );
+
+  if (pdfs.length === 0) return result;
+
+  // Acumulamos todas las fechas de mora para quedarnos con la más antigua
+  const fechasMora = [];
+
+  for (const pdfName of pdfs) {
+    try {
+      const buffer = fs.readFileSync(path.join(dir, pdfName));
+      const parsed = await pdfParse(buffer, { max: 0 });
+      // SAC PDFs a veces concatenan campo+valor sin separador ("FechaInicioMora14-03-2026")
+      // Usamos el texto crudo (sin colapsar espacios) para preservar los saltos
+      const texto  = (parsed.text || '').replace(/[ \t]{2,}/g, ' ');
+
+      // ── Nombre del deudor ────────────────────────────────────────────────
+      if (!result.nombre) {
+        const patterns = [
+          /(?:NOMBRE\s+(?:DEL?\s+)?(?:DEUDOR|CLIENTE|TITULAR))\s*[:\-]?\s*([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ ]{5,70}?)(?=\s{2,}|\n|[0-9]|CÉDULA|NIT|OBLIGACI)/i,
+          /(?:DEUDOR|CLIENTE|TITULAR)\s*[:\-]\s*([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ ]{5,70}?)(?=\s{2,}|\n)/i,
+          /(?:NOMBRES?\s+Y\s+APELLIDOS?)\s*[:\-]?\s*([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ ]{5,70}?)(?=\s{2,}|\n)/i,
+        ];
+        for (const re of patterns) {
+          const m = texto.match(re);
+          if (m && m[1].trim().split(/\s+/).length >= 2) {
+            result.nombre = m[1].trim();
+            break;
+          }
+        }
+      }
+
+      // ── Ciudad del juzgado ───────────────────────────────────────────────
+      if (!result.ciudadJuzgado) {
+        const juzgadoM = texto.match(/JUZGADO\s+(CIVIL\s+(?:MUNICIPAL|DEL?\s+CIRCUITO|PROMISCUO\s+MUNICIPAL))\s+(?:DE\s+)?([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ ]{2,30}?)(?=\s{2,}|\n|[0-9])/i);
+        if (juzgadoM) {
+          result.tipoJuzgado   = `JUZGADO ${juzgadoM[1].trim().toUpperCase()}`;
+          result.ciudadJuzgado = juzgadoM[2].trim().toUpperCase();
+        }
+      }
+
+      // ── Fecha Inicio Mora ────────────────────────────────────────────────
+      // Formato SAC: "Fecha Inicio Mora23-01-2026" (sin espacio entre campo y valor)
+      // Colectar todas; al final tomamos la más antigua.
+      const moraM = texto.match(/Fecha\s+Inicio\s+Mora\s*(\d{2}[\/\-]\d{2}[\/\-]\d{4})/i);
+      if (moraM) {
+        const raw = moraM[1]; // "23-01-2026" → DD-MM-YYYY
+        const parts = raw.split(/[\/\-]/);
+        if (parts.length === 3) {
+          const d = new Date(Date.UTC(+parts[2], +parts[1] - 1, +parts[0]));
+          if (!isNaN(d)) fechasMora.push({ d, raw });
+        }
+      }
+
+      // ── Empleador ────────────────────────────────────────────────────────
+      if (!result.nombreEmpresa) {
+        const empM = texto.match(/(?:EMPRESA|EMPLEADOR|VINCULO\s+LABORAL)\s*[:\-]\s*([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ0-9 .,&-]{4,70}?)(?=\s{2,}|\n)/i);
+        if (empM) result.nombreEmpresa = empM[1].trim();
+      }
+      if (!result.nitEmpresa) {
+        const nitM = texto.match(/(?:NIT|CC\/NIT)\s+(?:EMPRESA|EMPLEADOR)\s*[:\-]?\s*([\d.,-]+)/i);
+        if (nitM) result.nitEmpresa = nitM[1].trim();
+      }
+
+    } catch (e) {
+      console.error(`[PDF-SAC] ${cedula}/${pdfName}: ${e.message}`);
+    }
+  }
+
+  // Fecha mora más antigua (la que lleva más tiempo en mora)
+  if (fechasMora.length > 0) {
+    fechasMora.sort((a, b) => a.d - b.d);
+    result.fechaMora = fechasMora[0].raw.replace(/-/g, '/'); // DD/MM/YYYY
+    console.error(`[PDF-SAC] ${cedula}: ${fechasMora.length} fecha(s) mora → más antigua: ${result.fechaMora}`);
+  }
+
+  if (result.nombre) {
+    console.error(`[PDF-SAC] ${cedula}: nombre="${result.nombre}" ciudad="${result.ciudadJuzgado}"`);
+  }
+  return result;
+}
+
+// ─── Parseo de PDFs DECEVAL / PAGARÉ ─────────────────────────────────────────
+// Lee el PDF del pagaré DECEVAL (o PAGARE) para extraer:
+//   - numeroPagare     → "pagaré No. XXXXXXXX"
+//   - fechaSuscripcion → fecha en que el cliente firmó el pagaré
+
+function parseFechaSuscripcion(texto) {
+  // 1) Formato ISO: "se firma el día 2021-10-06"
+  let m = texto.match(/se\s+firma\s+el\s+d[ií]a\s+(\d{4})[\/\-](\d{2})[\/\-](\d{2})/i);
+  if (m) {
+    return `${m[3]}/${m[2]}/${m[1]}`; // DD/MM/YYYY
+  }
+  // 2) Formato electrónico: "Fecha: 06/10/2021" o "Fecha: 06-10-2021"
+  m = texto.match(/\bFecha[:\s]+(\d{2})[\/\-](\d{2})[\/\-](\d{4})/i);
+  if (m) {
+    return `${m[1]}/${m[2]}/${m[3]}`; // DD/MM/YYYY (ya viene en ese orden)
+  }
+  // 3) Texto colombiano: "el día 24 del mes de enero del año 2024"
+  //    o "a los (24) días del mes de enero del año 2024"
+  m = texto.match(/(?:el\s+d[ií]a\s+(\d+)|a\s+los\s+\((\d+)\)\s+d[ií]as?)\s+del\s+mes\s+de\s+(\w+)\s+del\s+a[ñn]o\s+(\d{4})/i);
+  if (m) {
+    const dd  = String(m[1] || m[2]).padStart(2, '0');
+    const mes = MESES_MAP[(m[3] || '').toLowerCase()];
+    const yy  = m[4];
+    if (mes) return `${dd}/${String(mes).padStart(2, '0')}/${yy}`;
+  }
+  return '';
+}
+
+async function leerDatosDeDeceval(cedula, sacDocsDir) {
+  const result = { numeroPagare: '', fechaSuscripcion: '' };
+  const dir = resolverCarpetaCedula(sacDocsDir, cedula);
+  if (!fs.existsSync(dir)) return result;
+
+  // PDFs de pagaré: DECEVAL.pdf, PAGARE.pdf, PAGARE 001.pdf, etc.
+  // Excluir: DATACREDITO.pdf, FOR EJE.pdf, FOR INI.pdf, PRENDA.pdf, TESTIGO.pdf, SAC_*.pdf
+  const EXCLUIR_RE = /(?:DATACREDITO|FOR\s+(?:EJE|INI)|PRENDA|TESTIGO)/i;
+  const pdfs = fs.readdirSync(dir).filter(f => {
+    const up = f.toUpperCase();
+    return f.toLowerCase().endsWith('.pdf')
+      && !f.startsWith('SAC_')
+      && !EXCLUIR_RE.test(f)
+      && (up.includes('DECEVAL') || up.includes('PAGARE'));
+  });
+
+  for (const pdfName of pdfs) {
+    try {
+      const buffer = fs.readFileSync(path.join(dir, pdfName));
+      const parsed = await pdfParse(buffer, { max: 0 });
+      const texto  = parsed.text || '';
+
+      // ── Número de pagaré ──────────────────────────────────────────────
+      if (!result.numeroPagare) {
+        // Buscar "pagaré No. 14077915" (dígitos reales, no guiones/blancos)
+        const pagM = texto.match(/pagar[eé]\s+No\.?\s*(\d{4,})/i);
+        if (pagM) {
+          result.numeroPagare = pagM[1].trim();
+          console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: pagaré #${result.numeroPagare}`);
+        }
+      }
+
+      // ── Fecha de suscripción (cuando firmó el cliente) ────────────────
+      if (!result.fechaSuscripcion) {
+        const fecha = parseFechaSuscripcion(texto);
+        if (fecha) {
+          result.fechaSuscripcion = fecha;
+          console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: suscripción=${fecha}`);
+        }
+      }
+
+    } catch (e) {
+      console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: ${e.message}`);
+    }
+  }
+  return result;
+}
+
+module.exports = { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval };
