@@ -59,24 +59,85 @@ async function seleccionarCliente(page, cedula) {
 }
 
 // ─── Extraer Dir y Tel del SAC ────────────────────────────────────────────────
-// Hace clic en el botón "Dir Y Tel" (id="btn-link-home") y lee la tabla
-// "Lista De Direcciones": col 0 = valor, col 1 = TIPO DIRECCIÓN.
+// Hace clic en el botón "Dir Y Tel" (ícono de teléfono fa-phone-square) y lee
+// la tabla "Lista De Direcciones": col 0 = valor, col 1 = TIPO DIRECCIÓN.
 // Tipo EMAIL  → lista de emails
-// Otros tipos → lista de direcciones físicas
+// Otros tipos → lista de direcciones físicas { valor, ultimoUso }
+// La fecha de último uso se busca en la columna cuyo encabezado contenga "USO".
+//
+// IMPORTANTE: el id "btn-link-home" puede estar repetido en varios ítems del
+// menú lateral del SAC, así que NO basta seleccionarlo a ciegas — hay que dar
+// con el <a> que contiene el ícono de teléfono. Tras cada clic se verifica que
+// la tabla de direcciones realmente apareció; si no, se prueba el siguiente
+// candidato.
+
+// ¿Está la tabla de direcciones en el DOM?
+async function tablaDireccionesVisible(page) {
+  return page.evaluate(() => [...document.querySelectorAll('table')].some(t => {
+    const hs = [...t.querySelectorAll('thead th, thead td')]
+      .map(h => h.textContent.trim().toUpperCase());
+    return hs.some(h => h.includes('DIRECCI'));
+  }));
+}
+
+// Hace clic en el botón "Dir y Tel" probando candidatos en orden de
+// especificidad. Devuelve true si la tabla de direcciones apareció.
+async function abrirVistaDirYTel(page, cedula) {
+  // ¿Ya está visible? (p. ej. una corrida previa dejó la vista abierta)
+  if (await tablaDireccionesVisible(page)) return true;
+
+  const candidatos = [
+    // El botón REAL: <a> con el ícono de teléfono (fa-phone-square)
+    'a:has(i.fa-phone-square)',
+    'xpath///a[.//i[contains(@class,"fa-phone-square")]]',
+    // <p>Dir y Tel</p> dentro del <a>
+    'xpath///a[.//p[normalize-space(text())="Dir y Tel"]]',
+    // Atributos del tooltip Angular
+    '[ng-reflect-message="Dir Y Tel"]',
+    '[title="Dir Y Tel"]',
+    // Último recurso: el id (puede estar repetido en otros ítems del menú)
+    '#btn-link-home',
+  ];
+
+  for (const sel of candidatos) {
+    let btn = null;
+    try { btn = await page.$(sel); } catch (_) { /* selector no soportado */ }
+    if (!btn) continue;
+
+    try {
+      await btn.click();
+    } catch (e) {
+      console.error(`[DIR-SAC] ${cedula}: clic falló en ${sel}: ${e.message}`);
+      continue;
+    }
+    await waitForAngular(page, 2000);
+
+    // Esperar hasta 8s a que Angular pinte la tabla de direcciones
+    try {
+      await page.waitForFunction(
+        () => [...document.querySelectorAll('table')].some(t => {
+          const hs = [...t.querySelectorAll('thead th, thead td')]
+            .map(h => h.textContent.trim().toUpperCase());
+          return hs.some(h => h.includes('DIRECCI'));
+        }),
+        { timeout: 8000 }
+      );
+      console.error(`[DIR-SAC] ${cedula}: vista Dir y Tel abierta (selector: ${sel})`);
+      return true;
+    } catch (_) {
+      console.error(`[DIR-SAC] ${cedula}: ${sel} no mostró la tabla de direcciones — probando siguiente`);
+    }
+  }
+  return false;
+}
 
 async function extraerDirYTelSAC(page, cedula) {
   try {
-    const btn = await page.$('#btn-link-home')
-              || await page.$('[ng-reflect-message="Dir Y Tel"]')
-              || await page.$('[title="Dir Y Tel"]');
-
-    if (!btn) {
-      console.error(`[WARN] Botón Dir y Tel no encontrado para ${cedula}`);
+    const abierta = await abrirVistaDirYTel(page, cedula);
+    if (!abierta) {
+      console.error(`[WARN] No se pudo abrir la vista Dir y Tel para ${cedula}`);
       return { sac_dir: [], sac_email: [] };
     }
-
-    await btn.click();
-    await waitForAngular(page, 1500);
 
     const datos = await page.evaluate(() => {
       const result = { sac_dir: [], sac_email: [] };
@@ -88,6 +149,10 @@ async function extraerDirYTelSAC(page, cedula) {
                         .map(c => c.textContent.trim().toUpperCase());
         if (!headers[0] || !headers[0].includes('DIRECCI')) continue;
 
+        // Columna de fecha de último uso ("FECHA ÚLTIMO USO", "ULTIMO USO"…)
+        let usoIdx = headers.findIndex(h => h.includes('USO'));
+        if (usoIdx < 0) usoIdx = headers.findIndex(h => h.includes('ULTIM'));
+
         const rows = [...table.querySelectorAll('tbody tr')];
         for (const row of rows) {
           const cells = [...row.querySelectorAll('td')].map(td => td.textContent.trim());
@@ -98,7 +163,10 @@ async function extraerDirYTelSAC(page, cedula) {
           if (tipo === 'EMAIL') {
             result.sac_email.push(valor);
           } else {
-            result.sac_dir.push(valor);
+            result.sac_dir.push({
+              valor,
+              ultimoUso: usoIdx >= 0 ? (cells[usoIdx] || '').trim() : '',
+            });
           }
         }
         break; // Solo necesitamos la tabla de direcciones
@@ -223,15 +291,23 @@ function deduplicar(arr) {
 // ─── Guardar CONTACTOS_{cedula}.csv ──────────────────────────────────────────
 // Combina SAC (primero) + Datacredito, deduplica case-insensitive.
 // Guarda CSV con BOM UTF-8 para apertura correcta en Excel.
+// sac_dir llega como [{ valor, ultimoUso }] (fecha de último uso de la tabla SAC).
 //
-//   TIPO,VALOR,FUENTE
-//   DIRECCIÓN,"CL 15 13 A 52",SAC
-//   EMAIL,"elvher8693@gmail.com",SAC
-//   DIRECCIÓN,"KR 16 A N 48 A 48",DATACREDITO
+//   TIPO,VALOR,FUENTE,ULTIMO_USO
+//   DIRECCIÓN,"CL 15 13 A 52",SAC,"08-06-2026 18:14"
+//   EMAIL,"elvher8693@gmail.com",SAC,""
+//   DIRECCIÓN,"KR 16 A N 48 A 48",DATACREDITO,""
 
 function guardarContactos(cedula, outputDir, { sac_dir, sac_email, dc_dir, dc_email }) {
+  // Fecha de último uso por dirección SAC (clave normalizada)
+  const usoMap = new Map();
+  for (const d of sac_dir) {
+    const key = (d.valor || '').trim().toUpperCase();
+    if (key && d.ultimoUso && !usoMap.has(key)) usoMap.set(key, d.ultimoUso);
+  }
+
   // SAC primero → más confiable; Datacredito agrega lo que falte
-  const todasDir    = deduplicar([...sac_dir, ...dc_dir]);
+  const todasDir    = deduplicar([...sac_dir.map(d => d.valor), ...dc_dir]);
   const todosEmails = deduplicar([
     ...sac_email.map(e => e.toLowerCase()),
     ...dc_email.map(e => e.toLowerCase()),
@@ -242,18 +318,20 @@ function guardarContactos(cedula, outputDir, { sac_dir, sac_email, dc_dir, dc_em
     return null;
   }
 
-  const sacDirSet   = new Set(sac_dir.map(d => d.trim().toUpperCase()));
+  const sacDirSet   = new Set(sac_dir.map(d => (d.valor || '').trim().toUpperCase()));
   const sacEmailSet = new Set(sac_email.map(e => e.trim().toUpperCase()));
 
-  const filas = ['TIPO,VALOR,FUENTE'];
+  const filas = ['TIPO,VALOR,FUENTE,ULTIMO_USO'];
 
   for (const dir of todasDir) {
-    const fuente = sacDirSet.has(dir.trim().toUpperCase()) ? 'SAC' : 'DATACREDITO';
-    filas.push(`DIRECCIÓN,"${dir.replace(/"/g, '""')}",${fuente}`);
+    const key    = dir.trim().toUpperCase();
+    const fuente = sacDirSet.has(key) ? 'SAC' : 'DATACREDITO';
+    const uso    = usoMap.get(key) || '';
+    filas.push(`DIRECCIÓN,"${dir.replace(/"/g, '""')}",${fuente},"${uso.replace(/"/g, '""')}"`);
   }
   for (const email of todosEmails) {
     const fuente = sacEmailSet.has(email.toUpperCase()) ? 'SAC' : 'DATACREDITO';
-    filas.push(`EMAIL,"${email}",${fuente}`);
+    filas.push(`EMAIL,"${email}",${fuente},""`);
   }
 
   const filePath = path.join(outputDir, `CONTACTOS_${cedula}.csv`);

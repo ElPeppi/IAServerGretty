@@ -39,6 +39,12 @@ const PLANTILLA_SINGULAR = process.env.PLANTILLA_SINGULAR
 const PLANTILLA_DEMANDA = process.env.PLANTILLA_DEMANDA
   || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PLANTILLAS\\PLANTILLA DEMANDA SINGULAR AI.docx';
 
+// ─── Ollama (LLM local para mapeo de columnas del Excel) ─────────────────────
+
+const OLLAMA_URL     = process.env.OLLAMA_URL     || 'http://localhost:11434';
+const OLLAMA_MODEL   = process.env.OLLAMA_MODEL   || 'qwen2.5:3b';
+const OLLAMA_TIMEOUT = parseInt(process.env.OLLAMA_TIMEOUT || '300000', 10);
+
 // ─── Conexión SAC Finandina ──────────────────────────────────────────────────
 
 const SAC_URL  = process.env.SAC_URL  || 'https://servicios.bancofinandina.com/Sac';
@@ -61,6 +67,9 @@ module.exports = {
   OUT_DIR,
   PLANTILLA_SINGULAR,
   PLANTILLA_DEMANDA,
+  OLLAMA_URL,
+  OLLAMA_MODEL,
+  OLLAMA_TIMEOUT,
   SAC_URL,
   SAC_USER,
   SAC_PASS,

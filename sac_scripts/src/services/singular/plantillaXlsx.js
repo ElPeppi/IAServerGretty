@@ -11,7 +11,7 @@ const XLSX = require('xlsx');
 const fs   = require('fs');
 
 const { parseAnyDate } = require('../../utils/fechas');
-const { calcularCuantia, tipoJuzgado } = require('../../domain/cuantia');
+const { calcularCuantia, tipoJuzgado, normalizarTipoJuzgado } = require('../../domain/cuantia');
 
 // Columnas exactas del template (en orden)
 const TEMPLATE_HEADERS = [
@@ -27,6 +27,7 @@ const TEMPLATE_HEADERS = [
   'INTERES',
   'FECHA MORA',
   'FECHA DE SUSCRIPCION',
+  'FECHA CERTIFICACION DECEVAL',
   'VALOR CUANTIA',
   'DIRECCION DE RESIDENCIA',
   'DIRECCION ELECTRONICA',
@@ -65,7 +66,7 @@ function vehiculoRow(vehiculo) {
   };
 }
 
-function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig, cuantiaLabel, numeroPagare = '', courtInfo = {}) {
+function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig, cuantiaLabel, numeroPagare = '', courtInfo = {}, fechaCertificacion = '') {
   const { cedula, nombre, ciudad, empresa, nitEmpresa, financieros } = cliente;
   const f = financieros || {};
 
@@ -73,10 +74,15 @@ function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig,
   const totalCuantia = f.total || calcularCuantia(f.capital, f.interes);
   const fechaMora    = parseAnyDate(cliente.fechaMoraRaw);
   const fechaSuscr   = parseAnyDate(cliente.fechaDesembolsoRaw);
+  // La fecha de certificación va en MAYÚSCULAS ("4 DE JUNIO DEL 2026")
+  const fechaCert    = parseAnyDate(fechaCertificacion).toUpperCase();
 
-  const tipoJ = tipoJuzgado(cuantiaLabel, courtInfo.hasSmallClaims, courtInfo.hasPromiscuo);
+  // normalizarTipoJuzgado: categoría municipal siempre → "JUZGADO CIVIL MUNICIPAL"
+  const tipoJ = normalizarTipoJuzgado(
+    tipoJuzgado(cuantiaLabel, courtInfo.hasSmallClaims, courtInfo.hasPromiscuo)
+  );
 
-  // OBLIGACIONES: todas separadas por coma, o la única obligación repetida
+  // OBLIGACIONES: todas las del Excel separadas por coma, o la única repetida
   const obligacionesStr = (f.obligaciones && f.obligaciones.length > 1)
     ? f.obligaciones.join(', ')
     : (f.obligacion || '');
@@ -88,7 +94,9 @@ function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig,
     'TIPO DE JUZGADO':      tipoJ,
     'CIUDAD DE JUZGADO':    ciudad,
     'CUANTIA':              cuantiaLabel,
-    'OBLIGACION':           f.obligacion || '',
+    // OBLIGACION: el número REAL del pagaré (del certificado DECEVAL).
+    // La obligación del Excel solo como último recurso si el PDF no lo trae.
+    'OBLIGACION':           numeroPagare || f.obligacion || '',
     'OBLIGACIONES':         obligacionesStr,
     'NUMERO PAGARE':        numeroPagare,
     'IDENTIFICACION':       cedula,
@@ -97,6 +105,7 @@ function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig,
     'INTERES':              f.interes   || 0,
     'FECHA MORA':           fechaMora,
     'FECHA DE SUSCRIPCION': fechaSuscr,
+    'FECHA CERTIFICACION DECEVAL': fechaCert,
     'VALOR CUANTIA':        totalCuantia || '',
     'DIRECCION DE RESIDENCIA':        contactos.direccion || '',
     'DIRECCION ELECTRONICA':          contactos.email     || '',
@@ -230,6 +239,7 @@ function fillTemplate(filasTodas, plantillaPath, filasExtras = []) {
 
     ensureCol(ws1, 'OBLIGACIONES', 'OBLIGACION');
     ensureCol(ws1, 'NUMERO PAGARE', 'OBLIGACIONES');
+    ensureCol(ws1, 'FECHA CERTIFICACION DECEVAL', 'FECHA DE SUSCRIPCION');
   }
 
   // ── Hoja 1: una fila por cliente (primer vehículo + todos los datos) ──────

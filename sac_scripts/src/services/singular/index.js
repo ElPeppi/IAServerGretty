@@ -34,6 +34,7 @@ const { construirFilas, fillTemplate } = require('./plantillaXlsx');
 const { loadRamaCache, buscarCorreoJuzgado } = require('./ramaJudicial');
 const { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval } = require('./carpetaCliente');
 const { generarDemandasWord }          = require('./demandas');
+const { consultarPlacaRunt }           = require('../runt');
 
 async function procesarSingular(excelBuffer, options = {}) {
   const sacDocsDir      = options.sacDocsDir      || config.OUT_DIR;
@@ -45,19 +46,19 @@ async function procesarSingular(excelBuffer, options = {}) {
 
   loadRamaCache(cacheFile);
 
-  // 1. Parsear Excel de entrada
+  // 1. Parsear Excel de entrada (mapeo de columnas: heurística + Ollama local)
   let clientes;
   try {
-    clientes = parsearExcelEntrada(excelBuffer);
+    clientes = await parsearExcelEntrada(excelBuffer);
   } catch (e) {
     return { success: false, error: `Error leyendo Excel: ${e.message}`, clientes: [], errores: [] };
   }
 
   if (clientes.length === 0) {
-    return { success: false, error: 'No se encontraron clientes con APLICATIVO = DECEVAL', clientes: [], errores: [] };
+    return { success: false, error: 'No se encontraron clientes con cédula en Hoja1', clientes: [], errores: [] };
   }
 
-  console.error(`[SINGULAR] ${clientes.length} cliente(s) DECEVAL encontrados`);
+  console.error(`[SINGULAR] ${clientes.length} cliente(s) candidato(s) — se validará el certificado DECEVAL de cada pagaré`);
 
   // 2. Lanzar Puppeteer para Rama Judicial
   let browser;
@@ -75,9 +76,11 @@ async function procesarSingular(excelBuffer, options = {}) {
     browser = null;
   }
 
-  const filasTodas  = [];   // una fila principal por cliente (→ Hoja1)
-  const filasExtras = [];   // vehículos adicionales de cada cliente (→ Hoja2)
+  const filasTodas   = [];  // una fila principal por cliente (→ Hoja1)
+  const filasExtras  = [];  // vehículos adicionales de cada cliente (→ Hoja2)
+  const demandaItems = [];  // { fila, vehiculos } por cliente (→ demanda Word)
   const clientesSalida = [];
+  const omitidos = [];      // clientes sin certificado DECEVAL válido
   const errores = [];
 
   try {
@@ -88,13 +91,26 @@ async function procesarSingular(excelBuffer, options = {}) {
         // 2a. Leer PDFs SAC ya descargados (fecha mora más antigua)
         const sacPdf = await leerDatosDeSACPdfs(cedula, sacDocsDir);
 
-        // 2b. Leer PDF DECEVAL / PAGARÉ (número de pagaré + fecha suscripción)
+        // 2b. Leer PDF DECEVAL / PAGARÉ (número de pagaré + fecha suscripción
+        //     + fecha de certificación + validez del certificado)
         const decevalPdf = await leerDatosDeDeceval(cedula, sacDocsDir);
 
-        // ── Enriquecer nombre y empresa desde SAC PDF ──────────────────
-        if (!cliente.nombre && sacPdf.nombre)           cliente.nombre     = sacPdf.nombre;
-        if (!cliente.empresa && sacPdf.nombreEmpresa)   cliente.empresa    = sacPdf.nombreEmpresa;
-        if (!cliente.nitEmpresa && sacPdf.nitEmpresa)   cliente.nitEmpresa = sacPdf.nitEmpresa;
+        // ── FILTRO: solo clientes con certificado DECEVAL auténtico ─────
+        // (texto extraíble con los marcadores del certificado; quedan fuera
+        //  fotos/escaneados, formatos en blanco y clientes sin pagaré)
+        if (!decevalPdf.certificadoValido) {
+          const motivo = decevalPdf.tienePdf
+            ? 'pagaré no es certificado DECEVAL válido (escaneado, foto o formato en blanco)'
+            : 'sin pagaré DECEVAL en la carpeta del cliente';
+          console.error(`[SINGULAR] ⊘ ${cedula} — ${cliente.nombre || '(sin nombre)'}: ${motivo}`);
+          omitidos.push({ cedula, nombre: cliente.nombre || '', motivo });
+          continue;
+        }
+
+        // ── Enriquecer nombre desde SAC PDF ────────────────────────────
+        // (La información laboral — empresa y NIT — viene EXCLUSIVAMENTE del
+        //  Excel de entrada y solo si trae NIT confiable; sin fallback del SAC.)
+        if (!cliente.nombre && sacPdf.nombre) cliente.nombre = sacPdf.nombre;
 
         // ── FECHA MORA: siempre del SAC PDF (fecha inicio mora más antigua).
         //    Solo usar Excel como último recurso.
@@ -122,13 +138,35 @@ async function procesarSingular(excelBuffer, options = {}) {
         const totalCuant = f.total || calcularCuantia(f.capital, f.interes);
         const cuantiaLbl = tipoCuantia(totalCuant);
 
-        // 2d. Parsear vehículos
+        // 2d. Parsear vehículos. Tres formatos de entrada:
+        //   a) DESCRP_VS_NO_PRENDADOS con todo el detalle (uno o varios separados por &)
+        //   b) Solo placa(s) en columna aparte → completar datos vía RUNT (best-effort)
+        //   c) Sin vehículos
         const vehiculos = parsearVehiculos(cliente.descrVehiculos);
-        // Sin descripción → un objeto vacío para rellenar la fila principal
+        if (vehiculos.length === 0 && (cliente.placas || []).length > 0) {
+          for (const placa of cliente.placas) {
+            const runt = browser ? await consultarPlacaRunt(browser, placa, cedula) : null;
+            // Sin datos del RUNT el vehículo queda solo con la placa
+            vehiculos.push(runt || { placa });
+          }
+        }
+        const tieneVehiculos = vehiculos.length > 0;
+        // Sin vehículos → un objeto vacío para rellenar la fila principal del Excel
         if (vehiculos.length === 0) vehiculos.push({});
 
         // 2e. Leer CONTACTOS CSV
         const contactos = leerContactos(cedula, sacDocsDir);
+
+        // DIRECCION DE RESIDENCIA — prioridad:
+        //   1. Excel de entrada (columna "direccion" de Hoja1)
+        //   2. Pagaré DECEVAL (campo "Dirección:" del otorgante)
+        //   3. SAC: dirección con fecha de último uso más reciente
+        //   4. Primera dirección del CSV (comportamiento anterior, último recurso)
+        contactos.direccion = cliente.direccion
+          || decevalPdf.direccion
+          || contactos.direccionSacUltimoUso
+          || contactos.direccion
+          || '';
 
         // 2f. Correo juzgado (Rama Judicial) + tipo de juzgado disponible en la ciudad
         let correoJuzgado = '';
@@ -147,10 +185,14 @@ async function procesarSingular(excelBuffer, options = {}) {
         const clienteConsolidado = { ...cliente, ciudad, financieros: f };
         const { main, extras } = construirFilas(
           clienteConsolidado, vehiculos, contactos, correoJuzgado,
-          fechaAsig, cuantiaLbl, decevalPdf.numeroPagare, courtInfo
+          fechaAsig, cuantiaLbl, decevalPdf.numeroPagare, courtInfo,
+          decevalPdf.fechaCertificacion
         );
         filasTodas.push(main);
         filasExtras.push(...extras);
+        // Lista REAL de vehículos para la demanda (vacía si el cliente no tiene):
+        // una medida cautelar por vehículo, o ninguna si no hay.
+        demandaItems.push({ fila: main, vehiculos: tieneVehiculos ? vehiculos : [] });
 
         clientesSalida.push({
           cedula,
@@ -158,7 +200,8 @@ async function procesarSingular(excelBuffer, options = {}) {
           ciudad,
           cuantia:        cuantiaLbl,
           valorCuantia:   totalCuant,
-          obligacion:     f.obligacion,
+          // OBLIGACION = número del pagaré (certificado DECEVAL)
+          obligacion:     decevalPdf.numeroPagare || f.obligacion,
           numeroPagare:   decevalPdf.numeroPagare,
           tipoJuzgadoFinal: main['TIPO DE JUZGADO'],
           vehiculos:      vehiculos.length,
@@ -181,8 +224,11 @@ async function procesarSingular(excelBuffer, options = {}) {
   if (filasTodas.length === 0) {
     return {
       success: false,
-      error:   'No se generaron filas de salida (revise los datos de entrada)',
+      error:   omitidos.length
+        ? `Ningún cliente tiene certificado DECEVAL válido (${omitidos.length} omitido(s))`
+        : 'No se generaron filas de salida (revise los datos de entrada)',
       clientes: clientesSalida,
+      omitidos,
       errores,
     };
   }
@@ -204,7 +250,7 @@ async function procesarSingular(excelBuffer, options = {}) {
   let demandasGeneradas = [];
   if (fs.existsSync(demandaTemplate)) {
     try {
-      demandasGeneradas = await generarDemandasWord(filasTodas, sacDocsDir, demandaTemplate);
+      demandasGeneradas = await generarDemandasWord(demandaItems, sacDocsDir, demandaTemplate);
       console.error(`[DEMANDA] ${demandasGeneradas.length} documento(s) Word generado(s)`);
     } catch (e) {
       console.error(`[DEMANDA] Error generando documentos Word: ${e.message}`);
@@ -213,12 +259,17 @@ async function procesarSingular(excelBuffer, options = {}) {
     console.error(`[DEMANDA] Plantilla DOCX no encontrada, se omite: ${demandaTemplate}`);
   }
 
+  if (omitidos.length) {
+    console.error(`[SINGULAR] ${omitidos.length} cliente(s) omitido(s) por certificado DECEVAL inválido o ausente`);
+  }
+
   return {
     success:          true,
     xlsxBuffer,
     totalFilas:       filasTodas.length,
     totalExtras:      filasExtras.length,
     clientes:         clientesSalida,
+    omitidos:         omitidos.length ? omitidos : undefined,
     demandas:         demandasGeneradas,
     errores:          errores.length ? errores : undefined,
   };

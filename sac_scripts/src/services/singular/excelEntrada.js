@@ -13,6 +13,7 @@
 const XLSX = require('xlsx');
 
 const { toNum } = require('../../utils/numeros');
+const { mapearColumnas } = require('./mapeoColumnas');
 
 // ─── Helpers de columnas ──────────────────────────────────────────────────────
 
@@ -47,9 +48,55 @@ function extraerCiudad(ciudadStr) {
   return (m ? m[1] : s).trim().toUpperCase();
 }
 
+// ─── Información laboral (empresa + NIT) ─────────────────────────────────────
+
+// Placeholders habituales de celdas "vacías" en los Excel de Finandina:
+// "----", "#N/A", "#N/D", "N/A", "0"
+function limpiarPlaceholder(v) {
+  const s = String(v ?? '').trim();
+  if (!s || /^[#\-–—\s.]*$/.test(s) || /^#?N\/?[AD]$/i.test(s) || s === '0') return '';
+  return s;
+}
+
+// Valida y limpia un NIT: numérico de 6-11 dígitos, con o sin separadores de
+// miles y dígito de verificación ("900.812.875-1" → "900812875").
+function limpiarNit(v) {
+  const s = limpiarPlaceholder(v);
+  if (!s) return '';
+  const m = s.replace(/[.\s,]/g, '').match(/^(\d{6,11})(?:-\d)?$/);
+  return m ? m[1] : '';
+}
+
+// El NIT del empleador debe venir del Excel, pero el encabezado varía entre
+// archivos (NIT, CC_NIT, SALARIO, ID EMPLEADOR… u otro nombre no estandarizado).
+// Prioridad: mapeo canónico (heurística+Ollama) → columna a la izquierda de la
+// empresa (por contenido) → nombres explícitos.
+// (Algunos Excel repiten encabezados como CC_NIT al final con cédulas que NO son
+// el NIT del empleador; el mapeo y la adyacencia son las señales confiables.)
+function extraerNitEmpresa(row, idx, canon = {}) {
+  // 1) Mapeo canónico
+  if (canon.NIT_EMPLEADOR !== undefined) {
+    const nit = limpiarNit(row[canon.NIT_EMPLEADOR]);
+    if (nit) return nit;
+  }
+  // 2) Por contenido: columna a la izquierda de EMPRESA (NIT|EMPRESA, SALARIO|EMPRESA…)
+  const empIdx = canon.NOMBRE_EMPRESA !== undefined ? canon.NOMBRE_EMPRESA : idx['EMPRESA'];
+  if (empIdx !== undefined && empIdx > 0) {
+    const nit = limpiarNit(row[empIdx - 1]);
+    if (nit) return nit;
+  }
+  // 3) Columnas con nombre explícito
+  for (const name of ['NIT_EMPRESA', 'NIT_EMPLEADOR', 'NIT', 'CC_NIT']) {
+    const nit = limpiarNit(getCol(row, idx, name));
+    if (nit) return nit;
+  }
+  // 4) Alias conocido: "SALARIO" trae el NIT en algunos archivos
+  return limpiarNit(getCol(row, idx, 'SALARIO'));
+}
+
 // ─── Parseo principal ─────────────────────────────────────────────────────────
 
-function parsearExcelEntrada(buffer) {
+async function parsearExcelEntrada(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer', raw: true, cellDates: false });
 
   if (wb.SheetNames.length < 2) throw new Error('El Excel debe tener al menos 2 hojas (Hoja1 y Hoja2)');
@@ -60,6 +107,24 @@ function parsearExcelEntrada(buffer) {
   if (hoja1.length < 2) throw new Error('Hoja1 sin filas de datos');
 
   const h1 = buildIndex(hoja1[0]);
+
+  // ── Mapeo canónico de columnas de Hoja1 ──────────────────────────────────
+  // Los encabezados cambian entre envíos; el mapeo (heurística + Ollama local)
+  // identifica qué columna es cada campo. getCanon usa el mapeo primero y los
+  // alias de nombre exacto como respaldo.
+  let canon = {};
+  try {
+    canon = await mapearColumnas(hoja1[0], hoja1.slice(1));
+  } catch (e) {
+    console.error(`[MAPEO] Falló el mapeo de columnas (${e.message}) — se usan solo alias exactos`);
+  }
+  const getCanon = (row, campo, ...aliases) => {
+    if (canon[campo] !== undefined) {
+      const v = row[canon[campo]];
+      if (v !== undefined && String(v).trim() !== '') return v;
+    }
+    return getCol(row, h1, ...aliases);
+  };
 
   // ── Hoja2: datos financieros ──────────────────────────────────────────────
   const ws2   = wb.Sheets[wb.SheetNames[1]];
@@ -82,7 +147,7 @@ function parsearExcelEntrada(buffer) {
     const int     = toNum(getCol(row, h2, 'TOTAL_INTERES', 'MORA', 'INTERES'));
     const total   = toNum(getCol(row, h2, 'TOTAL'));
     const obl     = String(getCol(row, h2, 'OBLIGACION') ?? '').trim();
-    const abo     = String(getCol(row, h2, 'ABOGADO') ?? '').trim();
+    const abo     = String(getCol(row, h2, 'ABOGADO', 'ABOGADOS', 'ABOG') ?? '').trim();
     // MORA pura (sin TOTAL_INTERES) para determinar cuál obligación tiene más mora
     const moraAmt = toNum(getCol(row, h2, 'MORA'));
 
@@ -114,42 +179,64 @@ function parsearExcelEntrada(buffer) {
   const oblFechaMap = {};
   for (let r = 1; r < hoja1.length; r++) {
     const row = hoja1[r];
-    const obl = String(getCol(row, h1, 'OBLIGACION', 'NUMERO_OBLIGACION', 'NRO_OBLIGACION') ?? '').trim();
+    const obl = String(getCanon(row, 'OBLIGACION', 'OBLIGACION', 'NUMERO_OBLIGACION', 'NRO_OBLIGACION') ?? '').trim();
     if (!obl) continue;
-    const fechaRaw = getCol(row, h1, 'FECHA_INI_MORA_ACT', 'FECHA INI MORA ACT');
+    const fechaRaw = getCanon(row, 'FECHA_MORA', 'FECHA_INI_MORA_ACT', 'FECHA INI MORA ACT');
     if (fechaRaw !== '' && fechaRaw !== undefined && fechaRaw !== null) {
       oblFechaMap[obl] = fechaRaw;
     }
   }
 
-  // ── Filtrar Hoja1 por DECEVAL ─────────────────────────────────────────────
-  // Usar un Set para evitar duplicados de cédula (si hay múltiples filas por cédula
-  // con el mismo APLICATIVO=DECEVAL, sólo tomamos la primera aparición).
+  // ── Candidatos: TODAS las filas con cédula ────────────────────────────────
+  // Ya no se filtra por APLICATIVO=DECEVAL en el Excel: la selección real se
+  // hace después, validando que el pagaré descargado sea un certificado
+  // DECEVAL auténtico (ver leerDatosDeDeceval + orquestador).
+  // Set para evitar duplicados de cédula (solo la primera aparición).
   const cedulas_vistas = new Set();
   const clientes = [];
 
   for (let r = 1; r < hoja1.length; r++) {
     const row = hoja1[r];
-    const ap  = String(getCol(row, h1, 'APLICATIVO') ?? '').trim().toUpperCase();
-    if (ap !== 'DECEVAL') continue;
 
-    const cedula = String(getCol(row, h1, 'IDENTIFICACION', 'CEDULA') ?? '').trim();
-    if (!cedula) continue;
+    const cedula = String(getCanon(row, 'IDENTIFICACION', 'IDENTIFICACION', 'CEDULA') ?? '').trim();
+    if (!cedula || !/^\d{5,12}$/.test(cedula)) continue;
     if (cedulas_vistas.has(cedula)) continue;
     cedulas_vistas.add(cedula);
 
-    const ciudadRaw = String(getCol(row, h1, 'CIUDAD') ?? '').trim();
-    const depto     = String(getCol(row, h1, 'DEPARTAMENTO') ?? '').trim().toUpperCase();
+    const ciudadRaw = String(getCanon(row, 'CIUDAD', 'CIUDAD') ?? '').trim();
+    const depto     = String(getCanon(row, 'DEPARTAMENTO', 'DEPARTAMENTO') ?? '').trim().toUpperCase();
 
-    // Nombre: intentar Hoja1 primero (col NOMBRE_CLIENTE), luego Hoja2 como respaldo
-    const h1nombre = String(getCol(row, h1, 'NOMBRE_CLIENTE') ?? '').trim()
-                  || String(getCol(row, h1, 'NOMBRE') ?? '').trim();
+    // Nombre: intentar Hoja1 primero, luego Hoja2 como respaldo
+    const h1nombre = String(getCanon(row, 'NOMBRE', 'NOMBRE_CLIENTE', 'NOMBRE_DEUDOR', 'NOMBRE') ?? '').trim();
+
+    // Dirección de residencia. Placeholders tipo "----" se tratan como vacío.
+    const direccion = limpiarPlaceholder(
+      getCanon(row, 'DIRECCION', 'DIRECCION', 'DIRECCION_RESIDENCIA', 'DIRECCION_DE_RESIDENCIA')
+    );
+
+    // ── Información laboral: el NIT es obligatorio para completarla ─────────
+    // Coherencia: NIT y nombre de empresa van juntos a la demanda; si falta
+    // cualquiera de los dos no se completa nada — regla del despacho.
+    let nitEmpresa = extraerNitEmpresa(row, h1, canon);
+    let empresa    = limpiarPlaceholder(
+      getCanon(row, 'NOMBRE_EMPRESA', 'EMPRESA', 'NOMBRE_EMPRESA', 'NOMBRE_EMP')
+    );
+    if (!nitEmpresa || !empresa) { nitEmpresa = ''; empresa = ''; }
+
+    // ── Placas en columna separada (cuando no viene el detalle de vehículos) ─
+    // Pueden venir varias separadas por coma/espacio. Se validan como placa
+    // colombiana (3 letras + 3 dígitos, o 3 letras + 2 dígitos + letra en motos).
+    const placasRaw = limpiarPlaceholder(getCanon(row, 'PLACA', 'PLACA', 'PLACAS'));
+    const placas = placasRaw
+      ? placasRaw.split(/[,;&\/\s]+/).map(p => p.trim().toUpperCase())
+          .filter(p => /^[A-Z]{3}\d{2}[A-Z0-9]$/.test(p) || /^[A-Z]{3}\d{3}$/.test(p))
+      : [];
 
     // FECHA MORA: usar la fecha de la obligación con mayor mora.
     // Si hay un mapa oblacion→fecha (Hoja1 tiene col OBLIGACION), usar la obligación
     // con mayor mora de Hoja2. De lo contrario, usar FECHA_INI_MORA_ACT de esta fila.
     const finCliente = fin[cedula];
-    let fechaMoraRaw = getCol(row, h1, 'FECHA_INI_MORA_ACT', 'FECHA INI MORA ACT') ?? '';
+    let fechaMoraRaw = getCanon(row, 'FECHA_MORA', 'FECHA_INI_MORA_ACT', 'FECHA INI MORA ACT') ?? '';
     if (finCliente?.maxMoraObl && oblFechaMap[finCliente.maxMoraObl] !== undefined) {
       // Existe un mapa de fechas en Hoja1 → usar la fecha de la obligación con más mora
       fechaMoraRaw = oblFechaMap[finCliente.maxMoraObl];
@@ -158,16 +245,18 @@ function parsearExcelEntrada(buffer) {
     clientes.push({
       cedula,
       nombre: h1nombre || (finCliente?.nombre ?? ''),
+      direccion,
       ciudad:       extraerCiudad(ciudadRaw),
       departamento: depto,
-      empresa:      String(getCol(row, h1, 'EMPRESA') ?? '').trim(),
-      nitEmpresa:   String(getCol(row, h1, 'CC_NIT', 'NIT') ?? '').trim(),
-      cantVehiculos: toNum(getCol(row, h1, 'CANT_VS_NO_PRENDADOS', 'CANT VS NO PRENDADOS')),
-      descrVehiculos: String(
-        getCol(row, h1, 'DESCRP_VS_NO_PRENDADOS', 'DESCRP VS NO PRENDADOS', 'DESCRIPCION_VS_NO_PRENDADOS') ?? ''
-      ).trim(),
+      empresa,
+      nitEmpresa,
+      cantVehiculos: toNum(getCanon(row, 'CANT_VEHICULOS', 'CANT_VS_NO_PRENDADOS', 'CANT VS NO PRENDADOS', 'CANT_VHS', 'CANT_VEHICULOS')),
+      descrVehiculos: limpiarPlaceholder(
+        getCanon(row, 'DETALLE_VEHICULOS', 'DESCRP_VS_NO_PRENDADOS', 'DESCRP VS NO PRENDADOS', 'DESCRIPCION_VS_NO_PRENDADOS', 'DETALLE_VHS', 'DETALLE')
+      ),
+      placas,
       fechaMoraRaw,
-      fechaDesembolsoRaw: getCol(row, h1, 'FECHA_DESEMBOLSO', 'FECHA DESEMBOLSO') ?? '',
+      fechaDesembolsoRaw: getCanon(row, 'FECHA_DESEMBOLSO', 'FECHA_DESEMBOLSO', 'FECHA DESEMBOLSO') ?? '',
       financieros: finCliente || null,
     });
   }

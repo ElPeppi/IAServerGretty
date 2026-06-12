@@ -18,8 +18,20 @@ const { MESES_MAP } = require('../../utils/fechas');
 
 // ─── Contactos CSV ────────────────────────────────────────────────────────────
 
+// Parsea fechas tipo SAC: "08-06-2026 18:14", "08/06/2026" (DD-MM-YYYY [HH:mm])
+function parseFechaUso(s) {
+  const m = String(s || '').match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0)));
+  return isNaN(d) ? null : d;
+}
+
 function leerContactos(cedula, sacDocsDir) {
-  const result = { direccion: '', email: '', dirs: [], emails: [] };
+  const result = {
+    direccion: '', email: '', dirs: [], emails: [],
+    // Dirección SAC con fecha de último uso más reciente
+    direccionSacUltimoUso: '',
+  };
   const p = path.join(resolverCarpetaCedula(sacDocsDir, cedula), `CONTACTOS_${cedula}.csv`);
   if (!fs.existsSync(p)) return result;
 
@@ -30,19 +42,37 @@ function leerContactos(cedula, sacDocsDir) {
       .map(l => l.trim())
       .filter(l => l.length > 0);
 
+    const dirsSac = [];   // { valor, fechaUso: Date|null }
+
     for (let i = 1; i < lines.length; i++) {
-      // Formato: TIPO,"VALOR",FUENTE
-      const m = lines[i].match(/^([^,]+),"([^"]*)"/);
+      // Formato: TIPO,"VALOR",FUENTE[,"ULTIMO_USO"]
+      // (CSVs antiguos no traen la 4ª columna — sigue siendo válido)
+      const m = lines[i].match(/^([^,]+),"([^"]*)",([^,"]*)(?:,"([^"]*)")?/);
       if (!m) continue;
-      const tipo  = m[1].trim().toUpperCase();
-      const valor = m[2].trim();
+      const tipo   = m[1].trim().toUpperCase();
+      const valor  = m[2].trim();
+      const fuente = (m[3] || '').trim().toUpperCase();
+      const uso    = (m[4] || '').trim();
       if (!valor) continue;
-      if (tipo === 'EMAIL') result.emails.push(valor);
-      else                  result.dirs.push(valor);
+
+      if (tipo === 'EMAIL') {
+        result.emails.push(valor);
+      } else {
+        result.dirs.push(valor);
+        if (fuente === 'SAC') dirsSac.push({ valor, fechaUso: parseFechaUso(uso) });
+      }
     }
+
     result.direccion = result.dirs[0] || '';
     // Todos los correos separados por " - " para que aparezcan en la plantilla.
     result.email     = result.emails.join(' - ');
+
+    // Dirección SAC con último uso más reciente; sin fechas → primera dirección SAC
+    if (dirsSac.length > 0) {
+      const conFecha = dirsSac.filter(d => d.fechaUso);
+      conFecha.sort((a, b) => b.fechaUso - a.fechaUso);
+      result.direccionSacUltimoUso = (conFecha[0] || dirsSac[0]).valor;
+    }
   } catch (e) {
     console.error(`[CONTACTOS] ${cedula}: ${e.message}`);
   }
@@ -155,8 +185,13 @@ async function leerDatosDeSACPdfs(cedula, sacDocsDir) {
 
 // ─── Parseo de PDFs DECEVAL / PAGARÉ ─────────────────────────────────────────
 // Lee el PDF del pagaré DECEVAL (o PAGARE) para extraer:
-//   - numeroPagare     → "pagaré No. XXXXXXXX"
-//   - fechaSuscripcion → fecha en que el cliente firmó el pagaré
+//   - numeroPagare       → "pagaré No. XXXXXXXX"
+//   - fechaSuscripcion   → fecha en que el cliente firmó el pagaré
+//   - fechaCertificacion → fecha de expedición del certificado DECEVAL
+//   - certificadoValido  → true solo si el PDF es un CERTIFICADO DE DEPÓSITO EN
+//                          ADMINISTRACIÓN de Deceval con texto extraíble.
+//                          Quedan por fuera: fotos/escaneados (sin texto) y
+//                          formatos de pagaré en blanco (sin marcadores Deceval).
 
 function parseFechaSuscripcion(texto) {
   // 1) Formato ISO: "se firma el día 2021-10-06"
@@ -181,8 +216,15 @@ function parseFechaSuscripcion(texto) {
   return '';
 }
 
+// Marcadores que identifican el certificado DECEVAL real
+const RE_CERT_DECEVAL = /CERTIFICADO DE DEP[OÓ]SITO EN ADMINISTRACI[OÓ]N/i;
+const RE_DECEVAL      = /DECEVAL/i;
+
 async function leerDatosDeDeceval(cedula, sacDocsDir) {
-  const result = { numeroPagare: '', fechaSuscripcion: '' };
+  const result = {
+    numeroPagare: '', fechaSuscripcion: '', direccion: '',
+    fechaCertificacion: '', certificadoValido: false, tienePdf: false,
+  };
   const dir = resolverCarpetaCedula(sacDocsDir, cedula);
   if (!fs.existsSync(dir)) return result;
 
@@ -197,11 +239,36 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
       && (up.includes('DECEVAL') || up.includes('PAGARE'));
   });
 
+  result.tienePdf = pdfs.length > 0;
+
   for (const pdfName of pdfs) {
     try {
       const buffer = fs.readFileSync(path.join(dir, pdfName));
       const parsed = await pdfParse(buffer, { max: 0 });
       const texto  = parsed.text || '';
+
+      // ── Validación: ¿es un certificado DECEVAL real? ──────────────────
+      // Fotos/escaneados producen texto casi vacío; los formatos de pagaré
+      // en blanco tienen texto pero sin los marcadores del certificado.
+      const esCertificado = texto.length > 500
+        && RE_CERT_DECEVAL.test(texto)
+        && RE_DECEVAL.test(texto);
+      if (esCertificado && !result.certificadoValido) {
+        result.certificadoValido = true;
+        console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: certificado DECEVAL válido ✓`);
+      }
+
+      // ── Fecha de expedición del certificado ──────────────────────────
+      // Encabezado: "Ciudad, Fecha y Hora de Expedición ... 04/06/2026 16:46:01"
+      // (el título del certificado queda entre la etiqueta y el valor al extraer)
+      if (esCertificado && !result.fechaCertificacion) {
+        const certM = texto.match(/Expedici[oó]n[\s\S]{0,250}?(\d{2}\/\d{2}\/\d{4})\s*\d{2}:\d{2}/i)
+                   || texto.match(/Expedici[oó]n[\s\S]{0,250}?(\d{2}\/\d{2}\/\d{4})/i);
+        if (certM) {
+          result.fechaCertificacion = certM[1];
+          console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: certificación=${result.fechaCertificacion}`);
+        }
+      }
 
       // ── Número de pagaré ──────────────────────────────────────────────
       if (!result.numeroPagare) {
@@ -219,6 +286,21 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
         if (fecha) {
           result.fechaSuscripcion = fecha;
           console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: suscripción=${fecha}`);
+        }
+      }
+
+      // ── Dirección del otorgante ───────────────────────────────────────
+      // Bloque de firma del pagaré:
+      //   "OTORGANTE ... Nombre:... C.C:... Dirección:CL 15 13 A 52 \n Telefono:"
+      if (!result.direccion) {
+        const dirM = texto.match(/OTORGANTE[\s\S]{0,400}?Direcci[oó]n\s*:\s*([^\n]+)/i)
+                  || texto.match(/Direcci[oó]n\s*:\s*([^\n]+)/i);
+        if (dirM) {
+          const direccion = dirM[1].trim();
+          if (direccion.length >= 4 && !/^[\s\-–—.]*$/.test(direccion)) {
+            result.direccion = direccion;
+            console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: dirección="${direccion}"`);
+          }
         }
       }
 

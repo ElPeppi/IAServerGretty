@@ -1,18 +1,27 @@
 /**
- * services/singular/ramaJudicial.js — Directorio de correos de la Rama Judicial
+ * services/singular/ramaJudicial.js — Especialidades y correos de juzgados por ciudad
  *
- * Scrapea https://www.ramajudicial.gov.co (una sola carga por proceso) para
- * encontrar el correo del juzgado de cada ciudad y detectar qué tipos de
- * juzgado existen allí (Pequeñas Causas / Promiscuo).
- * Cache en memoria + archivo JSON con TTL de 7 días.
+ * Fuente automática: el directorio oficial de cuentas de correo de la Rama
+ * Judicial, publicado como reporte Power BI embebido en
+ * https://www.ramajudicial.gov.co/es/directorio-cuentas-de-correo-electronico
+ * (la página HTML quedó vacía tras la migración del portal; los datos viven
+ * en el reporte). Se filtra el slicer CIUDAD y se lee la tabla de cuentas.
+ *
+ * Orden de fuentes:
+ *   1. Config manual del despacho (juzgados_config.json) — override total.
+ *   2. Cache (30 días) del Power BI.
+ *   3. Consulta Power BI en vivo.
+ *   4. Default: sin especialidades → CIVIL MUNICIPAL (en domain/cuantia).
  */
 
 'use strict';
 
 const fs = require('fs');
 
-const RAMA_URL  = 'https://www.ramajudicial.gov.co/es/directorio-cuentas-de-correo-electronico';
-const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 días
+const { buscarEnConfig } = require('./juzgadosConfig');
+
+const PBI_URL = 'https://app.powerbi.com/view?r=eyJrIjoiMjllZTNjNGYtNjYzMi00ZjUzLTgyMGYtNzE0OWNlZjM0YTY2IiwidCI6IjYyMmNiYTk4LTgwZjgtNDFmMy04ZGY1LThlYjk5OTAxNTk4YiIsImMiOjR9';
+const CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 días — el directorio cambia poco
 
 function normText(s) {
   return (s || '').toUpperCase()
@@ -22,16 +31,15 @@ function normText(s) {
     .trim();
 }
 
-// Cache en memoria + fichero
+// ─── Cache en memoria + fichero ───────────────────────────────────────────────
+
 const _ramaCache = {};
-let   _ramaPageText = null; // texto completo de la página (se carga una vez)
 
 function loadRamaCache(cacheFile) {
   if (Object.keys(_ramaCache).length > 0) return;
   try {
     if (fs.existsSync(cacheFile)) {
-      const data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-      Object.assign(_ramaCache, data);
+      Object.assign(_ramaCache, JSON.parse(fs.readFileSync(cacheFile, 'utf8')));
     }
   } catch (_) {}
 }
@@ -42,112 +50,263 @@ function saveRamaCache(cacheFile) {
   } catch (_) {}
 }
 
-async function cargarPaginaRama(browser) {
-  if (_ramaPageText !== null) return _ramaPageText;
+// ─── Reporte Power BI (una página por proceso, reutilizada entre ciudades) ───
 
-  console.error('[RAMA] Cargando directorio de correos...');
+let _pbiPage = null;
+
+async function abrirReportePBI(browser) {
+  if (_pbiPage && !_pbiPage.isClosed()) return _pbiPage;
+
+  console.error('[RAMA-PBI] Cargando directorio Power BI de la Rama Judicial...');
   const page = await browser.newPage();
-  try {
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
-    );
-    await page.goto(RAMA_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.setViewport({ width: 1600, height: 1000 });
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+  );
+  await page.goto(PBI_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
-    // Intentar expandir acordeones si los hay
-    await page.evaluate(() => {
-      document.querySelectorAll(
-        '.accordion-toggle, .panel-heading a, [data-toggle="collapse"], .collapse:not(.in)'
-      ).forEach(el => { try { el.click(); } catch (_) {} });
-    }).catch(() => {});
-    await new Promise(r => setTimeout(r, 2000));
+  // Esperar a que el reporte pinte los slicers (render asíncrono de Power BI)
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('div.slicer-container')]
+      .some(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD')),
+    { timeout: 60000 }
+  ).catch(() => { console.error('[RAMA-PBI] Slicer CIUDAD no apareció'); });
+  await new Promise(r => setTimeout(r, 2000));
 
-    _ramaPageText = await page.evaluate(() => document.body.innerText || document.body.textContent || '');
-    console.error(`[RAMA] Página cargada (${(_ramaPageText || '').length} chars)`);
-  } catch (e) {
-    console.error(`[RAMA] Error: ${e.message}`);
-    _ramaPageText = '';
-  } finally {
-    await page.close().catch(() => {});
-  }
-  return _ramaPageText;
+  _pbiPage = page;
+  return page;
 }
 
-const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+// Devuelve el input "Buscar" del slicer CIUDAD
+async function inputSlicerCiudad(page) {
+  const handle = await page.evaluateHandle(() => {
+    const s = [...document.querySelectorAll('div.slicer-container')]
+      .find(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD'));
+    return s ? s.querySelector('input[placeholder="Buscar"], input[aria-label="Buscar"]') : null;
+  });
+  return (await page.evaluate(el => !!el, handle)) ? handle.asElement() : null;
+}
 
-function extraerCorreosPorCiudad(pageText, ciudadNorm) {
-  const result = {
-    municipal:      '',
-    circuito:       '',
-    hasSmallClaims: false,  // tiene Juzgado de Pequeñas Causas Civil
-    hasPromiscuo:   false,  // solo tiene especialidad Promiscua (sin Civil)
-  };
-  if (!pageText || !ciudadNorm) return result;
+// Lee las filas visibles de la tabla de cuentas y las estructura.
+// Las celdas se anclan en la que contiene '@' (email).
+function leerFilasVisibles() {
+  const rows = [...document.querySelectorAll('[role="row"]')];
+  const out = [];
+  for (const r of rows) {
+    const cells = [...r.querySelectorAll('[role="gridcell"]')].map(c => c.textContent.trim());
+    const iEmail = cells.findIndex(c => c.includes('@'));
+    if (iEmail < 0) continue;
+    out.push({
+      email:        cells[iEmail]     || '',
+      nombre:       cells[iEmail + 1] || '',
+      depto:        cells[iEmail + 2] || '',
+      ciudad:       cells[iEmail + 3] || '',
+      corporacion:  cells[iEmail + 4] || '',
+      especialidad: cells[iEmail + 5] || '',
+      tipo:         cells[iEmail + 6] || '',
+      codigo:       cells[iEmail + 7] || '',
+    });
+  }
+  return out;
+}
 
-  const lines = pageText.split('\n').map(l => l.trim()).filter(l => l);
+// Recolecta las filas de la tabla haciendo scroll del visual (scroll virtual de
+// Power BI). Corta cuando no aparecen filas nuevas o al llegar al tope.
+async function recolectarFilas(page, maxFilas = 400) {
+  const vistas = new Map();
 
-  for (let i = 0; i < lines.length; i++) {
-    const lineNorm = normText(lines[i]);
-    // Coincidencia aproximada: la línea debe contener la ciudad
-    if (!lineNorm.includes(ciudadNorm) && !ciudadNorm.startsWith(lineNorm.split(' ')[0])) continue;
-
-    // Ventana de ±40 líneas alrededor de la ciudad
-    const ventana = lines.slice(Math.max(0, i - 3), Math.min(lines.length, i + 40)).join('\n');
-    const ventNorm = normText(ventana);
-    const emails   = ventana.match(EMAIL_RE) || [];
-
-    // Detectar tipos de juzgado presentes en la ventana de la ciudad
-    if (ventNorm.includes('PEQUEN') || ventNorm.includes('PEQUEÑ')) result.hasSmallClaims = true;
-    if (ventNorm.includes('PROMISCUO') && !ventNorm.includes('CIVIL MUNICIPAL')) result.hasPromiscuo = true;
-
-    for (const email of emails) {
-      const emailIdx = ventana.indexOf(email);
-      const contexto = normText(ventana.substring(Math.max(0, emailIdx - 300), emailIdx + 50));
-
-      const esCircuito    = contexto.includes('CIRCUITO');
-      const esPequenas    = contexto.includes('PEQUEN') || contexto.includes('PEQUEÑ');
-      const esMunicipal   = contexto.includes('MUNICIPAL') || esPequenas;
-      const esPromiscuo   = contexto.includes('PROMISCUO');
-
-      if (esCircuito  && !result.circuito)  result.circuito  = email.toLowerCase();
-      if (esMunicipal && !result.municipal) result.municipal = email.toLowerCase();
-      if (esPromiscuo && !result.municipal) result.municipal = email.toLowerCase();
-
-      // Fallback: primer email encontrado
-      if (!result.municipal && !result.circuito) result.municipal = email.toLowerCase();
+  const agregar = filas => {
+    for (const f of filas) {
+      const k = f.email + '|' + f.codigo;
+      if (!vistas.has(k)) vistas.set(k, f);
     }
+  };
 
-    if (result.municipal || result.circuito) break;
+  agregar(await page.evaluate(leerFilasVisibles));
+
+  // Punto de scroll: centro del visual de tabla (el grid con role="grid")
+  const box = await page.evaluate(() => {
+    const g = document.querySelector('[role="grid"]');
+    if (!g) return null;
+    const r = g.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+
+  if (box) {
+    let sinNuevas = 0;
+    for (let i = 0; i < 30 && vistas.size < maxFilas && sinNuevas < 3; i++) {
+      const antes = vistas.size;
+      await page.mouse.move(box.x, box.y);
+      await page.mouse.wheel({ deltaY: 600 });
+      await new Promise(r => setTimeout(r, 700));
+      agregar(await page.evaluate(leerFilasVisibles));
+      sinNuevas = vistas.size === antes ? sinNuevas + 1 : 0;
+    }
   }
-  return result;
+  return [...vistas.values()];
 }
+
+// Consulta el directorio por ciudad: filtra el slicer y analiza las cuentas.
+async function consultarCiudadPBI(browser, ciudad) {
+  const page = await abrirReportePBI(browser);
+  const ciudadNorm = normText(ciudad);
+
+  const input = await inputSlicerCiudad(page);
+  if (!input) throw new Error('slicer CIUDAD no disponible');
+
+  // La búsqueda del slicer es sensible a tildes y el Excel llega sin ellas
+  // ("CERETE" no encuentra "Cereté"). Se busca con prefijos decrecientes hasta
+  // que aparezcan opciones, y se elige la que coincida normalizada.
+  let seleccion = null;
+  for (let len = ciudad.length; len >= 4 && !seleccion; len--) {
+    const consulta = ciudad.substring(0, len).toLowerCase();
+    await input.click({ clickCount: 3 });
+    await page.keyboard.press('Backspace');
+    await input.type(consulta, { delay: 80 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    seleccion = await page.evaluate((cn) => {
+      const norm = s => (s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+      const s = [...document.querySelectorAll('div.slicer-container')]
+        .find(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD'));
+      if (!s) return null;
+      const items = [...s.querySelectorAll('.slicerItemContainer')];
+      if (items.length === 0) return null;
+      // Coincidencia exacta normalizada; con prefijos cortos pueden salir
+      // varias ciudades y solo aceptamos la exacta.
+      const item = items.find(i => norm(i.textContent) === cn);
+      if (item) { item.click(); return norm(item.textContent); }
+      // Si la consulta fue la ciudad completa y solo hay una opción, aceptarla
+      return null;
+    }, ciudadNorm);
+  }
+
+  if (!seleccion) {
+    await input.click({ clickCount: 3 });
+    await page.keyboard.press('Backspace');
+    return { encontrado: false, filas: [] };
+  }
+  await new Promise(r => setTimeout(r, 6000));
+
+  const filas = await recolectarFilas(page);
+
+  // Quitar el filtro para la siguiente ciudad: toggle de la opción + limpiar buscador
+  await page.evaluate((cn) => {
+    const norm = s => (s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+    const s = [...document.querySelectorAll('div.slicer-container')]
+      .find(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD'));
+    const item = s && [...s.querySelectorAll('.slicerItemContainer')].find(i => norm(i.textContent) === cn);
+    if (item) item.click();
+  }, seleccion).catch(() => {});
+  await input.click({ clickCount: 3 }).catch(() => {});
+  await page.keyboard.press('Backspace').catch(() => {});
+  await new Promise(r => setTimeout(r, 1500));
+
+  return { encontrado: filas.length > 0, filas };
+}
+
+// ─── Análisis de cuentas → especialidades + correos ──────────────────────────
+
+function analizarCuentas(filas) {
+  const up = s => normText(s);
+  const esMpal = f => up(f.corporacion).includes('MUNICIPAL');
+  const esCto  = f => up(f.corporacion).includes('CIRCUITO');
+  const texto  = f => up(f.nombre + ' ' + f.especialidad);
+
+  const pequenas  = filas.filter(f => /PEQUENAS CAUSAS/.test(texto(f)));
+  const civilMpal = filas.filter(f => esMpal(f) && up(f.especialidad).includes('CIVIL') && !/PEQUENAS/.test(texto(f)));
+  const promMpal  = filas.filter(f => esMpal(f) && up(f.especialidad).includes('PROMISCUO'));
+  const civilCto  = filas.filter(f => esCto(f) && up(f.especialidad).includes('CIVIL'));
+  const repartos  = filas.filter(f => /REPARTO/.test(texto(f)) || /REPARTO/.test(up(f.email)));
+
+  const hasSmallClaims = pequenas.length > 0;
+  // Promiscuo solo aplica cuando la ciudad NO tiene juzgado civil municipal ni pequeñas causas
+  const hasPromiscuo = promMpal.length > 0 && civilMpal.length === 0 && !hasSmallClaims;
+
+  const ordenado = arr => [...arr].sort((a, b) => a.email.localeCompare(b.email));
+
+  // Repartos que NO sirven para demandas civiles (penal, laboral, ejecución…)
+  const MALOS = /SPOA|PENAL|LABORAL|FAMILIA|ADMINISTRATIV|EJECUCION|ACUSACION|GARANTIAS|TUTELA/;
+  const repartosCiviles = repartos.filter(f => !MALOS.test(texto(f)) && !MALOS.test(up(f.email)));
+  const repartoDe = re => repartosCiviles.find(f => re.test(texto(f)));
+
+  // Correo municipal: reparto de la especialidad que aplica → reparto general
+  // de juzgados (municipios pequeños) → juzgado 001 de la especialidad.
+  const repartoMunicipal =
+    (hasSmallClaims && repartoDe(/PEQUENAS/)) ||
+    (civilMpal.length > 0 && repartoDe(/CIVIL.*MUNICIPAL|MUNICIPAL.*CIVIL/)) ||
+    (promMpal.length > 0 && repartoDe(/PROMISCUO/)) ||
+    repartoDe(/PROCESOS JUZGADOS/) ||
+    repartosCiviles.find(f => esMpal(f));
+
+  const municipal =
+    (repartoMunicipal   && repartoMunicipal.email)       ||
+    (hasSmallClaims     && ordenado(pequenas)[0].email)  ||
+    (civilMpal.length   && ordenado(civilMpal)[0].email) ||
+    (promMpal.length    && ordenado(promMpal)[0].email)  || '';
+
+  // Correo circuito: reparto civil de circuito → reparto general → juzgado 001
+  const repartoCircuito =
+    repartosCiviles.find(f => esCto(f) && /CIVIL/.test(up(f.especialidad))) ||
+    repartoDe(/PROCESOS JUZGADOS/);
+
+  const circuito =
+    (repartoCircuito && repartoCircuito.email) ||
+    (civilCto.length && ordenado(civilCto)[0].email) || '';
+
+  return {
+    municipal:      (municipal || '').toLowerCase(),
+    circuito:       (circuito  || '').toLowerCase(),
+    hasSmallClaims,
+    hasPromiscuo,
+    cuentas: filas.length,
+  };
+}
+
+// ─── API principal ────────────────────────────────────────────────────────────
 
 // Retorna { email, hasSmallClaims, hasPromiscuo }
 async function buscarCorreoJuzgado(browser, ciudad, cuantia, cacheFile) {
   const ciudadNorm = normText(ciudad);
   if (!ciudadNorm) return { email: '', hasSmallClaims: false, hasPromiscuo: false };
 
-  // Cache hit
-  if (_ramaCache[ciudadNorm] && (Date.now() - (_ramaCache[ciudadNorm].ts || 0) < CACHE_TTL)) {
-    const cached = _ramaCache[ciudadNorm];
-    const tipo   = cuantia === 'MAYOR' ? 'circuito' : 'municipal';
-    return {
-      email:          cached[tipo] || cached.municipal || '',
-      hasSmallClaims: cached.hasSmallClaims || false,
-      hasPromiscuo:   cached.hasPromiscuo   || false,
-    };
+  // 1. Config manual del despacho (override total cuando está confirmada)
+  const cfg = buscarEnConfig(ciudad, cuantia);
+  if (cfg.encontrado && cfg.confirmado) {
+    console.error(`[JUZGADOS] ${ciudadNorm}: especialidades desde config manual${cfg.email ? ' + correo' : ''}`);
+    return { email: cfg.email, hasSmallClaims: cfg.hasSmallClaims, hasPromiscuo: cfg.hasPromiscuo };
   }
 
-  const pageText = await cargarPaginaRama(browser);
-  const info     = extraerCorreosPorCiudad(pageText, ciudadNorm);
+  // 2. Cache del Power BI
+  let info = null;
+  const hit = _ramaCache[ciudadNorm];
+  if (hit && Date.now() - (hit.ts || 0) < CACHE_TTL && hit.cuentas > 0) {
+    info = hit;
+  } else if (browser) {
+    // 3. Consulta Power BI en vivo
+    try {
+      const res = await consultarCiudadPBI(browser, ciudad);
+      if (res.encontrado) {
+        info = analizarCuentas(res.filas);
+        _ramaCache[ciudadNorm] = { ...info, ts: Date.now() };
+        saveRamaCache(cacheFile);
+        console.error(`[RAMA-PBI] ${ciudadNorm}: ${info.cuentas} cuenta(s) — peq:${info.hasSmallClaims} prom:${info.hasPromiscuo} mpal:${info.municipal || '(no)'}`);
+      } else {
+        console.error(`[RAMA-PBI] ${ciudadNorm}: sin resultados en el directorio`);
+      }
+    } catch (e) {
+      console.error(`[RAMA-PBI] ${ciudadNorm}: ${e.message}`);
+    }
+  }
 
-  _ramaCache[ciudadNorm] = { ...info, ts: Date.now() };
-  saveRamaCache(cacheFile);
+  if (!info) info = { municipal: '', circuito: '', hasSmallClaims: false, hasPromiscuo: false };
 
   const tipo = cuantia === 'MAYOR' ? 'circuito' : 'municipal';
   return {
-    email:          info[tipo] || info.municipal || '',
-    hasSmallClaims: info.hasSmallClaims,
-    hasPromiscuo:   info.hasPromiscuo,
+    // El correo del config manual (aunque la ciudad no esté confirmada) manda
+    email:          cfg.email || info[tipo] || info.municipal || '',
+    hasSmallClaims: (cfg.encontrado && cfg.hasSmallClaims) || info.hasSmallClaims || false,
+    hasPromiscuo:   (cfg.encontrado && cfg.hasPromiscuo)   || info.hasPromiscuo   || false,
   };
 }
 
