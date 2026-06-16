@@ -34,7 +34,7 @@ function tipoCuantia(total) {
 function tipoJuzgado(cuantia, hasSmallClaims = false, hasPromiscuo = false) {
   if (cuantia === 'MAYOR') return 'CIVIL DEL CIRCUITO';
   // MINIMA o MENOR: elegir el juzgado disponible según especialidad de la ciudad
-  if (hasSmallClaims) return 'DE PEQUEÑAS CAUSAS';
+  if (hasSmallClaims) return 'DE PEQUEÑAS CAUSAS Y COMPETENCIAS MÚLTIPLES';
   if (hasPromiscuo)   return 'PROMISCUO MUNICIPAL';
   return 'CIVIL MUNICIPAL';
 }

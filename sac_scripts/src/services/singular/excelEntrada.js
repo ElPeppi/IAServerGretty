@@ -223,6 +223,12 @@ async function parsearExcelEntrada(buffer) {
     );
     if (!nitEmpresa || !empresa) { nitEmpresa = ''; empresa = ''; }
 
+    // ── Inmueble: hay inmueble solo si la columna INM trae un valor real ────
+    // ("----", "#N/A", vacío → sin inmueble → se quita la medida cautelar PRIMERO)
+    const tieneInmueble = !!limpiarPlaceholder(
+      getCanon(row, 'INMUEBLE', 'INM', 'INMUEBLE', 'INMUEBLES')
+    );
+
     // ── Placas en columna separada (cuando no viene el detalle de vehículos) ─
     // Pueden venir varias separadas por coma/espacio. Se validan como placa
     // colombiana (3 letras + 3 dígitos, o 3 letras + 2 dígitos + letra en motos).
@@ -250,6 +256,7 @@ async function parsearExcelEntrada(buffer) {
       departamento: depto,
       empresa,
       nitEmpresa,
+      tieneInmueble,
       cantVehiculos: toNum(getCanon(row, 'CANT_VEHICULOS', 'CANT_VS_NO_PRENDADOS', 'CANT VS NO PRENDADOS', 'CANT_VHS', 'CANT_VEHICULOS')),
       descrVehiculos: limpiarPlaceholder(
         getCanon(row, 'DETALLE_VEHICULOS', 'DESCRP_VS_NO_PRENDADOS', 'DESCRP VS NO PRENDADOS', 'DESCRIPCION_VS_NO_PRENDADOS', 'DETALLE_VHS', 'DETALLE')

@@ -64,11 +64,13 @@ async function procesarSingular(excelBuffer, options = {}) {
   let browser;
   try {
     browser = await puppeteer.launch({
-      headless: true,
+      // headless: 'new' — el modo viejo no renderiza el reporte Power BI de la
+      // Rama Judicial (el slicer CIUDAD nunca aparece y todo cae a CIVIL MUNICIPAL).
+      headless: 'new',
       args: [
         '--no-sandbox', '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', '--disable-gpu',
-        '--window-size=1280,900',
+        '--disable-dev-shm-usage',
+        '--window-size=1600,1000',
       ],
     });
   } catch (e) {
@@ -192,7 +194,12 @@ async function procesarSingular(excelBuffer, options = {}) {
         filasExtras.push(...extras);
         // Lista REAL de vehículos para la demanda (vacía si el cliente no tiene):
         // una medida cautelar por vehículo, o ninguna si no hay.
-        demandaItems.push({ fila: main, vehiculos: tieneVehiculos ? vehiculos : [] });
+        // tieneInmueble controla la medida cautelar PRIMERO (embargo de inmuebles).
+        demandaItems.push({
+          fila: main,
+          vehiculos: tieneVehiculos ? vehiculos : [],
+          tieneInmueble: !!cliente.tieneInmueble,
+        });
 
         clientesSalida.push({
           cedula,

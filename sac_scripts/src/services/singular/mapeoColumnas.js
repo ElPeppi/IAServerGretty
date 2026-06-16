@@ -105,6 +105,13 @@ const ESQUEMA = {
     antiTokens: ['OBLIGACION', 'STRIA'],
     validar: vals => frac(vals, v => /^[A-Z]{3}\s?\d{2}[A-Z0-9]$/i.test(String(v).trim())) >= 0.3,
   },
+  INMUEBLE: {
+    tokens: ['INM', 'INMUEBLE', 'INMUEBLES'],
+    antiTokens: ['VHS', 'VEHIC', 'PLACA'],
+    // El contenido es matrícula/descripción cuando hay inmueble, o "----" cuando
+    // no; no se valida por contenido, se confía en el nombre de la columna.
+    validar: () => true,
+  },
   OBLIGACION: {
     tokens: ['OBLIGACION'],
     antiTokens: ['PLACA', 'CANTIDAD', 'PESO', 'CLASIFICACION'],

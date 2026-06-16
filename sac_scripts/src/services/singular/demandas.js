@@ -159,17 +159,27 @@ function buildFieldMap(fila, vehiculos = []) {
 
 // ─── Transformación de secciones (medidas cautelares + pruebas) ──────────────
 
-// Reestructura el documento según los vehículos del demandado:
-//   - bloque vehículo replicado N veces (o eliminado si N = 0)
-//   - bloque salario eliminado siempre
-//   - punto de pruebas del empleador eliminado siempre
-//   - punto de pruebas del RUNT eliminado si N = 0
+// Reestructura el documento según los datos disponibles del demandado:
+//   VEHÍCULOS (tiene vehículos):
+//     - bloque vehículo replicado N veces (o eliminado si N = 0)
+//     - punto de pruebas del RUNT (nro. 4) eliminado si N = 0
+//   EMPRESA (tiene empresa + NIT):
+//     - bloque embargo de salario eliminado si NO hay info laboral
+//     - punto de pruebas del empleador (nro. 5) eliminado si NO hay info laboral
 //   - ordinales de medidas renumerados consecutivamente
-function transformarSecciones(xml, vehiculos) {
+function transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tieneInmueble) {
   const paras = getParagraphs(xml);
   const conTexto = paras.map(p => ({ ...p, text: textoDe(p.xml) }));
 
+  // COMPETENCIA Y CUANTIA: si el demandado NO es de Barranquilla, el párrafo
+  // termina en "...del domicilio del demandado." (se quita el nombre y la
+  // dirección resaltados que van después).
+  const idxCompetencia = conTexto.findIndex(p => /del domicilio del demandado/i.test(p.text));
+
   const idxTitulo = conTexto.findIndex(p => /^MEDIDAS\s+CAUTELARES$/i.test(p.text));
+  // Bloque inmueble (PRIMERO): embargo y secuestro de inmuebles
+  const idxInmueble = conTexto.findIndex((p, i) => i > idxTitulo && idxTitulo >= 0
+    && /^(?:PRIMERO|SEGUNDO)\.\s*-\s*Se sirva ordenar EMBARGO y SECUESTRO del\s*\(?\s*los?\s*\)?\s*inmueble/i.test(p.text));
   const idxVeh    = conTexto.findIndex((p, i) => i > idxTitulo && idxTitulo >= 0
     && /^(?:PRIMERO|SEGUNDO|TERCERO|CUARTO)\.\s*-\s*Se sirva ordenar EMBARGO y SECUESTRO del\s+Veh[ií]culo/i.test(p.text));
   const idxSalario = conTexto.findIndex((p, i) => i > Math.max(idxTitulo, idxVeh)
@@ -186,31 +196,55 @@ function transformarSecciones(xml, vehiculos) {
   // Se aplican de mayor a menor offset para no invalidar índices.
   const ediciones = [];
 
+  // Bloque inmueble (PRIMERO): [inicio PRIMERO, inicio del bloque vehículo).
+  // Se elimina completo si el demandado no tiene inmueble.
+  if (!tieneInmueble && idxInmueble >= 0 && idxVeh > idxInmueble) {
+    ediciones.push({ start: conTexto[idxInmueble].start, end: conTexto[idxVeh].start, contenido: '' });
+  }
+
   if (idxVeh >= 0 && idxSalario > idxVeh && idxDineros > idxSalario) {
     const startVeh     = conTexto[idxVeh].start;
     const startSalario = conTexto[idxSalario].start;
     const startDineros = conTexto[idxDineros].start;
 
-    // Bloque vehículo completo: [inicio SEGUNDO, inicio TERCERO)
+    // Bloque vehículo: [inicio SEGUNDO, inicio TERCERO).
+    // Una copia por vehículo (con sus datos); sin vehículos → se elimina.
     const bloqueVeh = xml.slice(startVeh, startSalario);
-
-    // Una copia del bloque por vehículo (con sus datos); sin vehículos → nada.
-    // El bloque de salario ([TERCERO, CUARTO)) se elimina SIEMPRE.
     const copias = vehiculos
       .map(v => reemplazarCampos(bloqueVeh, vehiculoFieldMap(v)))
       .join('');
-    ediciones.push({ start: startVeh, end: startDineros, contenido: copias });
+    ediciones.push({ start: startVeh, end: startSalario, contenido: copias });
+
+    // Bloque embargo de salario: [inicio TERCERO, inicio CUARTO).
+    // Se MANTIENE si hay empresa+NIT (se llena en el pase global de campos),
+    // se elimina si no tenemos info laboral del demandado.
+    if (!tieneEmpresa) {
+      ediciones.push({ start: startSalario, end: startDineros, contenido: '' });
+    }
   } else {
     console.error('[DEMANDA] No se localizaron los bloques de medidas cautelares — se omite la reestructuración');
   }
 
-  // Punto de pruebas del empleador → fuera siempre (numeración automática de Word)
-  if (idxPruebaEmpleador >= 0) {
+  // Punto de pruebas del empleador (nro. 5) → fuera solo si no hay info laboral
+  if (!tieneEmpresa && idxPruebaEmpleador >= 0) {
     ediciones.push({ start: conTexto[idxPruebaEmpleador].start, end: conTexto[idxPruebaEmpleador].end, contenido: '' });
   }
-  // Punto de pruebas del RUNT → fuera si no hay vehículos
+  // Punto de pruebas del RUNT (nro. 4) → fuera si no hay vehículos
   if (vehiculos.length === 0 && idxPruebaRunt >= 0) {
     ediciones.push({ start: conTexto[idxPruebaRunt].start, end: conTexto[idxPruebaRunt].end, contenido: '' });
+  }
+
+  // COMPETENCIA Y CUANTIA: si NO es de Barranquilla, recortar el párrafo en
+  // "...del domicilio del demandado." (quitar «NOMBRE» «DIRECCION_DE_RESIDENCIA»)
+  if (!esBarranquilla && idxCompetencia >= 0) {
+    const p = conTexto[idxCompetencia];
+    const marker = 'del domicilio del demandado';
+    const mi = p.xml.indexOf(marker);
+    if (mi >= 0) {
+      // Conservar todo hasta el marcador, cerrar la frase con punto y el párrafo.
+      const nuevoPara = p.xml.slice(0, mi) + 'del domicilio del demandado.</w:t></w:r></w:p>';
+      ediciones.push({ start: p.start, end: p.end, contenido: nuevoPara });
+    }
   }
 
   ediciones.sort((a, b) => b.start - a.start);
@@ -253,12 +287,21 @@ function transformarSecciones(xml, vehiculos) {
 
 // ─── Generación del DOCX ──────────────────────────────────────────────────────
 
-function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = []) {
+function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmueble = false) {
   const zip = new AdmZip(templateBuffer);
   let xml = zip.readAsText('word/document.xml');
 
-  // 1) Reestructurar secciones según vehículos (medidas, pruebas, ordinales)
-  xml = transformarSecciones(xml, vehiculos);
+  // Hay info laboral solo si tenemos AMBOS: nombre de empresa y NIT
+  const tieneEmpresa = !!(String(fieldMap.NOMBRE_EMPRESA_TT || '').trim()
+                       && String(fieldMap.NIT_EMPRESA_TT || '').trim());
+
+  // ¿El demandado es de Barranquilla? (ciudad del cliente = CIUDAD_DE_JUZGADO)
+  const ciudadNorm = String(fieldMap.CIUDAD_DE_JUZGADO || '')
+    .toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+  const esBarranquilla = ciudadNorm === 'BARRANQUILLA';
+
+  // 1) Reestructurar secciones según inmueble, vehículos, empresa y ciudad
+  xml = transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tieneInmueble);
 
   // 2) Pase global de placeholders (lo que quede fuera de los bloques por-vehículo)
   xml = reemplazarCampos(xml, fieldMap);
@@ -288,14 +331,15 @@ async function generarDemandasWord(items, sacDocsDir, templateDocxPath) {
 
   for (const item of items) {
     // Compatibilidad: aceptar tanto { fila, vehiculos } como la fila plana
-    const fila      = item.fila || item;
-    const vehiculos = Array.isArray(item.vehiculos) ? item.vehiculos : [];
+    const fila          = item.fila || item;
+    const vehiculos     = Array.isArray(item.vehiculos) ? item.vehiculos : [];
+    const tieneInmueble = !!item.tieneInmueble;
 
     const cedula = String(fila['IDENTIFICACION'] || '').trim();
     if (!cedula) continue;
     try {
       const fieldMap  = buildFieldMap(fila, vehiculos);
-      const docxBuf   = fillDocxTemplate(templateBuf, fieldMap, vehiculos);
+      const docxBuf   = fillDocxTemplate(templateBuf, fieldMap, vehiculos, tieneInmueble);
       const clientDir = resolverCarpetaCedula(sacDocsDir, cedula);
       if (!fs.existsSync(clientDir)) fs.mkdirSync(clientDir, { recursive: true });
       const nombre  = (fila['NOMBRE'] || cedula).trim().replace(/[<>:"/\\|?*]/g, '_');

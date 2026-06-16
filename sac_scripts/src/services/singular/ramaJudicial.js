@@ -55,26 +55,44 @@ function saveRamaCache(cacheFile) {
 let _pbiPage = null;
 
 async function abrirReportePBI(browser) {
-  if (_pbiPage && !_pbiPage.isClosed()) return _pbiPage;
+  // Página cacheada solo si el slicer CIUDAD sigue presente (no quedó en mal estado)
+  if (_pbiPage && !_pbiPage.isClosed() && await tieneSlicerCiudad(_pbiPage)) {
+    return _pbiPage;
+  }
+  if (_pbiPage && !_pbiPage.isClosed()) { await _pbiPage.close().catch(() => {}); _pbiPage = null; }
 
-  console.error('[RAMA-PBI] Cargando directorio Power BI de la Rama Judicial...');
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1600, height: 1000 });
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
-  );
-  await page.goto(PBI_URL, { waitUntil: 'networkidle2', timeout: 90000 });
+  // Hasta 2 intentos de cargar el reporte y esperar a que pinte el slicer CIUDAD
+  for (let intento = 1; intento <= 2; intento++) {
+    console.error(`[RAMA-PBI] Cargando directorio Power BI de la Rama Judicial (intento ${intento})...`);
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1600, height: 1000 });
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+    );
+    try {
+      await page.goto(PBI_URL, { waitUntil: 'networkidle2', timeout: 90000 });
+      await page.waitForFunction(
+        () => [...document.querySelectorAll('div.slicer-container')]
+          .some(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD')),
+        { timeout: 60000 }
+      );
+      await new Promise(r => setTimeout(r, 2000));
+      _pbiPage = page;
+      return page;
+    } catch (e) {
+      console.error(`[RAMA-PBI] El slicer CIUDAD no apareció (intento ${intento}): ${e.message}`);
+      await page.close().catch(() => {});
+    }
+  }
+  throw new Error('reporte Power BI no renderizó el slicer CIUDAD tras 2 intentos');
+}
 
-  // Esperar a que el reporte pinte los slicers (render asíncrono de Power BI)
-  await page.waitForFunction(
-    () => [...document.querySelectorAll('div.slicer-container')]
-      .some(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD')),
-    { timeout: 60000 }
-  ).catch(() => { console.error('[RAMA-PBI] Slicer CIUDAD no apareció'); });
-  await new Promise(r => setTimeout(r, 2000));
-
-  _pbiPage = page;
-  return page;
+// ¿La página tiene el slicer CIUDAD listo?
+async function tieneSlicerCiudad(page) {
+  try {
+    return await page.evaluate(() => [...document.querySelectorAll('div.slicer-container')]
+      .some(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD')));
+  } catch (_) { return false; }
 }
 
 // Devuelve el input "Buscar" del slicer CIUDAD
