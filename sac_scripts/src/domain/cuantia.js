@@ -13,17 +13,31 @@
 
 const { toNum } = require('../utils/numeros');
 
-// Umbrales de cuantía (valores definidos por el usuario)
-const CUANTIA_MINIMA_MAX = 70_036_200;
-const CUANTIA_MENOR_MAX  = 262_635_750;
+// Umbrales de cuantía: se CALCULAN desde el SMMV (salario mínimo mensual vigente):
+//   MÍNIMA → hasta 40 SMMV   |   MENOR → >40 y hasta 150 SMMV   |   MAYOR → más de 150
+const SMMV_DEFAULT  = 1_750_905;   // valor por defecto (configurable desde el panel)
+const FACTOR_MINIMA = 40;
+const FACTOR_MENOR  = 150;
+
+// Umbrales según el SMMV (usa el default si no llega uno válido).
+function umbralesCuantia(smmv) {
+  const s = toNum(smmv) || SMMV_DEFAULT;
+  return { smmv: s, minimaMax: s * FACTOR_MINIMA, menorMax: s * FACTOR_MENOR };
+}
+
+// Compat: umbrales con el SMMV por defecto.
+const CUANTIA_MINIMA_MAX = SMMV_DEFAULT * FACTOR_MINIMA;   // 40 SMMV
+const CUANTIA_MENOR_MAX  = SMMV_DEFAULT * FACTOR_MENOR;    // 150 SMMV
 
 function calcularCuantia(capital, interes) {
   return toNum(capital) + toNum(interes);
 }
 
-function tipoCuantia(total) {
-  if (total <= CUANTIA_MINIMA_MAX) return 'MINIMA';
-  if (total <= CUANTIA_MENOR_MAX)  return 'MENOR';
+// total: capital+interés. smmv: opcional (configurable); por defecto SMMV_DEFAULT.
+function tipoCuantia(total, smmv) {
+  const { minimaMax, menorMax } = umbralesCuantia(smmv);
+  if (total <= minimaMax) return 'MINIMA';
+  if (total <= menorMax)  return 'MENOR';
   return 'MAYOR';
 }
 
@@ -57,8 +71,10 @@ function normalizarTipoJuzgado(tipo) {
 }
 
 module.exports = {
+  SMMV_DEFAULT,
   CUANTIA_MINIMA_MAX,
   CUANTIA_MENOR_MAX,
+  umbralesCuantia,
   calcularCuantia,
   tipoCuantia,
   tipoJuzgado,

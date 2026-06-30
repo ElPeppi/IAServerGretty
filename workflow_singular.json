@@ -14,21 +14,95 @@
       "typeVersion": 2,
       "position": [
         -960,
-        128
+        160
       ],
       "webhookId": "singular-excel-webhook"
     },
     {
       "parameters": {
-        "jsCode": "// Extrae el buffer del Excel recibido como binario o campo de formulario\n// y prepara los parámetros para enviar al servidor.\n\nconst item = $input.first();\n\n// El webhook con binaryData:true guarda archivos en $binary\n// El campo se llama 'excelFile' (multipart form-data)\nconst binaryKey = Object.keys(item.binary || {}).find(\n  k => k === 'excelFile' || k === 'data' || k.endsWith('.xlsx') || k.endsWith('.xls')\n);\n\nif (!binaryKey) {\n  throw new Error(\n    'No se encontró el archivo Excel. Envíe un archivo en el campo \"excelFile\" ' +\n    '(multipart/form-data). Campos binarios disponibles: ' +\n    JSON.stringify(Object.keys(item.binary || {}))\n  );\n}\n\nconst mime = item.binary[binaryKey].mimeType || 'application/octet-stream';\nconst fn   = item.binary[binaryKey].fileName  || 'entrada.xlsx';\n\nreturn [{\n  json: {\n    binaryKey,\n    mimeType:         mime,\n    fileName:         fn,\n    fechaAsignacion:  item.json.body?.fechaAsignacion || '',\n    plantillaPath:    item.json.body?.plantillaPath   || '',\n  },\n  binary: item.binary,\n}];"
+        "jsCode": "// Extrae los binarios recibidos (Excel obligatorio + correo PDF opcional para\n// el poder / ANEXO 1) y prepara los parámetros para enviar al servidor.\n\nconst item     = $input.first();\nconst binaries = item.binary || {};\nconst keys     = Object.keys(binaries);\n\n// ── Excel de entrada (obligatorio) ──────────────────────────────────────────\nconst excelKey = keys.find(\n  k => k === 'excelFile' || k === 'data' || /\\.(xlsx|xls)$/i.test(binaries[k].fileName || '')\n);\n\nif (!excelKey) {\n  throw new Error(\n    'No se encontró el archivo Excel. Envíe un archivo en el campo \"excelFile\" ' +\n    '(multipart/form-data). Campos binarios disponibles: ' + JSON.stringify(keys)\n  );\n}\n\n// ── Correo PDF del banco para el poder / ANEXO 1 (opcional) ─────────────────\n// Se usa el mismo correo para todo el lote. Si no llega, el ANEXO 1 se omite.\nconst correoKey = keys.find(\n  k => k !== excelKey && (k === 'correoPoder' || /\\.pdf$/i.test(binaries[k].fileName || ''))\n);\n\nreturn [{\n  json: {\n    binaryKey:        excelKey,\n    correoKey:        correoKey || '',\n    tieneCorreo:      !!correoKey,\n    mimeType:         binaries[excelKey].mimeType || 'application/octet-stream',\n    fileName:         binaries[excelKey].fileName || 'entrada.xlsx',\n    fechaAsignacion:  item.json.body?.fechaAsignacion || '',\n    plantillaPath:    item.json.body?.plantillaPath   || '',\n  },\n  binary: item.binary,\n}];"
       },
       "id": "473c1f5b-0081-45ea-a0be-4aed89a7fb6f",
       "name": "Preparar Datos",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -720,
-        128
+        -740,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-correo",
+              "leftValue": "={{ $json.tieneCorreo }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d51a2b7c-1f44-49aa-bc01-9d2f0a4e7c10",
+      "name": "¿Trae correo poder?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3456/generar-singular",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "excelFile",
+              "inputDataFieldName": "={{ $json.binaryKey }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "correoPoder",
+              "inputDataFieldName": "={{ $json.correoKey }}"
+            },
+            {
+              "name": "fechaAsignacion",
+              "value": "={{ $json.fechaAsignacion }}"
+            },
+            {
+              "name": "plantillaPath",
+              "value": "={{ $json.plantillaPath }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "075a17de-eef3-4ae4-979e-0cbe919f8abd",
+      "name": "HTTP - Generar (con poder)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -280,
+        48
       ]
     },
     {
@@ -58,13 +132,13 @@
           "timeout": 600000
         }
       },
-      "id": "075a17de-eef3-4ae4-979e-0cbe919f8abd",
-      "name": "HTTP - Generar Singular",
+      "id": "b8e6f2a1-3c9d-4f7e-8a52-1e0c6d4b9af3",
+      "name": "HTTP - Generar (sin poder)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        -480,
-        128
+        -280,
+        272
       ]
     },
     {
@@ -96,8 +170,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        -240,
-        128
+        -20,
+        160
       ]
     },
     {
@@ -109,8 +183,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        0
+        220,
+        48
       ]
     },
     {
@@ -137,8 +211,8 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        240,
-        0
+        460,
+        48
       ]
     },
     {
@@ -154,8 +228,8 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        0,
-        240
+        220,
+        272
       ]
     }
   ],
@@ -176,14 +250,43 @@
       "main": [
         [
           {
-            "node": "HTTP - Generar Singular",
+            "node": "¿Trae correo poder?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP - Generar Singular": {
+    "¿Trae correo poder?": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Generar (con poder)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP - Generar (sin poder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Generar (con poder)": {
+      "main": [
+        [
+          {
+            "node": "¿Generación Exitosa?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Generar (sin poder)": {
       "main": [
         [
           {
@@ -230,7 +333,7 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "171cbc26-b252-40c0-beb2-b922d1a3dfa8",
+  "versionId": "171cbc26-b252-40c0-beb2-b922d1a3dfa9",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "2086f5604f78ab72178a188953881065520e9b5cb7d84882d04ff1ab9d9a5546"

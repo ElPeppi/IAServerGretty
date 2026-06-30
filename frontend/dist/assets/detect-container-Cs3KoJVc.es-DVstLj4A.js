@@ -1,0 +1,1 @@
+import{t as e}from"./detect-container-B6sqy7HZ.es-D9WrkTYs.js";export{e as detectContainerType};

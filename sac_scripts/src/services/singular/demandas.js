@@ -111,7 +111,8 @@ function vehiculoFieldMap(v) {
     MOTOR:               v.motor          || '',
     CHASIS:              v.chasis         || '',
     TIPO_DE_CARROCERIA:  v.tipoCarroceria || '',
-    STRIA_MCPAL_TTOyTTE: transitoDe(v.placa),
+    // Autoridad de tránsito: la del RUNT (más limpia) o, si no, la del texto de la placa
+    STRIA_MCPAL_TTOyTTE: v.runtAutoridad || transitoDe(v.placa),
   };
 }
 
@@ -140,7 +141,9 @@ function buildFieldMap(fila, vehiculos = []) {
     DIRECCION_ELECTRONICA:              fila['DIRECCION ELECTRONICA']               || '',
     NIT_EMPRESA_TT:                     String(fila['NIT EMPRESA TT']               || ''),
     NOMBRE_EMPRESA_TT:                  fila['NOMBRE EMPRESA TT']                   || '',
-    DIRECCION_ELECTRONICA_EMPLEADOR:    fila['DIRECCION ELECTRONICA EMPLEADOR']     || '',
+    // Si no se cuenta con la dirección electrónica del empleador (que sale de la
+    // Cámara de Comercio), se deja "#####" para que se sobreentienda que falta.
+    DIRECCION_ELECTRONICA_EMPLEADOR:    fila['DIRECCION ELECTRONICA EMPLEADOR']     || '#####',
     PLACA:                              placasTodas || fila['PLACA']                || '',
     SERVICIO:                           fila['SERVICIO']                            || '',
     CLASE:                              fila['CLASE']                               || '',
@@ -167,7 +170,7 @@ function buildFieldMap(fila, vehiculos = []) {
 //     - bloque embargo de salario eliminado si NO hay info laboral
 //     - punto de pruebas del empleador (nro. 5) eliminado si NO hay info laboral
 //   - ordinales de medidas renumerados consecutivamente
-function transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tieneInmueble) {
+function transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tieneInmueble, tipoPagare) {
   const paras = getParagraphs(xml);
   const conTexto = paras.map(p => ({ ...p, text: textoDe(p.xml) }));
 
@@ -234,6 +237,23 @@ function transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tien
     ediciones.push({ start: conTexto[idxPruebaRunt].start, end: conTexto[idxPruebaRunt].end, contenido: '' });
   }
 
+  // Custodia / título valor: la plantilla trae párrafos alternativos según dónde
+  // esté custodiado el pagaré (DECEVAL vs BANCO FINANDINA). Mismo banco, misma
+  // plantilla, pero distinto tipo de pagaré:
+  //   • DECEVAL   (pagaré con texto)     → se quitan las variantes de "custodia
+  //     en BANCO FINANDINA"; quedan las de DECEVAL (incluido el certificado
+  //     desmaterializado con FECHA_CERTIFICACION_DECEVAL).
+  //   • FINANDINA (pagaré escaneado)     → se quitan TODOS los párrafos que
+  //     mencionen DECEVAL (custodia + certificado desmaterializado); quedan las
+  //     variantes de custodia en BANCO FINANDINA.
+  const esFinandina = String(tipoPagare || '').toUpperCase() === 'FINANDINA';
+  for (const p of conTexto) {
+    const quitar = esFinandina
+      ? /DECEVAL/i.test(p.text)
+      : /custodia\s+en\s+BANCO\s+FINANDINA/i.test(p.text);
+    if (quitar) ediciones.push({ start: p.start, end: p.end, contenido: '' });
+  }
+
   // COMPETENCIA Y CUANTIA: si NO es de Barranquilla, recortar el párrafo en
   // "...del domicilio del demandado." (quitar «NOMBRE» «DIRECCION_DE_RESIDENCIA»)
   if (!esBarranquilla && idxCompetencia >= 0) {
@@ -287,7 +307,7 @@ function transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tien
 
 // ─── Generación del DOCX ──────────────────────────────────────────────────────
 
-function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmueble = false) {
+function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmueble = false, camaraEmpleador = '', tipoPagare = 'DECEVAL') {
   const zip = new AdmZip(templateBuffer);
   let xml = zip.readAsText('word/document.xml');
 
@@ -300,11 +320,19 @@ function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmuebl
     .toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
   const esBarranquilla = ciudadNorm === 'BARRANQUILLA';
 
-  // 1) Reestructurar secciones según inmueble, vehículos, empresa y ciudad
-  xml = transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tieneInmueble);
+  // 1) Reestructurar secciones según inmueble, vehículos, empresa, ciudad y tipo de pagaré
+  xml = transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tieneInmueble, tipoPagare);
 
   // 2) Pase global de placeholders (lo que quede fuera de los bloques por-vehículo)
   xml = reemplazarCampos(xml, fieldMap);
+
+  // 2-bis) Cámara de Comercio del empleador (punto 5 de pruebas): rellenar el
+  // "-----" (lugar de expedición) tras "Cámara de Comercio de" con la ciudad
+  // obtenida del RUES. Si no se encontró, se deja "#####" para que se
+  // sobreentienda que falta ese dato.
+  // (No afecta la línea de BANCO FINANDINA, que ya dice "de Bogotá".)
+  const lugarExpedicion = camaraEmpleador || '#####';
+  xml = xml.replace(/(C[áa]mara de Comercio de\s*)-{2,}/g, `$1${xmlEscape(lugarExpedicion)}`);
 
   // 3) Concordancia singular/plural: con más de una obligación,
   //    "respalda la Obligación" → "respalda las Obligaciones".
@@ -331,15 +359,17 @@ async function generarDemandasWord(items, sacDocsDir, templateDocxPath) {
 
   for (const item of items) {
     // Compatibilidad: aceptar tanto { fila, vehiculos } como la fila plana
-    const fila          = item.fila || item;
-    const vehiculos     = Array.isArray(item.vehiculos) ? item.vehiculos : [];
-    const tieneInmueble = !!item.tieneInmueble;
+    const fila            = item.fila || item;
+    const vehiculos       = Array.isArray(item.vehiculos) ? item.vehiculos : [];
+    const tieneInmueble   = !!item.tieneInmueble;
+    const camaraEmpleador = item.camaraEmpleador || '';
+    const tipoPagare      = item.tipoPagare || 'DECEVAL';
 
     const cedula = String(fila['IDENTIFICACION'] || '').trim();
     if (!cedula) continue;
     try {
       const fieldMap  = buildFieldMap(fila, vehiculos);
-      const docxBuf   = fillDocxTemplate(templateBuf, fieldMap, vehiculos, tieneInmueble);
+      const docxBuf   = fillDocxTemplate(templateBuf, fieldMap, vehiculos, tieneInmueble, camaraEmpleador, tipoPagare);
       const clientDir = resolverCarpetaCedula(sacDocsDir, cedula);
       if (!fs.existsSync(clientDir)) fs.mkdirSync(clientDir, { recursive: true });
       const nombre  = (fila['NOMBRE'] || cedula).trim().replace(/[<>:"/\\|?*]/g, '_');
@@ -354,4 +384,4 @@ async function generarDemandasWord(items, sacDocsDir, templateDocxPath) {
   return generados;
 }
 
-module.exports = { generarDemandasWord };
+module.exports = { generarDemandasWord, buildFieldMap, reemplazarCampos };

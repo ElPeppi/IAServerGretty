@@ -28,6 +28,7 @@ app.use(express.json({ limit: '100mb' }));
 
 app.use(require('./routes/zips.routes'));
 app.use(require('./routes/singular.routes'));
+app.use(require('./routes/ocr.routes'));
 
 app.get('/health', (_, res) => res.json({ status: 'ok', port: config.PORT, outDir: config.OUT_DIR }));
 

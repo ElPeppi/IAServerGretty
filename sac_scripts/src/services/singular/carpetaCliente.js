@@ -26,6 +26,24 @@ function parseFechaUso(s) {
   return isNaN(d) ? null : d;
 }
 
+// Quita el contador de fila del DataCrédito que queda pegado al inicio del
+// correo (p.ej. "1davi@x.com" → "davi@x.com"). Solo actúa si la lista viene
+// enumerada en secuencia 1,2,3… (≥2), para no dañar correos que legítimamente
+// empiezan por dígitos (p.ej. basados en cédula). Respaldo por si el CSV se
+// generó antes del arreglo en sac_puppeteer.js.
+function quitarContadorEnumeracion(emails) {
+  const valido = (e, esp) => e.startsWith(esp) && /^[a-zA-Z0-9._%+-]+@/.test(e.slice(esp.length));
+  let run = 0;
+  while (run < emails.length && valido(emails[run], String(run + 1))) run++;
+  if (run < 2) return emails.slice();
+  let fila = 0;
+  return emails.map(e => {
+    const esp = String(fila + 1);
+    if (valido(e, esp)) { fila++; return e.slice(esp.length); }
+    return e;
+  });
+}
+
 function leerContactos(cedula, sacDocsDir) {
   const result = {
     direccion: '', email: '', dirs: [], emails: [],
@@ -42,7 +60,8 @@ function leerContactos(cedula, sacDocsDir) {
       .map(l => l.trim())
       .filter(l => l.length > 0);
 
-    const dirsSac = [];   // { valor, fechaUso: Date|null }
+    const dirsSac    = [];   // { valor, fechaUso: Date|null }
+    const emailRows  = [];   // { valor, fuente }
 
     for (let i = 1; i < lines.length; i++) {
       // Formato: TIPO,"VALOR",FUENTE[,"ULTIMO_USO"]
@@ -56,12 +75,29 @@ function leerContactos(cedula, sacDocsDir) {
       if (!valor) continue;
 
       if (tipo === 'EMAIL') {
-        result.emails.push(valor);
+        emailRows.push({ valor, fuente });
       } else {
         result.dirs.push(valor);
         if (fuente === 'SAC') dirsSac.push({ valor, fechaUso: parseFechaUso(uso) });
       }
     }
+
+    // Limpiar el contador de enumeración del DataCrédito pegado al correo (solo
+    // en los del DataCrédito, que forman el bloque enumerado; los SAC intactos).
+    const dcLimpios = quitarContadorEnumeracion(
+      emailRows.filter(e => e.fuente === 'DATACREDITO').map(e => e.valor)
+    );
+    let di = 0;
+    const emailsLimpios = emailRows.map(e => e.fuente === 'DATACREDITO' ? dcLimpios[di++] : e.valor);
+    // Deduplicar (case-insensitive) preservando el orden: tras quitar el contador
+    // un correo del DataCrédito puede coincidir con el de SAC.
+    const vistoEmail = new Set();
+    result.emails = emailsLimpios.filter(e => {
+      const k = (e || '').toLowerCase();
+      if (!k || vistoEmail.has(k)) return false;
+      vistoEmail.add(k);
+      return true;
+    });
 
     result.direccion = result.dirs[0] || '';
     // Todos los correos separados por " - " para que aparezcan en la plantilla.
@@ -224,9 +260,16 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
   const result = {
     numeroPagare: '', fechaSuscripcion: '', direccion: '',
     fechaCertificacion: '', certificadoValido: false, tienePdf: false,
+    // tipoPagare: 'DECEVAL' (con texto) | 'FINANDINA' (escaneado) | '' (sin pagaré usable)
+    tipoPagare: '', nombre: '',
+    // ¿El pagaré está diligenciado? Los certificados DECEVAL siempre lo están;
+    // para los escaneados (FINANDINA) lo decide el OCR (un formato en blanco → false).
+    diligenciado: true,
   };
   const dir = resolverCarpetaCedula(sacDocsDir, cedula);
   if (!fs.existsSync(dir)) return result;
+
+  let escaneadoPath = ''; // pagaré sin texto (imagen) → candidato a OCR (tipo FINANDINA)
 
   // PDFs de pagaré: DECEVAL.pdf, PAGARE.pdf, PAGARE 001.pdf, etc.
   // Excluir: DATACREDITO.pdf, FOR EJE.pdf, FOR INI.pdf, PRENDA.pdf, TESTIGO.pdf, SAC_*.pdf
@@ -246,6 +289,11 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
       const buffer = fs.readFileSync(path.join(dir, pdfName));
       const parsed = await pdfParse(buffer, { max: 0 });
       const texto  = parsed.text || '';
+
+      // Pagaré escaneado (imagen, casi sin texto) → candidato a OCR (FINANDINA)
+      if (texto.replace(/\s/g, '').length < 80 && !escaneadoPath) {
+        escaneadoPath = path.join(dir, pdfName);
+      }
 
       // ── Validación: ¿es un certificado DECEVAL real? ──────────────────
       // Fotos/escaneados producen texto casi vacío; los formatos de pagaré
@@ -308,6 +356,29 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
       console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: ${e.message}`);
     }
   }
+
+  // ── Tipo de pagaré ──────────────────────────────────────────────────────────
+  if (result.certificadoValido) {
+    result.tipoPagare = 'DECEVAL';
+  } else if (escaneadoPath) {
+    // Pagaré escaneado (solo BANCO FINANDINA): se extraen por OCR los MISMOS datos
+    // que del DECEVAL menos el número de pagaré (ese vendrá de la OBLIGACION del Excel).
+    result.tipoPagare = 'FINANDINA';
+    try {
+      const { ocrPdf, extraerCamposPagare } = require('../ocr');
+      const r = await ocrPdf(fs.readFileSync(escaneadoPath), { scale: 3, maxPages: 2 });
+      const c = extraerCamposPagare(r.text);
+      if (!result.direccion && c.direccion)            result.direccion = c.direccion;
+      if (!result.fechaSuscripcion && c.fechaCorta)    result.fechaSuscripcion = c.fechaCorta;
+      if (c.nombre)                                    result.nombre = c.nombre;
+      // Pagaré escaneado en blanco (sin diligenciar) → no se puede demandar.
+      result.diligenciado = !!c.diligenciado;
+      console.error(`[PDF-FINANDINA] ${cedula}: pagaré escaneado → OCR (diligenciado=${result.diligenciado}, nombre="${c.nombre}", dir="${c.direccion}", fecha=${c.fechaCorta || '-'})`);
+    } catch (e) {
+      console.error(`[PDF-FINANDINA] ${cedula}: OCR falló: ${e.message}`);
+    }
+  }
+
   return result;
 }
 

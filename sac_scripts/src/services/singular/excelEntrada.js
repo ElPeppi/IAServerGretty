@@ -187,10 +187,39 @@ async function parsearExcelEntrada(buffer) {
     }
   }
 
-  // ── Candidatos: TODAS las filas con cédula ────────────────────────────────
-  // Ya no se filtra por APLICATIVO=DECEVAL en el Excel: la selección real se
-  // hace después, validando que el pagaré descargado sea un certificado
-  // DECEVAL auténtico (ver leerDatosDeDeceval + orquestador).
+  // ── Filtro por tipo de proceso: solo EJECUTIVO SINGULAR ───────────────────
+  // El encabezado varía entre envíos ("POSIBLE PROCESO", "PROCESO", "TIPO DE
+  // PROCESO"…) → se localiza la columna por contener "PROCESO". Una cédula se
+  // genera si AL MENOS una de sus filas dice singular ("EJECUTIVO SINGULAR",
+  // "EJECUTIVO SINGU", "SINGULAR"); se excluye si todas son de otro proceso
+  // (RESTITUCIÓN, etc.). Si no hay columna de proceso, no se filtra (compat).
+  const procesoIdx = (hoja1[0] || []).findIndex(h => /proceso/i.test(String(h || '')));
+  const ES_SINGULAR = /singu/i;
+  const omitidosProceso = [];
+  const excluidasProceso = new Set();
+  if (procesoIdx >= 0) {
+    const conSingular = new Set();
+    const conOtro = new Map(); // cedula → proceso (para el reporte)
+    for (let r = 1; r < hoja1.length; r++) {
+      const ced = String(getCanon(hoja1[r], 'IDENTIFICACION', 'IDENTIFICACION', 'CEDULA') ?? '').trim();
+      if (!/^\d{5,12}$/.test(ced)) continue;
+      const proc = String(hoja1[r][procesoIdx] ?? '').trim();
+      if (!proc) continue;                       // celda vacía → neutral
+      if (ES_SINGULAR.test(proc)) conSingular.add(ced);
+      else if (!conOtro.has(ced)) conOtro.set(ced, proc);
+    }
+    for (const [ced, proc] of conOtro) {
+      if (!conSingular.has(ced)) {
+        excluidasProceso.add(ced);
+        omitidosProceso.push({ cedula: ced, nombre: '', motivo: `proceso "${proc}" (no es ejecutivo singular)` });
+      }
+    }
+    console.error(`[EXCEL] Proceso: columna "${hoja1[0][procesoIdx]}" — ${excluidasProceso.size} cédula(s) excluida(s) por no ser ejecutivo singular`);
+  }
+
+  // ── Candidatos: filas con cédula (de proceso ejecutivo singular) ──────────
+  // La selección final del tipo de pagaré (DECEVAL/FINANDINA) se hace después
+  // validando el pagaré (ver leerDatosDeDeceval + orquestador).
   // Set para evitar duplicados de cédula (solo la primera aparición).
   const cedulas_vistas = new Set();
   const clientes = [];
@@ -200,6 +229,7 @@ async function parsearExcelEntrada(buffer) {
 
     const cedula = String(getCanon(row, 'IDENTIFICACION', 'IDENTIFICACION', 'CEDULA') ?? '').trim();
     if (!cedula || !/^\d{5,12}$/.test(cedula)) continue;
+    if (excluidasProceso.has(cedula)) continue;   // proceso ≠ ejecutivo singular
     if (cedulas_vistas.has(cedula)) continue;
     cedulas_vistas.add(cedula);
 
@@ -268,6 +298,9 @@ async function parsearExcelEntrada(buffer) {
     });
   }
 
+  // Adjuntar (como propiedad del array, sin romper clientes.length) las cédulas
+  // excluidas por proceso, para que el orquestador las reporte como omitidas.
+  clientes.omitidosProceso = omitidosProceso;
   return clientes;
 }
 

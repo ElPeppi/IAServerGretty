@@ -245,8 +245,41 @@ async function extraerDatacredito(outputDir) {
         const texto  = parsed.text || '';
 
         // ── Emails ───────────────────────────────────────────────────────────
-        const emails = texto.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
-        result.dc_email.push(...emails);
+        // En el DataCrédito los correos vienen en una tabla enumerada; al extraer
+        // el texto, el número de fila queda pegado al inicio del correo
+        // (p.ej. "1davileidyss@gmail.com" → "davileidyss@gmail.com"). El contador
+        // es secuencial (1, 2, 3…) y aparece al inicio de línea. Solo se quita si
+        // los correos al inicio de línea REALMENTE vienen enumerados en secuencia,
+        // para no dañar correos que legítimamente empiecen por dígitos (p.ej. los
+        // basados en cédula, "1098765@gmail.com").
+        const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+        const correoMatches = [];
+        let m;
+        while ((m = EMAIL_RE.exec(texto)) !== null) {
+          const nl = texto.lastIndexOf('\n', m.index - 1);
+          const lineStart = /^\s*$/.test(texto.slice(nl + 1, m.index));
+          correoMatches.push({ email: m[0], lineStart });
+        }
+
+        // ¿Los correos al inicio de línea empiezan por 1, 2, 3…? (≥2 confirma tabla)
+        const lineStarts = correoMatches.filter(x => x.lineStart);
+        let run = 0;
+        while (run < lineStarts.length && lineStarts[run].email.startsWith(String(run + 1))) run++;
+        const enumerado = run >= 2;
+
+        let fila = 0;
+        for (const x of correoMatches) {
+          let email = x.email;
+          if (enumerado && x.lineStart) {
+            const esperado = String(fila + 1);
+            const resto = email.slice(esperado.length);
+            if (email.startsWith(esperado) && /^[a-zA-Z0-9._%+-]+@/.test(resto)) {
+              email = resto;   // quitar el contador de fila
+              fila++;
+            }
+          }
+          result.dc_email.push(email);
+        }
 
         // ── Direcciones colombianas (mejor esfuerzo) ─────────────────────────
         // Patrón: tipo de vía + número inicial + hasta 45 chars alfanuméricos

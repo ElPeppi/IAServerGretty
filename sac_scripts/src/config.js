@@ -39,6 +39,22 @@ const PLANTILLA_SINGULAR = process.env.PLANTILLA_SINGULAR
 const PLANTILLA_DEMANDA = process.env.PLANTILLA_DEMANDA
   || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PLANTILLAS\\PLANTILLA DEMANDA SINGULAR AI.docx';
 
+const PLANTILLA_PODER = process.env.PLANTILLA_PODER
+  || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PLANTILLAS\\PLANTILLA PODER SINGULAR AI.docx';
+
+// Carpetas con los certificados compartidos de los ANEXOS (se toma el más reciente):
+//   DEMANDAS  → ANEXO 4 (CCO J Ramos) y ANEXO 5 (SIRNA)
+//   FINANDINA → ANEXO 6 (Super Financiera) y ANEXO 7 (CCO Finandina comprimida)
+const ANEXOS_DIR_DEMANDAS = process.env.ANEXOS_DEMANDAS
+  || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS';
+const ANEXOS_DIR_FINANDINA = process.env.ANEXOS_FINANDINA
+  || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA';
+
+// Carpeta de los correos de otorgamiento de poderes (ANEXO 1). Si la web no
+// envía el correo, se toma el más reciente de aquí como respaldo.
+const ANEXOS_DIR_PODERES = process.env.ANEXOS_PODERES
+  || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PODERES';
+
 // ─── Ollama (LLM local para mapeo de columnas del Excel) ─────────────────────
 
 const OLLAMA_URL     = process.env.OLLAMA_URL     || 'http://localhost:11434';
@@ -67,6 +83,10 @@ module.exports = {
   OUT_DIR,
   PLANTILLA_SINGULAR,
   PLANTILLA_DEMANDA,
+  PLANTILLA_PODER,
+  ANEXOS_DIR_DEMANDAS,
+  ANEXOS_DIR_FINANDINA,
+  ANEXOS_DIR_PODERES,
   OLLAMA_URL,
   OLLAMA_MODEL,
   OLLAMA_TIMEOUT,

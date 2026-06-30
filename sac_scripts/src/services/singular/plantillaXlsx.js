@@ -114,7 +114,9 @@ function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig,
     'DIRECCION ELECTRONICA EMPLEADOR': '',      // sin fuente disponible
     ...vehiculoRow(v0),
     'STRIA MCPAL\nTTOyTTE':                   '',
-    'DIRECCION ELECTRONICA DEL TRANSITO':      correoJuzgado,
+    // Correo del organismo de tránsito (oficio de embargo del vehículo). NO es el
+    // correo del juzgado: lo llena el directorio de tránsito por ciudad (index.js).
+    'DIRECCION ELECTRONICA DEL TRANSITO':      '',
   };
 
   // Vehículos adicionales (2º, 3º, …) → van a la segunda hoja de la plantilla,

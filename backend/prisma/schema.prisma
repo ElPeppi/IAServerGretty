@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  password     String     // hash bcrypt (login)
+  passwordEnc  String?    // copia cifrada reversible (AES) para que el admin pueda verla
+  name         String
+  role         Role       @default(LAWYER)
+  signatureUrl String?
+  documents    Document[]
+  observaciones Observacion[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  LAWYER
+}
+
+model Document {
+  id          String         @id @default(cuid())
+  title       String
+  type        String         @default("DEMANDA")
+  status      DocumentStatus @default(PENDING)
+  fileUrl     String?        // demanda (Word) — panel izquierdo del visor
+  signedUrl   String?
+  // Anexos generados junto a la demanda — panel derecho del visor
+  anexosUrl       String?
+  antecedentesUrl String?
+  asignacionUrl   String?    // Excel de asignación del que salió la demanda
+  poderUrl        String?
+  // Notas de procedencia/faltantes: [{ campo, nivel: 'info'|'warning', mensaje }]
+  notes       Json?
+  clientName  String
+  clientRfc   String?
+  clientCedula String?
+  description String?
+  lawyerId    String
+  lawyer      User           @relation(fields: [lawyerId], references: [id])
+  metadata    Json?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  signedAt    DateTime?
+
+  // Índices para que filtros/orden no se degraden al crecer (lista, dashboard, import)
+  @@index([lawyerId, createdAt])
+  @@index([status])
+  @@index([clientCedula])
+  @@index([createdAt])
+  @@map("documents")
+}
+
+enum DocumentStatus {
+  PENDING
+  GENERATED
+  SIGNED
+  REJECTED
+}
+
+// Observación: cliente del Excel para el que NO se generó la demanda y por qué
+// (p. ej. "no es DECEVAL ni FINANDINA", "proceso no es ejecutivo singular").
+model Observacion {
+  id        String   @id @default(cuid())
+  cedula    String
+  nombre    String?
+  motivo    String
+  lote      String?  // nombre del Excel/asignación del que provino
+  lawyerId  String
+  lawyer    User     @relation(fields: [lawyerId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([lawyerId, createdAt])
+  @@index([createdAt])
+  @@map("observaciones")
+}
