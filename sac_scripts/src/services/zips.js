@@ -21,6 +21,7 @@ const sacQueue = require('./colaSac');
 const { extraerCedulaDePDFs } = require('./cedulas');
 const { correrPuppeteerLote, enriquecerClientes } = require('./puppeteerRunner');
 const { mkdirpSync, resolverCarpetaEscritura } = require('../utils/carpetas');
+const { notificarBackend } = require('./notifier');
 
 // ─── Contraseña del ZIP desde el cuerpo del correo ────────────────────────────
 // Busca patrones como "Clave de ingreso: Jairoenriqueramoslazaro"
@@ -226,6 +227,16 @@ async function procesarLoteZips({ zipsBase64, outBase, zipPassword, sacUrl, sacU
     // 1. Extraer cédulas y descomprimir ZIPs (con contraseña si aplica)
     const { clientes, erroresExtraccion } = await extraerClientesDeZips(zipsBase64, outBase, zipPassword);
 
+    // Avisar al backend que terminó la EXTRACCIÓN de los ZIPs.
+    await notificarBackend({
+      type: 'zips',
+      level: clientes.length ? 'success' : 'warning',
+      title: 'Extracción de ZIPs terminada',
+      message: `${clientes.length} cliente(s) extraído(s) de ${zipsBase64.length} ZIP(s)` +
+               (erroresExtraccion.length ? `, ${erroresExtraccion.length} con error` : ''),
+      meta: { extraidos: clientes.length, total: zipsBase64.length, errores: erroresExtraccion.length },
+    });
+
     if (clientes.length === 0) {
       console.error(`[${new Date().toISOString()}] 0 clientes extraídos. Errores de extracción:`);
       erroresExtraccion.forEach((e, i) => console.error(`  [${i+1}] ${e.fileName}: ${e.error}`));
@@ -260,6 +271,17 @@ async function procesarLoteZips({ zipsBase64, outBase, zipPassword, sacUrl, sacU
 
     // 3. Enriquecer con archivos en disco
     const clientesResultado = enriquecerClientes(resultadoPuppeteer.clientes, clientes, outBase);
+
+    // Avisar al backend que terminó TODO el procesamiento del lote (SAC incluido).
+    await notificarBackend({
+      type: 'zips',
+      level: resultadoPuppeteer.success ? 'success' : 'error',
+      title: 'Procesamiento de ZIPs (SAC) terminado',
+      message: resultadoPuppeteer.success
+        ? `${clientesResultado.length} cliente(s) procesado(s) en el SAC`
+        : `Error en el SAC: ${resultadoPuppeteer.error || 'desconocido'}`,
+      meta: { clientes: clientesResultado.length },
+    });
 
     return {
       success:           resultadoPuppeteer.success,

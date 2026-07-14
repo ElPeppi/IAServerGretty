@@ -1,17 +1,23 @@
 import { IDocumentRepository } from '../../../domain/repositories/IDocumentRepository';
 import { IUserRepository } from '../../../domain/repositories/IUserRepository';
-import { IN8nService } from '../../services/IN8nService';
+import { SignedPdfService } from '../../../infrastructure/services/SignedPdfService';
 
 export interface SignDocumentInput {
   documentId: string;
   lawyerId: string;
 }
 
+/**
+ * Firma una demanda: arma el PDF FINAL (demanda .docx → PDF + anexos + antecedentes)
+ * y lo guarda en el NAS (carpeta del cliente, servido por /docs). La demanda ya trae
+ * la firma estampada desde la generación; aquí se consolida en un único PDF firmado.
+ * Ya NO depende de n8n.
+ */
 export class SignDocumentUseCase {
   constructor(
     private readonly documentRepository: IDocumentRepository,
     private readonly userRepository: IUserRepository,
-    private readonly n8nService: IN8nService
+    private readonly signedPdfService: SignedPdfService = new SignedPdfService()
   ) {}
 
   async execute(input: SignDocumentInput) {
@@ -23,31 +29,13 @@ export class SignDocumentUseCase {
 
     const lawyer = await this.userRepository.findById(input.lawyerId);
     if (!lawyer) throw new Error('Abogado no encontrado');
-    if (!lawyer.signatureUrl) throw new Error('El abogado no tiene firma registrada');
 
-    let signedUrl: string;
-    try {
-      signedUrl = await this.n8nService.signDocument({
-        documentId: document.id,
-        fileUrl: document.fileUrl!,
-        lawyerName: lawyer.name,
-        signatureUrl: lawyer.signatureUrl,
-      });
-    } catch (err: unknown) {
-      const code = (err as { code?: string }).code;
-      const status = (err as { response?: { status?: number } }).response?.status;
-      if (code === 'ECONNREFUSED' || code === 'ENOTFOUND') {
-        throw new Error('n8n no está disponible. Verifica que el contenedor esté corriendo.');
-      }
-      if (status === 404) {
-        throw new Error('El workflow de firma en n8n no está activo. Importa y activa "firmar-documento.json" en http://localhost:5678');
-      }
-      throw err;
-    }
+    // Genera el PDF unido y firmado, y lo guarda en el NAS.
+    const { url } = await this.signedPdfService.build(document);
 
     return this.documentRepository.update(document.id, {
       status: 'SIGNED',
-      signedUrl,
+      signedUrl: url,
       signedAt: new Date(),
     });
   }

@@ -4,7 +4,6 @@ import { GetDocumentByIdUseCase } from '../../application/use-cases/documents/Ge
 import { SignDocumentUseCase } from '../../application/use-cases/documents/SignDocumentUseCase';
 import { PrismaDocumentRepository } from '../../infrastructure/database/prisma/DocumentRepository';
 import { PrismaUserRepository } from '../../infrastructure/database/prisma/UserRepository';
-import { N8nService } from '../../infrastructure/services/N8nService';
 import { NasStorage } from '../../infrastructure/services/NasStorage';
 import { AuthRequest } from '../middlewares/authMiddleware';
 import { DocumentStatus } from '../../domain/entities/Document';
@@ -13,11 +12,10 @@ const nas = new NasStorage();
 
 const documentRepository = new PrismaDocumentRepository();
 const userRepository = new PrismaUserRepository();
-const n8nService = new N8nService();
 
 const getDocumentsUseCase = new GetDocumentsUseCase(documentRepository);
 const getDocumentByIdUseCase = new GetDocumentByIdUseCase(documentRepository);
-const signDocumentUseCase = new SignDocumentUseCase(documentRepository, userRepository, n8nService);
+const signDocumentUseCase = new SignDocumentUseCase(documentRepository, userRepository);
 
 export class DocumentController {
   async getAll(req: AuthRequest, res: Response): Promise<void> {

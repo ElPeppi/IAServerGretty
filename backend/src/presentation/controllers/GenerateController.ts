@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import fs from 'fs';
 import * as XLSX from 'xlsx';
 import { PrismaDocumentRepository } from '../../infrastructure/database/prisma/DocumentRepository';
 import { PrismaUserRepository } from '../../infrastructure/database/prisma/UserRepository';
@@ -8,6 +9,7 @@ import { N8nService } from '../../infrastructure/services/N8nService';
 import { EngineService } from '../../infrastructure/services/EngineService';
 import { FileStorage } from '../../infrastructure/services/FileStorage';
 import { NasStorage } from '../../infrastructure/services/NasStorage';
+import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { EngineFile } from '../../application/services/IEngineService';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
@@ -137,6 +139,15 @@ export class GenerateController {
       message: 'Generación iniciada en segundo plano. Las demandas aparecerán en Documentos en unos minutos.',
     });
 
+    // Avisar a todos los logueados que arrancó la generación.
+    notificationHub.broadcast({
+      type: 'generacion',
+      level: 'info',
+      title: 'Generación iniciada',
+      message: `${lawyer.name} inició la generación de demandas${excelFile.originalname ? ` (${excelFile.originalname})` : ''}.`,
+      meta: { lote: excelFile.originalname || null, lawyerId: lawyer.id },
+    });
+
     // No se hace await: el trabajo continúa tras enviar la respuesta.
     void this.generarEnSegundoPlano({
       excel: excelFile.buffer,
@@ -149,6 +160,151 @@ export class GenerateController {
       lawyerId: lawyer.id,
       lote: excelFile.originalname || null,
     });
+  }
+
+  /**
+   * Regenera UNA sola demanda ya existente: vuelve a correr el motor con el Excel
+   * de asignación original, filtrado a la cédula de este documento, y SOBREESCRIBE
+   * el mismo Document (no crea uno nuevo). Corre en segundo plano; la vista se
+   * refresca al llegar la notificación de "generación terminada".
+   *
+   * Nota: no se reusa el "correo del poder" del lote original (no se persiste), por
+   * lo que el ANEXO 1 (poder) puede quedar sin el correo del banco sobrepuesto.
+   */
+  async regenerarUno(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params['id'] as string;
+      const document = await documentRepository.findById(id);
+      if (!document) {
+        res.status(404).json({ message: 'Documento no encontrado' });
+        return;
+      }
+      const isOwner = document.lawyerId === req.user?.userId;
+      const isAdmin = req.user?.role === 'ADMIN';
+      if (!isOwner && !isAdmin) {
+        res.status(403).json({ message: 'Sin permiso para regenerar este documento' });
+        return;
+      }
+      if (document.status === 'SIGNED') {
+        res.status(409).json({ message: 'La demanda ya está firmada; no se puede regenerar' });
+        return;
+      }
+      if (!document.clientCedula) {
+        res.status(400).json({ message: 'El documento no tiene cédula: no se puede regenerar' });
+        return;
+      }
+      if (!document.asignacionUrl) {
+        res.status(400).json({ message: 'No se guardó el Excel de asignación de esta demanda: no se puede regenerar' });
+        return;
+      }
+
+      // Recuperar el Excel de asignación desde el NAS.
+      let excel: Buffer;
+      try {
+        const rel = nas.relPathFromUrl(document.asignacionUrl);
+        if (!nas.enabled || !rel) throw new Error('asignación fuera del NAS');
+        excel = fs.readFileSync(nas.absFromRelPath(rel));
+      } catch {
+        res.status(400).json({ message: 'No se pudo leer el Excel de asignación en el NAS' });
+        return;
+      }
+
+      res.status(202).json({
+        success: true,
+        started: true,
+        message: 'Regeneración iniciada en segundo plano. La demanda se actualizará en unos momentos.',
+      });
+
+      const meta = (document.metadata ?? {}) as { fechaAsignacion?: string | null };
+      notificationHub.broadcast({
+        type: 'generacion',
+        level: 'info',
+        title: 'Regeneración iniciada',
+        message: `Regenerando la demanda de ${document.clientName || document.clientCedula}…`,
+        meta: { documentId: document.id, cedula: document.clientCedula },
+      });
+
+      void this.regenerarEnSegundoPlano({
+        documentId: document.id,
+        cedula: document.clientCedula,
+        clientName: document.clientName || document.clientCedula,
+        excel,
+        fechaAsignacion: meta.fechaAsignacion ?? undefined,
+        smmv: getSettings().smmv,
+        transito: getSettings().transito,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error al regenerar';
+      res.status(500).json({ message });
+    }
+  }
+
+  // Corre el motor para UNA cédula y sobreescribe el Document existente. Segundo plano.
+  private async regenerarEnSegundoPlano(input: {
+    documentId: string; cedula: string; clientName: string;
+    excel: Buffer; fechaAsignacion?: string; smmv?: number;
+    transito?: Array<{ ciudad: string; entidad: string; correo: string }>;
+  }): Promise<void> {
+    const t0 = Date.now();
+    try {
+      const result = await engineService.generateSingular({
+        excel: input.excel,
+        excelFilename: 'regeneracion.xlsx',
+        fechaAsignacion: input.fechaAsignacion,
+        smmv: input.smmv,
+        transito: input.transito,
+        soloCedulas: [input.cedula],
+      });
+
+      const doc = (result.documentos ?? []).find((d) => d.cedula === input.cedula);
+      if (!doc) {
+        // El motor no la generó esta vez (p. ej. pagaré ya no válido): avisar y dejar el doc como estaba.
+        const motivo = (result.omitidos ?? []).find((o) => o.cedula === input.cedula)?.motivo
+          || 'el motor no devolvió la demanda';
+        notificationHub.broadcast({
+          type: 'generacion',
+          level: 'warning',
+          title: 'No se regeneró la demanda',
+          message: `${input.clientName}: ${motivo}.`,
+          meta: { documentId: input.documentId, cedula: input.cedula },
+        });
+        return;
+      }
+
+      const fileRef = (f?: EngineFile | null): string | undefined => {
+        if (!f) return undefined;
+        if (nas.enabled && f.relPath) return nas.urlForRelPath(f.relPath);
+        return fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url;
+      };
+
+      await documentRepository.update(input.documentId, {
+        status: 'GENERATED',
+        fileUrl: fileRef(doc.archivos?.demanda),
+        anexosUrl: fileRef(doc.archivos?.anexos),
+        antecedentesUrl: fileRef(doc.archivos?.antecedentes),
+        notes: doc.notas ?? [],
+      });
+
+      console.error(`[GENERATE/regenerar] OK — ${input.cedula} en ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+      notificationHub.broadcast({
+        type: 'generacion',
+        level: 'success',
+        title: 'Demanda regenerada',
+        message: `Se regeneró la demanda de ${input.clientName}.`,
+        meta: { documentId: input.documentId, cedula: input.cedula },
+      });
+    } catch (error: unknown) {
+      const resp = (error as { response?: { data?: { error?: string; message?: string } } }).response;
+      const msg = resp?.data?.error || resp?.data?.message || (error instanceof Error ? error.message : 'error');
+      console.error('[GENERATE/regenerar] FALLÓ:', msg);
+      notificationHub.broadcast({
+        type: 'generacion',
+        level: 'error',
+        title: 'Falló la regeneración',
+        message: `${input.clientName}: ${String(msg)}`,
+        meta: { documentId: input.documentId, cedula: input.cedula },
+      });
+    }
   }
 
   // Guarda las OBSERVACIONES (clientes para los que NO se generó la demanda y por qué).
@@ -231,12 +387,22 @@ export class GenerateController {
             numeroPagare: (result.clientes ?? []).find((c) => c.cedula === doc.cedula)?.numeroPagare,
             // Ruta del .docx en el NAS → la usa el editor para sobreescribir el archivo.
             demandaRelPath: doc.archivos?.demanda?.relPath,
+            // Se guarda para poder REGENERAR la demanda con la misma fecha de asignación.
+            fechaAsignacion: input.fechaAsignacion ?? null,
           },
         });
         creados++;
       }
       await this.persistObservaciones(input.lawyerId, input.lote, result.omitidos ?? []);
-      console.error(`[GENERATE/singular] segundo plano OK — ${creados} generada(s), ${(result.omitidos ?? []).length} omitida(s) en ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+      const omit = (result.omitidos ?? []).length;
+      console.error(`[GENERATE/singular] segundo plano OK — ${creados} generada(s), ${omit} omitida(s) en ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+      notificationHub.broadcast({
+        type: 'generacion',
+        level: 'success',
+        title: 'Generación de demandas terminada',
+        message: `${creados} demanda(s) generada(s)${omit ? `, ${omit} omitida(s) (ver Observaciones)` : ''}.`,
+        meta: { creados, omitidos: omit, lote: input.lote },
+      });
     } catch (error: unknown) {
       const resp = (error as {
         response?: { status?: number; data?: {
@@ -247,10 +413,25 @@ export class GenerateController {
       if (resp?.data?.omitidos?.length) {
         // El motor procesó pero omitió a todos (p. ej. sin pagaré): guardar las observaciones.
         await this.persistObservaciones(input.lawyerId, input.lote, resp.data.omitidos);
-        console.error('[GENERATE/singular] segundo plano: 0 generadas,', resp.data.omitidos.length, 'omitida(s) —', resp.data.error || resp.data.message);
+        const omit = resp.data.omitidos.length;
+        console.error('[GENERATE/singular] segundo plano: 0 generadas,', omit, 'omitida(s) —', resp.data.error || resp.data.message);
+        notificationHub.broadcast({
+          type: 'generacion',
+          level: 'warning',
+          title: 'Generación terminada sin demandas',
+          message: `0 generadas, ${omit} omitida(s) (ver Observaciones).`,
+          meta: { creados: 0, omitidos: omit, lote: input.lote },
+        });
       } else {
         const msg = resp?.data?.error || resp?.data?.message || (error instanceof Error ? error.message : 'error');
         console.error('[GENERATE/singular] segundo plano FALLÓ:', msg);
+        notificationHub.broadcast({
+          type: 'generacion',
+          level: 'error',
+          title: 'Falló la generación de demandas',
+          message: String(msg),
+          meta: { lote: input.lote },
+        });
       }
     }
   }

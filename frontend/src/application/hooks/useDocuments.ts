@@ -39,8 +39,19 @@ export function useDocument(id: string) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSigning, setIsSigning] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+
+  const refetch = useCallback(async () => {
+    try {
+      const doc = await documentApi.getById(id);
+      setDocument(doc);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Error al cargar documento');
+    }
+  }, [id]);
 
   useEffect(() => {
+    setIsLoading(true);
     documentApi
       .getById(id)
       .then(setDocument)
@@ -59,5 +70,16 @@ export function useDocument(id: string) {
     }
   };
 
-  return { document, isLoading, error, isSigning, sign };
+  // Dispara la regeneración (segundo plano). El documento se refresca solo al
+  // llegar la notificación SSE de "generación terminada" (ver DocumentDetailPage).
+  const regenerar = async () => {
+    setIsRegenerating(true);
+    try {
+      return await documentApi.regenerar(id);
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  return { document, isLoading, error, isSigning, sign, isRegenerating, regenerar, refetch };
 }

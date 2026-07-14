@@ -25,6 +25,10 @@ export const documentApi = {
 
   sign: (id: string) => apiClient.post<Document>(`/documents/${id}/sign`).then((r) => r.data),
 
+  /** Regenera SOLO esta demanda (corre en segundo plano; responde 202). */
+  regenerar: (id: string) =>
+    apiClient.post<{ success: boolean; started: boolean; message: string }>(`/documents/${id}/regenerar`).then((r) => r.data),
+
   /** Sobreescribe el .docx de la demanda en el NAS con la versión editada. */
   saveFile: (id: string, file: File) => {
     const form = new FormData();

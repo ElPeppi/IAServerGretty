@@ -50,6 +50,7 @@ export interface GenerateSingularInput {
   fechaAsignacion?: string;
   smmv?: number; // salario mínimo (umbrales de cuantía)
   transito?: Array<{ ciudad: string; entidad: string; correo: string }>; // directorio de tránsito
+  soloCedulas?: string[]; // si viene, el motor SOLO procesa esas cédulas (regenerar una demanda)
 }
 
 export interface GenerateSingularOutput {

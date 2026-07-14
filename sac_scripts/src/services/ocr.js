@@ -48,6 +48,46 @@ async function ocrPdf(buffer, opts = {}) {
   return { numPages: imgs.length, pages, text: pages.map((p) => p.text).join('\n\n') };
 }
 
+// ─── Fechas ─────────────────────────────────────────────────────────────────
+const MESES = { enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6, julio:7,
+                agosto:8, septiembre:9, setiembre:9, octubre:10, noviembre:11, diciembre:12 };
+// Día en letras → número (el pagaré suele traer "uno (1)", "DOCE (12)", etc.; el
+// dígito entre paréntesis a veces lo lee mal el OCR, así que la PALABRA manda).
+const DIA_PALABRA = {
+  uno:1, dos:2, tres:3, cuatro:4, cinco:5, seis:6, siete:7, ocho:8, nueve:9, diez:10,
+  once:11, doce:12, trece:13, catorce:14, quince:15, dieciseis:16, diecisiete:17,
+  dieciocho:18, diecinueve:19, veinte:20, veintiuno:21, veintidos:22, veintitres:23,
+  veinticuatro:24, veinticinco:25, veintiseis:26, veintisiete:27, veintiocho:28,
+  veintinueve:29, treinta:30, treintayuno:31,
+};
+const sinTilde = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+// Fecha de SUSCRIPCIÓN = la constancia de firma del pagaré:
+//   "Para constancia se firma en la ciudad de X ... el día <uno|03|(12)> del mes
+//    de <Mes> del año <YYYY>"  (también la variante "a los (N) días del mes de…").
+// OJO: NO es la fecha de la cláusula PRIMERO ("...el día N del mes de M del año Y,
+// en sus oficinas del país…"), que es el vencimiento. Por eso anclamos en "se firma".
+// El OCR inserta "_" en las líneas de relleno → toleramos [_\s] entre tokens.
+function parseFechaFirma(t) {
+  const re = /se firma[\s\S]{0,200}?(?:el d[ií]a|a los)[_\s]*([A-Za-zÁÉÍÓÚÑáéíóúñ]+)?[_\s]*\(?\s*(\d{1,2})?\s*\)?[_\s]*(?:d[ií]as?\s+)?del mes de[_\s]*([A-Za-zÁÉÍÓÚÑáéíóúñ]+)[\s\S]{0,15}?del a[ñn]o[_\s]*(\d{4})/ig;
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const [, palabra, digito, mesTxt, anio] = m;
+    let dia = null;
+    if (palabra) {
+      const k = sinTilde(palabra);
+      if (DIA_PALABRA[k] !== undefined) dia = DIA_PALABRA[k];
+      else if (/^\d+$/.test(palabra)) dia = parseInt(palabra, 10);
+    }
+    if (dia == null && digito) dia = parseInt(digito, 10);
+    const mm = MESES[sinTilde(mesTxt)];
+    if (dia && mm && anio) {
+      return `${String(dia).padStart(2, '0')}/${String(mm).padStart(2, '0')}/${anio}`;
+    }
+  }
+  return '';
+}
+
 // ─── Extracción de campos (mejor esfuerzo) ──────────────────────────────────
 function extraerCamposPagare(text) {
   const t = (text || '').replace(/\r/g, '');
@@ -63,33 +103,27 @@ function extraerCamposPagare(text) {
     : '';
   const telefono = cap(/Tel[eé]fono:\s*(\d{7,})/i);
   const ciudad = cap(/(?:firma|firmar?se)?\s*en la ciudad de\s+([A-ZÁÉÍÓÚÑ]{4,})/i);
-  // Fecha de suscripción (constancia de firma). Dos formatos en uso:
-  //   • "...el día 03 del mes de mayo del año 2023"          (pagaré impreso)
-  //   • "...a los DOCE (12) días del mes de MARZO del año 2024" (diligenciado a mano)
-  // En el 2º, el número en letras precede al dígito entre paréntesis → se toma el dígito.
-  const fechaM = t.match(/(?:el d[ií]a|a los)\s+(?:[A-Za-zÁÉÍÓÚÑáéíóúñ]+\s+)?\(?(\d{1,2})\)?\s*(?:d[ií]as?\s+)?del mes de\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+del a[ñn]o\s+(\d{4})/i);
-  const fecha = fechaM ? `${fechaM[1]} de ${fechaM[2]} de ${fechaM[3]}` : '';
 
-  // Fecha normalizada DD/MM/YYYY (para usarla igual que la del certificado DECEVAL)
-  const MESES = { enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6, julio:7,
-                  agosto:8, septiembre:9, setiembre:9, octubre:10, noviembre:11, diciembre:12 };
-  let fechaCorta = '';
-  if (fechaM) {
-    const mm = MESES[fechaM[2].toLowerCase()];
-    if (mm) fechaCorta = `${String(fechaM[1]).padStart(2, '0')}/${String(mm).padStart(2, '0')}/${fechaM[3]}`;
-  }
+  // Fecha de suscripción (constancia de firma) normalizada DD/MM/YYYY.
+  const fechaCorta = parseFechaFirma(t);
+  const fecha = fechaCorta ? fechaCorta.split('/').reverse().join('-') : '';
 
-  // ¿El pagaré está DILIGENCIADO? Un pagaré escaneado en blanco (sin firmar/llenar)
-  // no produce ninguno de estos datos; uno diligenciado trae al menos la fecha de
-  // suscripción, la identificación o el nombre del deudor.
-  const diligenciado = !!(
-    cedula ||
-    fechaCorta ||
-    ciudad ||
-    (nombre && nombre.trim().split(/\s+/).length >= 2)
-  );
+  // ── ¿El CUERPO del pagaré está DILIGENCIADO? ────────────────────────────────
+  // Para prestar mérito ejecutivo el pagaré escaneado debe tener LLENO su cuerpo
+  // (como el de WILHEN), no solo la firma/datos del deudor (como el de MARYLUZ,
+  // que tiene nombre+cédula+firma pero el cuerpo en blanco → NO se puede demandar).
+  // Señales de cuerpo lleno (cualquiera basta):
+  //   • Número de pagaré escrito (top "PAGARÉ No. <dígitos>" o en la carta de instr.)
+  //   • Fecha de vencimiento de la cláusula PRIMERO ("…del año YYYY, en sus oficinas")
+  //   • Monto de capital ("POR CAPITAL ($ <dígitos>")
+  const numM = t.match(/PAGAR[EÉ]\s*N[o0]\.?\s*[_:\s]*([0-9][0-9.\s]{4,}[0-9])/i);
+  const numeroPagare = numM ? numM[1].replace(/[^\d]/g, '') : '';
+  const tieneVencimiento = /el d[ií]a[_\s]*\(?\s*\d{1,2}\s*\)?[_\s]*del mes de[_\s]*[A-Za-zÁÉÍÓÚÑáéíóúñ]+[\s\S]{0,20}?del a[ñn]o[_\s]*\d{4}[\s\S]{0,25}?oficinas/i.test(t);
+  const tieneCapital = /POR\s+CAPITAL[\s\S]{0,40}?\$\s*([0-9][0-9.\s]{2,})/i.test(t);
 
-  return { nombre, cedula, direccion, telefono, ciudad, fecha, fechaCorta, diligenciado };
+  const diligenciado = !!(numeroPagare || tieneVencimiento || tieneCapital);
+
+  return { nombre, cedula, direccion, telefono, ciudad, fecha, fechaCorta, numeroPagare, diligenciado };
 }
 
 module.exports = { ocrPdf, extraerCamposPagare, cerrarOcr };

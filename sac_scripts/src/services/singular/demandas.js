@@ -23,8 +23,149 @@ const path   = require('path');
 const fs     = require('fs');
 const AdmZip = require('adm-zip');
 
+const config = require('../../config');
 const { fmtCOP } = require('../../utils/numeros');
 const { resolverCarpetaCedula } = require('../../utils/carpetas');
+
+// Bytes de la firma (PNG), cacheados. null si no se encontró el archivo.
+let _firmaBuf;
+function cargarFirma() {
+  if (_firmaBuf !== undefined) return _firmaBuf;
+  try {
+    _firmaBuf = fs.readFileSync(config.FIRMA_PATH);
+    console.error(`[FIRMA] imagen cargada: ${config.FIRMA_PATH} (${_firmaBuf.length} bytes)`);
+  } catch (e) {
+    _firmaBuf = null;
+    console.error(`[FIRMA] no se encontró la imagen de la firma (${config.FIRMA_PATH}): ${e.message}`);
+  }
+  return _firmaBuf;
+}
+
+// Ancho/alto (px) + DPI de un PNG (IHDR + pHYs). Sin pHYs → 96 dpi. Con el DPI real
+// se obtiene el tamaño ORIGINAL de la imagen (como al insertarla en Word).
+function pngInfo(buf) {
+  if (!buf || buf.length < 24 || buf[0] !== 0x89 || buf[1] !== 0x50) return null;
+  const w = buf.readUInt32BE(16), h = buf.readUInt32BE(20);
+  let dpiX = 96, dpiY = 96, off = 8;
+  while (off + 12 <= buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.toString('ascii', off + 4, off + 8);
+    if (type === 'pHYs') {
+      const ppuX = buf.readUInt32BE(off + 8), ppuY = buf.readUInt32BE(off + 12);
+      if (buf[off + 16] === 1) { dpiX = ppuX * 0.0254; dpiY = ppuY * 0.0254; }
+      break;
+    }
+    if (type === 'IDAT' || type === 'IEND') break;
+    off += 12 + len;
+  }
+  return { w, h, dpiX: dpiX || 96, dpiY: dpiY || 96 };
+}
+
+// Párrafo con la firma como imagen INLINE (r:embed → relId). Los namespaces wp/r/a/pic
+// se declaran en el propio elemento para no depender de las declaraciones del root.
+function firmaParagraphXml(relId, id, cx, cy) {
+  const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+  const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
+  const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const PIC = 'http://schemas.openxmlformats.org/drawingml/2006/picture';
+  return `<w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:drawing>` +
+    `<wp:inline xmlns:wp="${WP}" xmlns:r="${R}" distT="0" distB="0" distL="0" distR="0">` +
+    `<wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>` +
+    `<wp:docPr id="${id}" name="FirmaAI ${id}"/>` +
+    `<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="${A}" noChangeAspect="1"/></wp:cNvGraphicFramePr>` +
+    `<a:graphic xmlns:a="${A}"><a:graphicData uri="${PIC}">` +
+    `<pic:pic xmlns:pic="${PIC}"><pic:nvPicPr><pic:cNvPr id="${id}" name="FirmaAI ${id}"/><pic:cNvPicPr/></pic:nvPicPr>` +
+    `<pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+    `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>` +
+    `</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+}
+
+/**
+ * Estampa la firma (Firma.png) en la demanda INSERTÁNDOLA como imagen inline
+ * justo debajo de cada bloque de firma ("Atentamente," y "Del señor Juez,").
+ *
+ * La plantilla NO trae una imagen de firma anclada en el cuerpo (los bloques son
+ * solo texto), así que no hay un <w:drawing> que reemplazar: se agrega la firma
+ * como media nueva + su relación y se inyecta un párrafo con la imagen. Inline
+ * (no flotante) para que LibreOffice la conserve al convertir a PDF.
+ */
+function estamparFirma(zip) {
+  const firma = cargarFirma();
+  if (!firma) return; // sin firma → se deja la plantilla tal cual
+
+  let xml;
+  try { xml = zip.readAsText('word/document.xml'); } catch { return; }
+
+  const anclas = ['Atentamente,', 'Del señor Juez'];
+  const presentes = anclas.filter((a) => xml.includes(a));
+  if (!presentes.length) { console.error('[FIRMA] no se hallaron los bloques de firma; no se estampó'); return; }
+
+  // Tamaño ORIGINAL de la firma (px / DPI → pulgadas → EMU, 1" = 914400).
+  const info = pngInfo(firma) || { w: 234, h: 253, dpiX: 220, dpiY: 220 };
+  const EMU = 914400;
+  const cx = Math.round((info.w / info.dpiX) * EMU);
+  const cy = Math.round((info.h / info.dpiY) * EMU);
+
+  // 1) Media nueva con la firma.
+  const mediaName = 'word/media/firma_ai.png';
+  if (zip.getEntry(mediaName)) zip.updateFile(mediaName, firma);
+  else zip.addFile(mediaName, firma);
+
+  // 2) Relación imagen en document.xml.rels.
+  const relsPath = 'word/_rels/document.xml.rels';
+  const relId = 'rIdFirmaAI';
+  let rels = '';
+  try { rels = zip.readAsText(relsPath); } catch { console.error('[FIRMA] sin document.xml.rels'); return; }
+  if (!rels.includes(`Id="${relId}"`)) {
+    rels = rels.replace(
+      '</Relationships>',
+      `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/firma_ai.png"/></Relationships>`
+    );
+    zip.updateFile(relsPath, Buffer.from(rels, 'utf8'));
+  }
+
+  // 3) Content type de PNG (por si la plantilla no lo tuviera ya).
+  try {
+    let ct = zip.readAsText('[Content_Types].xml');
+    if (!/Extension="png"/i.test(ct)) {
+      ct = ct.replace('</Types>', '<Default Extension="png" ContentType="image/png"/></Types>');
+      zip.updateFile('[Content_Types].xml', Buffer.from(ct, 'utf8'));
+    }
+  } catch { /* no crítico */ }
+
+  // 4) Pegar la firma JUSTO DESPUÉS del texto anterior ("Atentamente," / "Del señor
+  //    Juez,"), eliminando los párrafos VACÍOS que la plantilla deja entre ese texto
+  //    y el bloque de nombre (esos vacíos causaban el hueco grande). Resultado:
+  //    ancla → firma → nombre, compacto. Respaldo: tras el párrafo del ancla.
+  const NOMBRE_FIRMANTE = 'JAIRO ENRIQUE RAMOS LAZARO';
+  // Inicio del <w:p ...> o <w:p> que contiene la posición dada.
+  const inicioParrafo = (s, pos) => Math.max(s.lastIndexOf('<w:p>', pos), s.lastIndexOf('<w:p ', pos));
+  const tieneContenido = (p) => /<w:t[ >]/.test(p) || /<w:drawing\b/.test(p);
+  let id = 9001;
+  let n = 0;
+  for (const ancla of presentes) {
+    const ai = xml.indexOf(ancla);
+    if (ai < 0) continue;
+    const anchorClose = xml.indexOf('</w:p>', ai);
+    if (anchorClose < 0) continue;
+    const afterAnchor = anchorClose + '</w:p>'.length;
+    const firmaPara = firmaParagraphXml(relId, id++, cx, cy);
+    const nameIdx = xml.indexOf(NOMBRE_FIRMANTE, afterAnchor);
+    const nameStart = nameIdx >= 0 ? inicioParrafo(xml, nameIdx) : -1;
+    if (nameStart > afterAnchor) {
+      const between = xml
+        .slice(afterAnchor, nameStart)
+        .replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (p) => (tieneContenido(p) ? p : ''));
+      xml = xml.slice(0, afterAnchor) + firmaPara + between + xml.slice(nameStart);
+    } else {
+      xml = xml.slice(0, afterAnchor) + firmaPara + xml.slice(afterAnchor);
+    }
+    n++;
+  }
+  zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'));
+  console.error(`[FIRMA] firma insertada (inline) en ${n} bloque(s)`);
+}
 
 const ORDINALES = [
   'PRIMERO', 'SEGUNDO', 'TERCERO', 'CUARTO', 'QUINTO', 'SEXTO',
@@ -307,7 +448,7 @@ function transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tien
 
 // ─── Generación del DOCX ──────────────────────────────────────────────────────
 
-function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmueble = false, camaraEmpleador = '', tipoPagare = 'DECEVAL') {
+function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmueble = false, camaraEmpleador = '', tipoPagare = 'DECEVAL', datacreditoCorreos = true) {
   const zip = new AdmZip(templateBuffer);
   let xml = zip.readAsText('word/document.xml');
 
@@ -334,6 +475,14 @@ function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmuebl
   const lugarExpedicion = camaraEmpleador || '#####';
   xml = xml.replace(/(C[áa]mara de Comercio de\s*)-{2,}/g, `$1${xmlEscape(lugarExpedicion)}`);
 
+  // 2-ter) Si el DataCrédito NO trae la tabla de correos, no se menciona en el
+  // punto de pruebas "...del sistema SAC y de Datacrédito...". Los runs vienen
+  // separados: <w:t>SAC y de </w:t> … <w:t>Datacrédito</w:t> → se editan ambos.
+  if (!datacreditoCorreos) {
+    xml = xml.replace(/(<w:t\b[^>]*>)([^<]*?)SAC y de\s*([^<]*?)(<\/w:t>)/g, '$1$2SAC$3$4');
+    xml = xml.replace(/(<w:t\b[^>]*>)([^<]*?)Datacr[ée]dito([^<]*?)(<\/w:t>)/g, '$1$2$3$4');
+  }
+
   // 3) Concordancia singular/plural: con más de una obligación,
   //    "respalda la Obligación" → "respalda las Obligaciones".
   const numObls = String(fieldMap.OBLIGACIONES || '').split(',').filter(s => s.trim()).length;
@@ -345,6 +494,13 @@ function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmuebl
   }
 
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'));
+
+  // 4) La firma NO se estampa al generar: el docx queda limpio para revisar/editar.
+  //    La firma se aplica AL FIRMAR (backend: SignedPdfService + firmaStamp), sobre
+  //    una copia, y ahí se une con los anexos. (estamparFirma se conserva por si se
+  //    quisiera volver a estampar en generación.)
+  // estamparFirma(zip);
+
   return zip.toBuffer();
 }
 
@@ -364,12 +520,13 @@ async function generarDemandasWord(items, sacDocsDir, templateDocxPath) {
     const tieneInmueble   = !!item.tieneInmueble;
     const camaraEmpleador = item.camaraEmpleador || '';
     const tipoPagare      = item.tipoPagare || 'DECEVAL';
+    const datacreditoCorreos = item.datacreditoCorreos !== false;
 
     const cedula = String(fila['IDENTIFICACION'] || '').trim();
     if (!cedula) continue;
     try {
       const fieldMap  = buildFieldMap(fila, vehiculos);
-      const docxBuf   = fillDocxTemplate(templateBuf, fieldMap, vehiculos, tieneInmueble, camaraEmpleador, tipoPagare);
+      const docxBuf   = fillDocxTemplate(templateBuf, fieldMap, vehiculos, tieneInmueble, camaraEmpleador, tipoPagare, datacreditoCorreos);
       const clientDir = resolverCarpetaCedula(sacDocsDir, cedula);
       if (!fs.existsSync(clientDir)) fs.mkdirSync(clientDir, { recursive: true });
       const nombre  = (fila['NOMBRE'] || cedula).trim().replace(/[<>:"/\\|?*]/g, '_');
@@ -384,4 +541,4 @@ async function generarDemandasWord(items, sacDocsDir, templateDocxPath) {
   return generados;
 }
 
-module.exports = { generarDemandasWord, buildFieldMap, reemplazarCampos };
+module.exports = { generarDemandasWord, buildFieldMap, reemplazarCampos, estamparFirma };

@@ -290,11 +290,6 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
       const parsed = await pdfParse(buffer, { max: 0 });
       const texto  = parsed.text || '';
 
-      // Pagaré escaneado (imagen, casi sin texto) → candidato a OCR (FINANDINA)
-      if (texto.replace(/\s/g, '').length < 80 && !escaneadoPath) {
-        escaneadoPath = path.join(dir, pdfName);
-      }
-
       // ── Validación: ¿es un certificado DECEVAL real? ──────────────────
       // Fotos/escaneados producen texto casi vacío; los formatos de pagaré
       // en blanco tienen texto pero sin los marcadores del certificado.
@@ -304,6 +299,15 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
       if (esCertificado && !result.certificadoValido) {
         result.certificadoValido = true;
         console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: certificado DECEVAL válido ✓`);
+      }
+
+      // Candidato a OCR (FINANDINA): cualquier pagaré que NO sea certificado DECEVAL.
+      // Incluye tanto la imagen pura (sin texto) como el PDF digital de Banco Finandina,
+      // cuya capa de texto trae SOLO los campos diligenciados (nº, nombre, ciudad, fechas,
+      // montos) y por tanto supera el viejo umbral de "<80 chars". El OCR decide después
+      // si está diligenciado o es un formato en blanco.
+      if (!esCertificado && !escaneadoPath) {
+        escaneadoPath = path.join(dir, pdfName);
       }
 
       // ── Fecha de expedición del certificado ──────────────────────────
@@ -382,4 +386,21 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
   return result;
 }
 
-module.exports = { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval };
+// ¿El PDF de DataCrédito del cliente trae la tabla de correos electrónicos?
+// (encabezado "Correo Electrónico"). Si no, no aporta direcciones electrónicas
+// → no se anexa ni se menciona en la demanda.
+async function datacreditoTieneCorreos(cedula, sacDocsDir) {
+  const dir = resolverCarpetaCedula(sacDocsDir, cedula);
+  if (!fs.existsSync(dir)) return false;
+  const dc = fs.readdirSync(dir).find(f => /DATACREDITO\.pdf$/i.test(f));
+  if (!dc) return false;
+  try {
+    const t = (await pdfParse(fs.readFileSync(path.join(dir, dc)), { max: 0 })).text || '';
+    return /Correo\s+Electr[oó]nico/i.test(t);
+  } catch (e) {
+    console.error(`[DATACREDITO] ${cedula}: no se pudo leer para detectar correos: ${e.message}`);
+    return false;
+  }
+}
+
+module.exports = { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval, datacreditoTieneCorreos };

@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './application/context/AuthContext';
+import { NotificationProvider } from './application/context/NotificationContext';
 import { PrivateRoute } from './presentation/router/PrivateRoute';
 import { MainLayout } from './presentation/components/Layout/MainLayout';
 import { LoginPage } from './presentation/pages/LoginPage';
@@ -12,6 +13,7 @@ import { ConfigPage } from './presentation/pages/ConfigPage';
 function App() {
   return (
     <AuthProvider>
+      <NotificationProvider>
       <BrowserRouter>
         <Routes>
           {/* Public */}
@@ -38,6 +40,7 @@ function App() {
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>
+      </NotificationProvider>
     </AuthProvider>
   );
 }

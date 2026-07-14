@@ -15,7 +15,7 @@
 'use strict';
 
 const RUNT_URL  = 'https://portalpublico.runt.gov.co/#/consulta-vehiculo/consulta/consulta-ciudadana';
-const MAX_INTENTOS_CAPTCHA = 5;  // OCR ~85%/intento; con freno de rate-limit basta
+const MAX_INTENTOS_CAPTCHA = 8;  // OCR del captcha es débil; más intentos + preprocesado
 const MAX_FALLOS_SEGUIDOS  = 2;  // tras N placas que agotan intentos → RUNT limitando: desactivar
 
 // Circuit breaker: si el RUNT empieza a rechazar todos los captchas (rate-limit
@@ -62,11 +62,30 @@ async function abrirRunt(browser) {
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
   );
-  await page.goto(RUNT_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-  await page.waitForSelector('input[formcontrolname="placa"]', { timeout: 30000 });
-  await new Promise(r => setTimeout(r, 2500));
-  _runtPage = page;
-  return page;
+
+  // El portal del RUNT es una SPA Angular: 'networkidle2' suele NO cumplirse
+  // (la app mantiene conexiones abiertas) y deja la carga colgada hasta el
+  // timeout. Mejor 'domcontentloaded' + esperar a que monte el campo de placa,
+  // con un reintento de navegación si la primera carga no rinde el formulario.
+  let lastErr = null;
+  for (let intento = 1; intento <= 2; intento++) {
+    try {
+      await page.goto(RUNT_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForSelector('input[formcontrolname="placa"]', { timeout: 45000, visible: true });
+      await new Promise(r => setTimeout(r, 2500));
+      // Verificar que el CAPTCHA REALMENTE cargó: a veces la página entra pero la
+      // imagen del captcha no aparece; recargar lo soluciona (le pasó al usuario).
+      await asegurarCaptcha(page);
+      _runtPage = page;
+      return page;
+    } catch (e) {
+      lastErr = e;
+      console.error(`[RUNT] carga del formulario falló (intento ${intento}/2): ${e.message}`);
+      if (intento < 2) await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  try { await page.close(); } catch (_) {}
+  throw new Error(`no cargó el formulario del RUNT tras 2 intentos: ${lastErr && lastErr.message}`);
 }
 
 // Vuelve al formulario desde la página de resultados con el botón
@@ -91,8 +110,8 @@ async function volverAConsulta(page) {
 // Recarga el formulario (para obtener un captcha nuevo tras un fallo de OCR)
 async function recargarForm(page) {
   try {
-    await page.goto(RUNT_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForSelector('input[formcontrolname="placa"]', { timeout: 30000 });
+    await page.goto(RUNT_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForSelector('input[formcontrolname="placa"]', { timeout: 30000, visible: true });
     await new Promise(r => setTimeout(r, 2000));
     return true;
   } catch (_) { return false; }
@@ -125,6 +144,52 @@ async function grabCaptcha(page) {
       .find(i => (i.src || '').startsWith('data:image') && i.width > 200 && i.height > 50);
     return img ? img.src : null;
   });
+}
+
+// Preprocesa el captcha para subir el acierto del OCR: lo reescala 3x y lo
+// binariza (gris → blanco/negro por umbral). Devuelve un PNG dataURL nuevo.
+async function preprocesarCaptcha(page, dataUrl) {
+  try {
+    return await page.evaluate(async (src) => {
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = src; });
+      const scale = 3;
+      const c = document.createElement('canvas');
+      c.width = (img.width || 250) * scale;
+      c.height = (img.height || 80) * scale;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      const d = ctx.getImageData(0, 0, c.width, c.height);
+      const px = d.data;
+      for (let i = 0; i < px.length; i += 4) {
+        const g = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        const v = g < 140 ? 0 : 255;   // umbral
+        px[i] = px[i + 1] = px[i + 2] = v;
+      }
+      ctx.putImageData(d, 0, 0);
+      return c.toDataURL('image/png');
+    }, dataUrl);
+  } catch (_) {
+    return dataUrl; // si algo falla, OCR sobre el original
+  }
+}
+
+// Garantiza que la imagen del captcha esté cargada en el formulario. Si no
+// aparece, RECARGA la página y reintenta (hasta 3 veces). Esto cubre el caso en
+// que el portal entra pero no muestra el captcha: una recarga lo hace aparecer.
+async function asegurarCaptcha(page) {
+  for (let i = 1; i <= 3; i++) {
+    if (await grabCaptcha(page)) return true;
+    console.error(`[RUNT] captcha no visible al cargar (intento ${i}/3) → recargando la página`);
+    try {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForSelector('input[formcontrolname="placa"]', { timeout: 30000, visible: true });
+      await new Promise(r => setTimeout(r, 2000));
+    } catch (_) { /* siguiente intento */ }
+  }
+  console.error('[RUNT] captcha sigue sin aparecer tras 3 recargas; se intentará igual');
+  return false;
 }
 
 // Etiqueta normalizada (sin tildes, mayúsculas, sin ":" final) → campo
@@ -211,7 +276,7 @@ function parsearResultado(texto) {
  * Consulta una placa en el RUNT. Devuelve campos del vehículo o null.
  * browser: instancia puppeteer abierta; cedula: documento del propietario.
  */
-async function consultarPlacaRunt(browser, placa, cedula = '') {
+async function consultarPlacaRunt(browser, placa, cedula = '', opts = {}) {
   const key = String(placa || '').trim().toUpperCase();
   if (!key) return null;
   if (!browser) return null;
@@ -243,10 +308,11 @@ async function consultarPlacaRunt(browser, placa, cedula = '') {
       await page.type('input[formcontrolname="placa"]', key, { delay: 40 });
       await page.type('input[formcontrolname="documento"]', String(cedula), { delay: 40 });
 
-      // OCR del captcha
+      // OCR del captcha (con preprocesado: reescalado + binarizado)
       const dataUrl = await grabCaptcha(page);
       if (!dataUrl) { await recargarForm(page); continue; }
-      const { data } = await worker.recognize(Buffer.from(dataUrl.split(',')[1], 'base64'));
+      const procUrl = await preprocesarCaptcha(page, dataUrl);
+      const { data } = await worker.recognize(Buffer.from(procUrl.split(',')[1], 'base64'));
       const sol = (data.text || '').replace(/[^A-Za-z0-9]/g, '');
       if (sol.length !== 5) {            // los captchas RUNT son de 5 caracteres
         await recargarForm(page);        // sin botón de refresco → recargar
@@ -277,15 +343,28 @@ async function consultarPlacaRunt(browser, placa, cedula = '') {
       if (estado.hayTabla) {
         datos = parsearResultado(estado.texto);
         console.error(`[RUNT] ✓ ${key}: ${datos.marca} ${datos.linea} ${datos.modelo} (intento ${intento})`);
+        // Guardar la consulta del RUNT como PDF (equivale al Ctrl+P del usuario) →
+        // se anexa luego en el ANEXO del RUNT. Solo si el caller pidió pdfPath.
+        if (opts.pdfPath) {
+          try {
+            await page.pdf({ path: opts.pdfPath, format: 'A4', printBackground: true });
+            datos.pdfPath = opts.pdfPath;
+            console.error(`[RUNT] ${key}: PDF de la consulta guardado → ${require('path').basename(opts.pdfPath)}`);
+          } catch (e) {
+            console.error(`[RUNT] ${key}: no se pudo guardar el PDF de la consulta: ${e.message}`);
+          }
+        }
       } else if (estado.captchaMalo) {
         // Captcha mal leído → recargar para un captcha nuevo y reintentar
         await recargarForm(page);
       } else {
-        // Captcha aceptado pero sin tabla → la placa no corresponde al propietario
+        // Captcha aceptado pero sin tabla → la placa no corresponde al propietario.
+        // Se devuelve {noMatch} (≠ null) para que el caller la EXCLUYA de la demanda
+        // y los anexos (distinto de un fallo de consulta, en que no se sabe).
         console.error(`[RUNT] ${key}: la placa no corresponde al documento ${cedula} (no-match)`);
         _fallosSeguidos = 0;          // hubo respuesta del RUNT → no está limitando
         await volverAConsulta(page);  // dejar el form listo para la siguiente placa
-        return null;
+        return { placa: key, noMatch: true };
       }
     }
 
@@ -309,6 +388,14 @@ async function consultarPlacaRunt(browser, placa, cedula = '') {
     console.error(`[RUNT] ${key}: ${e.message}`);
     // Si la página quedó en mal estado, descartarla para reabrir limpia
     if (_runtPage) { try { await _runtPage.close(); } catch (_) {} _runtPage = null; }
+    // Un fallo de carga/navegación (portal caído o lento) también cuenta para el
+    // freno: si el RUNT no rinde el formulario, no gastar 45s por cada placa el
+    // resto de la corrida → se desactiva tras MAX_FALLOS_SEGUIDOS seguidos.
+    _fallosSeguidos++;
+    if (_fallosSeguidos >= MAX_FALLOS_SEGUIDOS) {
+      _runtDeshabilitado = true;
+      console.error(`[RUNT] RUNT desactivado por esta corrida: ${_fallosSeguidos} fallo(s) seguidos de carga/consulta (portal no disponible).`);
+    }
     return null;
   }
 }

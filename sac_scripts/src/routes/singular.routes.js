@@ -49,6 +49,12 @@ router.post('/generar-singular',
     const smmv            = req.body.smmv ? Number(req.body.smmv) : undefined; // salario mínimo (umbrales de cuantía)
     let transito = undefined; // directorio de tránsito [{ciudad,entidad,correo}] (JSON)
     if (req.body.transito) { try { transito = JSON.parse(req.body.transito); } catch { transito = undefined; } }
+    // Regenerar SOLO ciertas cédulas (opcional). Acepta JSON ["123","456"] o "123,456".
+    let soloCedulas = undefined;
+    if (req.body.soloCedulas) {
+      try { soloCedulas = JSON.parse(req.body.soloCedulas); } catch { soloCedulas = String(req.body.soloCedulas).split(','); }
+      soloCedulas = (Array.isArray(soloCedulas) ? soloCedulas : [soloCedulas]).map(s => String(s).trim()).filter(Boolean);
+    }
 
     console.log(`[${new Date().toISOString()}] /generar-singular: procesando Excel${correoPoderBuffer ? ' (con correo poder)' : ''}...`);
 
@@ -60,6 +66,7 @@ router.post('/generar-singular',
       correoPoderBuffer,
       smmv,
       transito,
+      soloCedulas,
     });
 
     if (!result.success || !result.xlsxBuffer) {

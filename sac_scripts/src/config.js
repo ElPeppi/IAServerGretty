@@ -42,6 +42,11 @@ const PLANTILLA_DEMANDA = process.env.PLANTILLA_DEMANDA
 const PLANTILLA_PODER = process.env.PLANTILLA_PODER
   || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PLANTILLAS\\PLANTILLA PODER SINGULAR AI.docx';
 
+// Imagen de la firma del abogado (PNG) — se estampa en la demanda. Por defecto
+// en la misma carpeta PLANTILLAS que las plantillas, archivo "Firma.png".
+const FIRMA_PATH = process.env.SAC_FIRMA_PATH
+  || path.join(path.dirname(PLANTILLA_DEMANDA), 'Firma.png');
+
 // Carpetas con los certificados compartidos de los ANEXOS (se toma el más reciente):
 //   DEMANDAS  → ANEXO 4 (CCO J Ramos) y ANEXO 5 (SIRNA)
 //   FINANDINA → ANEXO 6 (Super Financiera) y ANEXO 7 (CCO Finandina comprimida)
@@ -70,6 +75,12 @@ const SAC_PASS = process.env.SAC_PASS || '';
 // Contraseña por defecto de los ZIPs que llegan por correo
 const SAC_ZIP_PASS = process.env.SAC_ZIP_PASS || null;
 
+// ─── Notificaciones al backend (SSE) ─────────────────────────────────────────
+// El motor avisa al backend el fin de sus pasos (extracción de ZIPs) y éste lo
+// retransmite a los usuarios logueados. Desactivado si falta alguna de las dos.
+const NOTIFY_URL    = process.env.SAC_NOTIFY_URL    || null; // p.ej. http://localhost:3001/api/notifications/engine
+const NOTIFY_SECRET = process.env.SAC_NOTIFY_SECRET || null; // = ENGINE_NOTIFY_SECRET del backend
+
 // ─── Worker Puppeteer (proceso hijo) ─────────────────────────────────────────
 
 const SCRIPT_PUPPETEER = path.join(RAIZ, 'sac_puppeteer.js');
@@ -84,6 +95,7 @@ module.exports = {
   PLANTILLA_SINGULAR,
   PLANTILLA_DEMANDA,
   PLANTILLA_PODER,
+  FIRMA_PATH,
   ANEXOS_DIR_DEMANDAS,
   ANEXOS_DIR_FINANDINA,
   ANEXOS_DIR_PODERES,
@@ -94,5 +106,7 @@ module.exports = {
   SAC_USER,
   SAC_PASS,
   SAC_ZIP_PASS,
+  NOTIFY_URL,
+  NOTIFY_SECRET,
   SCRIPT_PUPPETEER,
 };

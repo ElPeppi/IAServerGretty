@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { renderAsync } from 'docx-preview';
 import * as XLSX from 'xlsx';
 import { useDocument } from '../../application/hooks/useDocuments';
+import { useRefreshOnNotification } from '../../application/context/NotificationContext';
 import { DocumentStatusBadge } from '../components/Documents/DocumentStatusBadge';
 import { SignatureModal } from '../components/Documents/SignatureModal';
 
@@ -199,9 +200,13 @@ function rightUrl(doc: Document, tab: RightTab): string | null | undefined {
 export function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { document, isLoading, error, sign } = useDocument(id!);
+  const { document, isLoading, error, sign, isRegenerating, regenerar, refetch } = useDocument(id!);
   const [showSignModal, setShowSignModal] = useState(false);
+  const [showRegenConfirm, setShowRegenConfirm] = useState(false);
   const [tab, setTab] = useState<RightTab>('anexos');
+
+  // Cuando el motor termina (SSE), recargar la demanda para ver la versión nueva.
+  useRefreshOnNotification(refetch);
 
   if (isLoading) {
     return (
@@ -228,7 +233,17 @@ export function DocumentDetailPage() {
   }
 
   const canSign = document.status === 'GENERATED';
+  const canRegen = document.status !== 'SIGNED';
   const warnings = (document.notes ?? []).filter((n) => n.nivel === 'warning').length;
+
+  const doRegenerar = async () => {
+    setShowRegenConfirm(false);
+    try {
+      await regenerar();
+    } catch {
+      /* el error se muestra por la notificación SSE */
+    }
+  };
 
   return (
     <div className="p-4 lg:p-6 h-[calc(100vh-1rem)] flex flex-col">
@@ -252,6 +267,30 @@ export function DocumentDetailPage() {
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           <DocumentStatusBadge status={document.status} />
+          {canRegen && (
+            <button
+              onClick={() => setShowRegenConfirm(true)}
+              disabled={isRegenerating}
+              className="px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-xl text-sm font-semibold transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              {isRegenerating ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z" />
+                  </svg>
+                  Regenerando…
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Regenerar
+                </>
+              )}
+            </button>
+          )}
           {canSign && (
             <button
               onClick={() => setShowSignModal(true)}
@@ -325,6 +364,45 @@ export function DocumentDetailPage() {
           onConfirm={async () => { await sign(); setShowSignModal(false); }}
           onClose={() => setShowSignModal(false)}
         />
+      )}
+
+      {showRegenConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+             onClick={() => setShowRegenConfirm(false)}>
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-4">
+              <span className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center text-amber-600 flex-shrink-0">🔄</span>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">Regenerar esta demanda</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  {document.clientName}{document.clientCedula ? ` · CC ${document.clientCedula}` : ''}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 mb-2">
+              Se volverá a correr el motor <span className="font-medium">solo para esta persona</span> con el Excel de
+              asignación original y se <span className="font-medium">sobrescribirá</span> la demanda actual (y sus anexos).
+            </p>
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-5">
+              Ojo: si editaste el Word a mano, esos cambios se perderán. El poder puede quedar sin el correo del banco
+              (no se guarda del lote original).
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowRegenConfirm(false)}
+                className="px-4 py-2 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={doRegenerar}
+                className="px-4 py-2 rounded-xl text-sm font-semibold text-white bg-purple-600 hover:bg-purple-700 transition-colors"
+              >
+                Sí, regenerar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

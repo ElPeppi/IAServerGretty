@@ -37,6 +37,7 @@ export class EngineService implements IEngineService {
     if (input.fechaAsignacion) form.append('fechaAsignacion', input.fechaAsignacion);
     if (input.smmv)            form.append('smmv', String(input.smmv));
     if (input.transito?.length) form.append('transito', JSON.stringify(input.transito));
+    if (input.soloCedulas?.length) form.append('soloCedulas', JSON.stringify(input.soloCedulas));
 
     const { data } = await axios.post<GenerateSingularOutput>(
       `${this.baseUrl}/generar-singular`,

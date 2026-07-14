@@ -17,6 +17,7 @@
  *   fechaAsignacion?: string  // DD/MM/YYYY, por defecto hoy
  *   correoPoderBuffer?: Buffer // correo PDF del banco (mismo para todo el lote)
  *                              // sobre el que se sobrepone el poder → ANEXO 1
+ *   soloCedulas?:     string[] // si viene, SOLO se procesan esas cédulas (regenerar una demanda)
  * }
  */
 
@@ -35,7 +36,7 @@ const { parsearVehiculos }             = require('../../domain/vehiculos');
 const { parsearExcelEntrada }          = require('./excelEntrada');
 const { construirFilas, fillTemplate } = require('./plantillaXlsx');
 const { loadRamaCache, buscarCorreoJuzgado } = require('./ramaJudicial');
-const { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval } = require('./carpetaCliente');
+const { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval, datacreditoTieneCorreos } = require('./carpetaCliente');
 const { generarDemandasWord }          = require('./demandas');
 const { generarAntecedentes }          = require('./antecedentes');
 const { generarAnexos }                = require('./anexos');
@@ -69,6 +70,21 @@ async function procesarSingular(excelBuffer, options = {}) {
 
   if (clientes.length === 0) {
     return { success: false, error: 'No se encontraron clientes con cédula en Hoja1', clientes: [], errores: [] };
+  }
+
+  // Filtro opcional: regenerar SOLO ciertas cédulas (botón "Regenerar demanda").
+  // Se conserva la propiedad `omitidosProceso` del array, filtrada a las mismas cédulas.
+  if (Array.isArray(options.soloCedulas) && options.soloCedulas.length) {
+    const set = new Set(options.soloCedulas.map(c => String(c).trim()));
+    const omitidosProc = clientes.omitidosProceso;
+    clientes = clientes.filter(c => set.has(String(c.cedula).trim()));
+    clientes.omitidosProceso = Array.isArray(omitidosProc)
+      ? omitidosProc.filter(o => set.has(String(o.cedula).trim()))
+      : [];
+    console.error(`[SINGULAR] Filtro soloCedulas → ${clientes.length} cliente(s) de ${set.size} cédula(s) pedida(s)`);
+    if (clientes.length === 0) {
+      return { success: false, error: `Las cédulas pedidas no están en el Excel de asignación: ${[...set].join(', ')}`, clientes: [], errores: [] };
+    }
   }
 
   console.error(`[SINGULAR] ${clientes.length} cliente(s) candidato(s) — se validará el certificado DECEVAL de cada pagaré`);
@@ -111,6 +127,7 @@ async function procesarSingular(excelBuffer, options = {}) {
         // (de dónde salió cada dato, qué faltó). { campo, nivel, mensaje }
         const notas = [];
         const runtSinInfo = [];
+        const runtNoMatch = [];
 
         // 2a. Leer PDFs SAC ya descargados (fecha mora más antigua)
         const sacPdf = await leerDatosDeSACPdfs(cedula, sacDocsDir);
@@ -133,10 +150,12 @@ async function procesarSingular(excelBuffer, options = {}) {
           continue;
         }
         if (decevalPdf.tipoPagare === 'FINANDINA') {
-          // Pagaré escaneado SIN diligenciar (formato en blanco): no presta mérito
-          // ejecutivo → no se genera la demanda; queda en observaciones.
+          // Pagaré escaneado con el CUERPO sin diligenciar: aunque tenga firma o
+          // datos del deudor, si le falta el cuerpo (número de pagaré, valor de
+          // capital y fecha de vencimiento) NO presta mérito ejecutivo → no se
+          // genera la demanda; queda en observaciones.
           if (!decevalPdf.diligenciado) {
-            const motivo = 'pagaré escaneado sin diligenciar (formato en blanco: no se detectó nombre, identificación ni fecha de suscripción por OCR)';
+            const motivo = 'pagaré escaneado con el cuerpo sin diligenciar (faltan número de pagaré, valor de capital y fecha de vencimiento; solo trae la firma/datos del deudor)';
             console.error(`[SINGULAR] ⊘ ${cedula} — ${cliente.nombre || '(sin nombre)'}: ${motivo}`);
             omitidos.push({ cedula, nombre: cliente.nombre || '', motivo });
             continue;
@@ -189,11 +208,25 @@ async function procesarSingular(excelBuffer, options = {}) {
         // (color, serie, motor, chasis, tipo carrocería, autoridad de tránsito).
         // Se consulta por placa + cédula del propietario (el demandado).
         if (browser && vehiculos.length > 0) {
+          const clientDir = resolverCarpetaCedula(sacDocsDir, cedula);
+          if (!fs.existsSync(clientDir)) fs.mkdirSync(clientDir, { recursive: true });
+          const vehiculosValidos = [];
           for (const v of vehiculos) {
             const placaCorta = (String(v.placa || '').match(/^([A-Z0-9]{5,7})/i) || [])[1];
-            if (!placaCorta) continue;
-            const runt = await consultarPlacaRunt(browser, placaCorta, cedula);
-            if (!runt) { runtSinInfo.push(placaCorta); continue; }
+            if (!placaCorta) { vehiculosValidos.push(v); continue; } // sin placa → no se puede verificar, se conserva
+            // pdfPath con "RUNT" en el nombre → lo recoge generarAnexos para el anexo del RUNT.
+            const pdfPath = path.join(clientDir, `SAC_${cedula}_RUNT_${placaCorta}.pdf`);
+            const runt = await consultarPlacaRunt(browser, placaCorta, cedula, { pdfPath });
+            // No-match: la placa NO corresponde al demandado → se EXCLUYE de la demanda
+            // y de los anexos (no es un vehículo del cliente). Se borra el PDF si quedó.
+            if (runt && runt.noMatch) {
+              runtNoMatch.push(placaCorta);
+              try { if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath); } catch (_) {}
+              continue; // no se agrega a vehiculosValidos → desaparece de la demanda/anexos
+            }
+            // Fallo de consulta (captcha/RUNT caído): no se sabe si la placa es válida
+            // → se CONSERVA el vehículo (queda el placeholder del anexo del RUNT).
+            if (!runt) { runtSinInfo.push(placaCorta); vehiculosValidos.push(v); continue; }
             // RUNT es la fuente autoritativa de los datos oficiales del vehículo
             for (const campo of ['marca', 'linea', 'modelo', 'color', 'serie', 'motor', 'chasis', 'tipoCarroceria']) {
               if (runt[campo]) v[campo] = runt[campo];
@@ -201,7 +234,10 @@ async function procesarSingular(excelBuffer, options = {}) {
             if (!v.clase && runt.clase)       v.clase    = runt.clase;
             if (!v.servicio && runt.servicio) v.servicio = runt.servicio;
             v.runtAutoridad = runt.autoridad || ''; // organismo de tránsito (→ STRIA)
+            vehiculosValidos.push(v);
           }
+          // Reemplazar la lista por la filtrada (sin las placas que no corresponden).
+          vehiculos = vehiculosValidos;
         }
 
         const tieneVehiculos = vehiculos.length > 0;
@@ -255,8 +291,14 @@ async function procesarSingular(excelBuffer, options = {}) {
         let ciudadJuzgado = ciudad;
         if (/^BARRANQUILLA\b/i.test(ciudad) && courtInfo.hasSmallClaims) {
           const loc = await determinarLocalidad(contactos.direccion);
-          if (loc) ciudadJuzgado = `BARRANQUILLA LOCALIDAD ${loc}`;
-          else notas.push({ campo: 'localidad', nivel: 'warning', mensaje: 'Barranquilla con pequeñas causas pero no se pudo determinar la localidad por el barrio/dirección (revisar manualmente)' });
+          if (loc) {
+            ciudadJuzgado = `BARRANQUILLA LOCALIDAD ${loc}`;
+          } else {
+            // No se pudo determinar la localidad → dejar "#######" en su lugar para
+            // que en la demanda se vea el faltante y el usuario la complete a mano.
+            ciudadJuzgado = 'BARRANQUILLA LOCALIDAD #######';
+            notas.push({ campo: 'localidad', nivel: 'warning', mensaje: 'Barranquilla con pequeñas causas pero no se pudo determinar la localidad por el barrio/dirección: se dejó "LOCALIDAD #######" en la demanda para completar manualmente' });
+          }
         }
 
         // 2g. Construir fila principal + extras (vehículos adicionales → Hoja2)
@@ -293,6 +335,11 @@ async function procesarSingular(excelBuffer, options = {}) {
         }
         filasTodas.push(main);
         filasExtras.push(...extras);
+        // ¿El DataCrédito trae la tabla de correos? Si NO, no se anexa ni se
+        // menciona en la demanda (solo sirve por las direcciones electrónicas).
+        const dcCorreos = await datacreditoTieneCorreos(cedula, sacDocsDir);
+        if (!dcCorreos)
+          notas.push({ campo: 'datacredito', nivel: 'info', mensaje: 'El DataCrédito no trae la tabla de correos electrónicos: se omite del anexo y de su mención en la demanda' });
         // Lista REAL de vehículos para la demanda (vacía si el cliente no tiene):
         // una medida cautelar por vehículo, o ninguna si no hay.
         // tieneInmueble controla la medida cautelar PRIMERO (embargo de inmuebles).
@@ -302,6 +349,7 @@ async function procesarSingular(excelBuffer, options = {}) {
           tieneInmueble: !!cliente.tieneInmueble,
           camaraEmpleador,   // ciudad de la Cámara de Comercio del empleador (RUES)
           tipoPagare: decevalPdf.tipoPagare || 'DECEVAL',  // DECEVAL | FINANDINA
+          datacreditoCorreos: dcCorreos,
         });
 
         // ── Notas consolidadas de procedencia / faltantes ──────────────
@@ -315,6 +363,8 @@ async function procesarSingular(excelBuffer, options = {}) {
         }
         if (runtSinInfo.length)
           notas.push({ campo: 'runt', nivel: 'warning', mensaje: `RUNT sin información para placa(s): ${runtSinInfo.join(', ')} (datos del vehículo incompletos)` });
+        if (runtNoMatch.length)
+          notas.push({ campo: 'runt', nivel: 'warning', mensaje: `Placa(s) ${runtNoMatch.join(', ')} NO corresponden al demandado según el RUNT: se excluyeron de la demanda y de los anexos` });
         if (browser && !correoJuzgado)
           notas.push({ campo: 'correoJuzgado', nivel: 'warning', mensaje: `No se encontró el correo del juzgado de ${ciudad} en la Rama Judicial` });
         if (!correoPoderBuf)
@@ -426,9 +476,19 @@ async function procesarSingular(excelBuffer, options = {}) {
       console.error(`[ANTECEDENTES] ${ced}: ${e.message}`);
     }
     try {
-      // OBLIGACION = número del pagaré → carátula del ANEXO 2
-      // correoPoderBuf → ANEXO 1 (poder sobrepuesto en el correo del banco)
-      if (await generarAnexos(ced, sacDocsDir, String(item.fila['OBLIGACION'] || ''), correoPoderBuf)) anexos++;
+      // OBLIGACION = número del pagaré → carátula del ANEXO del pagaré
+      // correoPoderBuf → ANEXO del poder (sobrepuesto en el correo del banco)
+      // opts → condicionales (RUNT si hay vehículos; CCO empleador si hay empresa)
+      //        para que la numeración coincida con las pruebas de la demanda.
+      if (await generarAnexos(ced, sacDocsDir, String(item.fila['OBLIGACION'] || ''), correoPoderBuf, {
+        vehiculos:          item.vehiculos,
+        empresa:            item.fila['NOMBRE EMPRESA TT'],
+        nit:                item.fila['NIT EMPRESA TT'],
+        camaraEmpleador:    item.camaraEmpleador,
+        datacreditoCorreos: item.datacreditoCorreos,
+        // Obligación(es) del préstamo → carátula del pagaré: "Que respalda la obligación …"
+        obligaciones:       String(item.fila['OBLIGACIONES'] || item.fila['OBLIGACION'] || ''),
+      })) anexos++;
     } catch (e) {
       console.error(`[ANEXOS] ${ced}: ${e.message}`);
     }
