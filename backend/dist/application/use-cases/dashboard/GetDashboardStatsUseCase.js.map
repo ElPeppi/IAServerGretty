@@ -1,1 +1,0 @@
-{"version":3,"file":"GetDashboardStatsUseCase.js","sourceRoot":"","sources":["../../../../src/application/use-cases/dashboard/GetDashboardStatsUseCase.ts"],"names":[],"mappings":";;;AAEA,MAAa,wBAAwB;IACnC,YAA6B,kBAAuC;QAAvC,uBAAkB,GAAlB,kBAAkB,CAAqB;IAAG,CAAC;IAExE,KAAK,CAAC,OAAO,CAAC,QAAiB;QAC7B,OAAO,IAAI,CAAC,kBAAkB,CAAC,iBAAiB,CAAC,QAAQ,CAAC,CAAC;IAC7D,CAAC;CACF;AAND,4DAMC"}

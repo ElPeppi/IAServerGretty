@@ -1,1 +1,0 @@
-{"version":3,"file":"GetDashboardStatsUseCase.d.ts","sourceRoot":"","sources":["../../../../src/application/use-cases/dashboard/GetDashboardStatsUseCase.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,mBAAmB,EAAE,MAAM,kDAAkD,CAAC;AAEvF,qBAAa,wBAAwB;IACvB,OAAO,CAAC,QAAQ,CAAC,kBAAkB;gBAAlB,kBAAkB,EAAE,mBAAmB;IAE9D,OAAO,CAAC,QAAQ,CAAC,EAAE,MAAM;CAGhC"}

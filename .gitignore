@@ -28,3 +28,7 @@ Thumbs.db
 desktop.ini
 *.swp
 *.swo
+
+# Build artifacts (no versionar — se generan con npm run build)
+backend/dist/
+frontend/dist/
