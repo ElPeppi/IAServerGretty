@@ -10,6 +10,7 @@ import generateRoutes from './routes/generateRoutes';
 import userRoutes from './routes/userRoutes';
 import configRoutes from './routes/configRoutes';
 import notificationRoutes from './routes/notificationRoutes';
+import asignacionRoutes from './routes/asignacionRoutes';
 
 const app = express();
 
@@ -51,6 +52,7 @@ app.use('/api/generate', generateRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/config', configRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/asignaciones', asignacionRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

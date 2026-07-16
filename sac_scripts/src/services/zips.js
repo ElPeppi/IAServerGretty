@@ -296,4 +296,5 @@ module.exports = {
   extraerPasswordDelCorreo,
   extraerClientesDeZips,
   procesarLoteZips,
+  renombrarPagarePDFs,
 };

@@ -1,0 +1,21 @@
+name: Deploy a producción
+
+# Se dispara al hacer push a main, o manualmente desde la pestaña Actions.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Nunca correr dos deploys a la vez (evita builds pisándose).
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Runner self-hosted instalado EN el EC2 (ver docs/DEPLOY-PRODUCCION.md §11).
+    # No requiere abrir el puerto 22 ni llaves AWS: el runner "jala" el job.
+    runs-on: [self-hosted, gretty-prod]
+    steps:
+      - name: Ejecutar deploy.sh
+        run: /home/appuser/IAServerGretty/scripts/deploy.sh

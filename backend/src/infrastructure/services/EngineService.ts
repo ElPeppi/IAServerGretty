@@ -9,6 +9,10 @@ import {
   IEngineService,
   GenerateSingularInput,
   GenerateSingularOutput,
+  DescargarSacInput,
+  DescargarSacOutput,
+  GenerarPoderesInput,
+  GenerarPoderesOutput,
 } from '../../application/services/IEngineService';
 
 const XLSX_MIME =
@@ -47,6 +51,39 @@ export class EngineService implements IEngineService {
         // Corre en segundo plano (sin navegador esperando): lotes grandes tardan
         // varios minutos por el scraping. Timeout alto y configurable por env.
         timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000, // 60 min por defecto
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+    return data;
+  }
+
+  async descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput> {
+    const { data } = await axios.post<DescargarSacOutput>(
+      `${this.baseUrl}/descargar-sac`,
+      { cedulas: input.cedulas },
+      {
+        // El scraping del SAC (Puppeteer) tarda por cédula y corre secuencial en
+        // el motor. Timeout alto y configurable (mismo env que la generación).
+        timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000, // 60 min por defecto
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+    return data;
+  }
+
+  async generarPoderes(input: GenerarPoderesInput): Promise<GenerarPoderesOutput> {
+    const { data } = await axios.post<GenerarPoderesOutput>(
+      `${this.baseUrl}/generar-poderes`,
+      {
+        filas: input.filas,
+        docsEnServidor: !!input.docsEnServidor,
+        fechaAsignacion: input.fechaAsignacion,
+        nombre: input.nombre,
+      },
+      {
+        timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
       }

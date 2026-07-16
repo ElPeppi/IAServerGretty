@@ -29,6 +29,7 @@ const puppeteer = require('puppeteer');
 
 const config = require('../../config');
 const { resolverCarpetaCedula }       = require('../../utils/carpetas');
+const { renombrarPagarePDFs }         = require('../zips');
 const { parseAnyDate, todayString }   = require('../../utils/fechas');
 const { calcularCuantia, tipoCuantia } = require('../../domain/cuantia');
 const { parsearVehiculos }             = require('../../domain/vehiculos');
@@ -128,6 +129,16 @@ async function procesarSingular(excelBuffer, options = {}) {
         const notas = [];
         const runtSinInfo = [];
         const runtNoMatch = [];
+
+        // 2·0. Normalizar nombres de pagaré: si el usuario subió el PDF con un nombre
+        // cualquiera, se renombra a "{NOMBRE} PAGARE.pdf" para que la generación de
+        // anexos lo encuentre (busca el pagaré por nombre). A prueba de todo método de
+        // subida. Falla suave: un error aquí no detiene la generación del cliente.
+        try {
+          await renombrarPagarePDFs(cedula, resolverCarpetaCedula(sacDocsDir, cedula));
+        } catch (e) {
+          console.error(`[SINGULAR] ${cedula}: renombrado de pagaré falló (${e.message})`);
+        }
 
         // 2a. Leer PDFs SAC ya descargados (fecha mora más antigua)
         const sacPdf = await leerDatosDeSACPdfs(cedula, sacDocsDir);

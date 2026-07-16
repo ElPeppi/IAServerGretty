@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Document, DocumentStatus } from '../../domain/types/document';
+import type { Document } from '../../domain/types/document';
 import { documentApi } from '../../infrastructure/api/documentApi';
 import type { DocumentFilters, DocumentsPage } from '../../infrastructure/api/documentApi';
 

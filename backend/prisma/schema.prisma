@@ -16,6 +16,7 @@ model User {
   signatureUrl String?
   documents    Document[]
   observaciones Observacion[]
+  asignaciones Asignacion[]
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -47,6 +48,9 @@ model Document {
   description String?
   lawyerId    String
   lawyer      User           @relation(fields: [lawyerId], references: [id])
+  // Asignación (lote) de la que salió la demanda → enlaza con su poder cacheado.
+  asignacionId String?
+  asignacion   Asignacion?   @relation(fields: [asignacionId], references: [id])
   metadata    Json?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
@@ -57,7 +61,53 @@ model Document {
   @@index([status])
   @@index([clientCedula])
   @@index([createdAt])
+  @@index([asignacionId])
   @@map("documents")
+}
+
+// Asignación (lote de clientes de un Excel). Se cachea al subir el Excel o al
+// escanear el servidor ("actualizar asignaciones"). Es la base del flujo nuevo:
+// subir Excel → generar poderes → generar demandas (reusando el poder).
+model Asignacion {
+  id              String     @id @default(cuid())
+  nombre          String     @unique          // p. ej. "ASIGNACION 11 DE JUNIO DE 2026" (del archivo)
+  fechaAsignacion DateTime?                    // fecha de la asignación (valida la antigüedad de los docs)
+  excelUrl        String?                      // Excel de asignación en el NAS
+  filas           Json                         // filas del Excel cacheadas [{ IDENTIFICACION, NOMBRE, ... }]
+  totalFilas      Int        @default(0)
+  poderUrl        String?                      // Word combinado de poderes (cuando se genera)
+  poderGeneradoAt DateTime?
+  docsEnServidor  Boolean    @default(false)   // último estado del checklist global al generar poderes
+  lawyerId        String
+  lawyer          User       @relation(fields: [lawyerId], references: [id])
+  poderes         Poder[]
+  documentos      Document[]
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([lawyerId, createdAt])
+  @@map("asignaciones")
+}
+
+// Poder cacheado (enlace poder ↔ cliente). Guarda los datos con que se llenó el
+// poder la primera vez; al generar la demanda se reconcilian contra la demanda
+// (la demanda manda: si difieren nombre/cédula/etc., se corrige el poder).
+model Poder {
+  id              String     @id @default(cuid())
+  asignacionId    String
+  asignacion      Asignacion @relation(fields: [asignacionId], references: [id], onDelete: Cascade)
+  cedula          String
+  nombre          String?
+  ciudadJuzgado   String?
+  tipoJuzgado     String?
+  numeroPagare    String?                      // el Nº que se puso en el poder (docs o OBLIGACION del Excel)
+  pagareDesdeDocs Boolean    @default(false)   // true si se leyó del pagaré/DECEVAL del servidor
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([asignacionId])
+  @@index([cedula])
+  @@map("poderes")
 }
 
 enum DocumentStatus {

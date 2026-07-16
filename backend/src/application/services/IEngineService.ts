@@ -63,6 +63,58 @@ export interface GenerateSingularOutput {
   xlsxBase64: string;
 }
 
+// ─── Descarga de obligaciones del SAC por cédula (reemplaza el disparo por ZIP) ──
+export interface DescargarSacInput {
+  cedulas: string | string[]; // el motor las normaliza (separadas por "-", "," o espacios)
+}
+
+export interface DescargarSacItem {
+  cedula: string;
+  success: boolean;
+  carpeta?: string;
+  pdfsSAC?: string[];         // SAC_{ced}_DIRYTEL.pdf, SAC_{ced}_OBL{obl}.pdf, …
+  contactos?: string | null;  // CONTACTOS_{ced}.csv
+  error?: string;
+}
+
+export interface DescargarSacOutput {
+  success: boolean;
+  total: number;
+  ok: number;
+  resultados: DescargarSacItem[];
+}
+
+// ─── Generación del Word combinado de poderes (una asignación) ──────────────────
+export interface GenerarPoderesInput {
+  filas: Array<Record<string, unknown>>; // filas del Excel de asignación cacheadas
+  docsEnServidor?: boolean;               // leer Nº pagaré del doc (si no, OBLIGACION del Excel)
+  fechaAsignacion?: string;               // valida antigüedad de los docs (DD/MM/YYYY o ISO)
+  nombre?: string;                        // nombre del lote → nombre del archivo Word
+}
+
+export interface PoderClienteOut {
+  cedula: string;
+  nombre?: string;
+  ciudadJuzgado?: string;
+  tipoJuzgado?: string;
+  numeroPagare?: string;
+  pagare?: string;
+  pagareDesdeDocs?: boolean;
+}
+
+export interface GenerarPoderesOutput {
+  success: boolean;
+  poderFilename?: string;
+  poderPath?: string;           // ruta donde el motor guardó el Word (PODERES/{año})
+  poderBase64?: string;         // el Word combinado (para que el backend lo sirva)
+  docsEnServidor?: boolean;
+  clientes: PoderClienteOut[];
+  excluidos: Array<{ cedula: string; nombre?: string; motivo: string }>;
+  error?: string;
+}
+
 export interface IEngineService {
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
+  descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
+  generarPoderes(input: GenerarPoderesInput): Promise<GenerarPoderesOutput>;
 }

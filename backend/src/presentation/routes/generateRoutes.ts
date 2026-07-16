@@ -10,6 +10,11 @@ const controller = new GenerateController();
 router.use(authenticate);
 router.post('/from-excel', upload.single('file'), (req, res) => controller.fromExcel(req, res));
 
+// Descarga de obligaciones del SAC por cédula (reemplaza el ZIP/n8n).
+// Acepta cédulas pegadas (body.cedulas) y/o el Excel de asignación (campo excelFile,
+// de donde se sacan las cédulas de la columna IDENTIFICACION).
+router.post('/descargar-sac', upload.single('excelFile'), (req, res) => controller.descargarSac(req, res));
+
 // Demandas singulares con el motor real (sac_scripts): Excel + correo del poder.
 router.post(
   '/singular',

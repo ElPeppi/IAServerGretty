@@ -1,0 +1,1 @@
+{"version":3,"file":"GetDocumentByIdUseCase.d.ts","sourceRoot":"","sources":["../../../../src/application/use-cases/documents/GetDocumentByIdUseCase.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,mBAAmB,EAAE,MAAM,kDAAkD,CAAC;AAEvF,qBAAa,sBAAsB;IACrB,OAAO,CAAC,QAAQ,CAAC,kBAAkB;gBAAlB,kBAAkB,EAAE,mBAAmB;IAE9D,OAAO,CAAC,EAAE,EAAE,MAAM;CAOzB"}

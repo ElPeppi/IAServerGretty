@@ -27,6 +27,8 @@ app.use(express.json({ limit: '100mb' }));
 // ─── Rutas ────────────────────────────────────────────────────────────────────
 
 app.use(require('./routes/zips.routes'));
+app.use(require('./routes/sac.routes'));
+app.use(require('./routes/poderes.routes'));
 app.use(require('./routes/singular.routes'));
 app.use(require('./routes/ocr.routes'));
 

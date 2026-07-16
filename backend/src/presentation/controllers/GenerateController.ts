@@ -22,6 +22,26 @@ const nas = new NasStorage();
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
+// Saca las cédulas del Excel de asignación (columna IDENTIFICACION; con respaldos
+// por si el encabezado varía). Solo dígitos, únicas. El motor valida/normaliza.
+function extraerCedulasDeExcel(buffer: Buffer): string[] {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  if (!sheet) return [];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+  const COLS = ['IDENTIFICACION', 'IDENTIFICACIÓN', 'CEDULA', 'CÉDULA', 'DOCUMENTO'];
+  const out = new Set<string>();
+  for (const row of rows) {
+    for (const col of COLS) {
+      if (row[col] == null) continue;
+      const ced = String(row[col]).replace(/\D/g, '');
+      if (/^\d{5,12}$/.test(ced)) out.add(ced);
+      break; // primera columna que exista en la fila
+    }
+  }
+  return [...out];
+}
+
 export class GenerateController {
   async fromExcel(req: AuthRequest, res: Response): Promise<void> {
     try {
@@ -160,6 +180,43 @@ export class GenerateController {
       lawyerId: lawyer.id,
       lote: excelFile.originalname || null,
     });
+  }
+
+  /**
+   * Descarga las obligaciones del SAC por CÉDULA (reemplaza el disparo por ZIP/n8n).
+   * Recibe cédulas separadas por "-", "," o espacios; el motor corre el scraping
+   * (Puppeteer) y deja SAC_*.pdf + CONTACTOS_*.csv en la carpeta de cada cliente.
+   * Síncrono (con timeout alto): el SAC tarda por cédula y corre secuencial.
+   */
+  async descargarSac(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      // Cédulas de dos fuentes (combinables): texto pegado + Excel de asignación.
+      const pegadas = String(req.body?.cedulas ?? '').trim();
+      const delExcel = req.file ? extraerCedulasDeExcel(req.file.buffer) : [];
+
+      // El motor normaliza y deduplica; aquí solo unimos ambas fuentes.
+      const cedulas = [pegadas, ...delExcel].filter(Boolean).join(' ');
+      if (!cedulas.trim()) {
+        res.status(400).json({
+          message: req.file
+            ? 'El Excel no tiene cédulas en la columna IDENTIFICACION.'
+            : 'Ingresa al menos una cédula (separadas por "-", "," o espacios) o sube el Excel de asignación.',
+        });
+        return;
+      }
+
+      const result = await engineService.descargarSac({ cedulas });
+      res.status(200).json(result);
+    } catch (error: unknown) {
+      const axiosCode = (error as { code?: string }).code;
+      if (axiosCode === 'ECONNREFUSED' || axiosCode === 'ENOTFOUND') {
+        res.status(503).json({ message: 'El motor no está disponible. Verifica que sac_scripts esté corriendo.' });
+        return;
+      }
+      const resp = (error as { response?: { data?: { error?: string; message?: string } } }).response;
+      const msg = resp?.data?.error || resp?.data?.message || (error instanceof Error ? error.message : 'Error al descargar del SAC');
+      res.status(500).json({ message: String(msg) });
+    }
   }
 
   /**

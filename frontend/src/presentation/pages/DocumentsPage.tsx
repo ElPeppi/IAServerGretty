@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useDocuments } from '../../application/hooks/useDocuments';
 import { DocumentCard } from '../components/Documents/DocumentCard';
-import { UploadExcelModal } from '../components/Documents/UploadExcelModal';
+import { SubirAsignacionModal } from '../components/Asignaciones/SubirAsignacionModal';
+import { DescargarSacModal } from '../components/Documents/DescargarSacModal';
 import type { DocumentStatus } from '../../domain/types/document';
 
 const STATUS_OPTIONS: { value: DocumentStatus | ''; label: string }[] = [
@@ -20,6 +21,7 @@ export function DocumentsPage() {
   const [search, setSearch] = useState('');       // valor "debounced" que va al servidor
   const [page, setPage] = useState(1);
   const [showUpload, setShowUpload] = useState(false);
+  const [showSac, setShowSac] = useState(false);
 
   // Debounce de la búsqueda: espera a que el usuario deje de escribir.
   useEffect(() => {
@@ -51,6 +53,16 @@ export function DocumentsPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setShowSac(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-medium transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Descargar SAC
+          </button>
+          <button
             onClick={() => setShowUpload(true)}
             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-medium transition-colors"
           >
@@ -58,7 +70,7 @@ export function DocumentsPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
-            Subir Excel
+            Subir asignación
           </button>
           <button
             onClick={refetch}
@@ -158,10 +170,14 @@ export function DocumentsPage() {
       )}
 
       {showUpload && (
-        <UploadExcelModal
+        <SubirAsignacionModal
           onClose={() => setShowUpload(false)}
           onSuccess={refetch}
         />
+      )}
+
+      {showSac && (
+        <DescargarSacModal onClose={() => setShowSac(false)} />
       )}
     </div>
   );
