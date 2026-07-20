@@ -93,9 +93,12 @@ async function correrPuppeteerCedula(cedula, carpetaSalida, sacUrl, sacUser, sac
   try {
     const stdout = await sacQueue.run(() => new Promise((resolve, reject) => {
       console.log(`[${new Date().toISOString()}] Iniciando Puppeteer para cédula ${cedula}...`);
+      // sac_puppeteer.js espera: <clientesJSON> <sacUrl> <user> <pass>
+      // (el 1er arg es un ARRAY JSON de { cedula, outputDir }, no la cédula suelta).
+      const clientesArg = JSON.stringify([{ cedula: String(cedula), outputDir: carpetaSalida }]);
       execFile(
         process.execPath,
-        [config.SCRIPT_PUPPETEER, cedula, carpetaSalida, sacUrl, sacUser, sacPass],
+        [config.SCRIPT_PUPPETEER, clientesArg, sacUrl, sacUser, sacPass],
         { timeout: 300000, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 },
         (err, stdout, stderr) => {
           if (err) reject({ err, stdout: stdout || '', stderr: stderr || '' });
