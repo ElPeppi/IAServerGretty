@@ -39,4 +39,13 @@ export const documentApi = {
       .put<Document>(`/documents/${id}/file`, form, { headers: { 'Content-Type': undefined } })
       .then((r) => r.data);
   },
+
+  /** Sobreescribe el .xlsx de asignación (Excel del lote) en el NAS. */
+  saveAsignacion: (id: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return apiClient
+      .put<{ success: boolean; message: string }>(`/documents/${id}/asignacion`, form, { headers: { 'Content-Type': undefined } })
+      .then((r) => r.data);
+  },
 };

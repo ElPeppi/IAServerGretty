@@ -77,19 +77,27 @@ export interface DescargarSacItem {
   error?: string;
 }
 
+// El motor responde 202 en cuanto encola el lote y sigue en segundo plano: el
+// avance llega por SSE (una notificación por cédula + una final). Por eso ya no
+// vienen `ok`/`resultados` en la respuesta inmediata.
 export interface DescargarSacOutput {
   success: boolean;
+  started?: boolean;
   total: number;
-  ok: number;
-  resultados: DescargarSacItem[];
+  cedulas?: string[];
+  message?: string;
+  ok?: number;
+  resultados?: DescargarSacItem[];
 }
 
 // ─── Generación del Word combinado de poderes (una asignación) ──────────────────
 export interface GenerarPoderesInput {
-  filas: Array<Record<string, unknown>>; // filas del Excel de asignación cacheadas
+  excel: Buffer;                          // Excel ORIGINAL (Hoja1 + Hoja2) de la asignación
   docsEnServidor?: boolean;               // leer Nº pagaré del doc (si no, OBLIGACION del Excel)
-  fechaAsignacion?: string;               // valida antigüedad de los docs (DD/MM/YYYY o ISO)
+  fechaAsignacion?: string;               // año de la carpeta PODERES/{año} (DD/MM/YYYY o ISO)
   nombre?: string;                        // nombre del lote → nombre del archivo Word
+  smmv?: number;                          // salario mínimo (umbrales de cuantía → tipo de juzgado)
+  soloCedulas?: string[];                 // subconjunto a generar; vacío/omitido = todas (singular)
 }
 
 export interface PoderClienteOut {

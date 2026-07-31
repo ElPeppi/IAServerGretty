@@ -18,6 +18,7 @@ const fs      = require('fs');
 
 const config = require('../config');
 const { correrPuppeteerCedula } = require('../services/puppeteerRunner');
+const { notificarBackend } = require('../services/notifier');
 const { resolverCarpetaLectura, mkdirpSync } = require('../utils/carpetas');
 
 const router = express.Router();
@@ -51,9 +52,38 @@ router.post('/descargar-sac', async (req, res) => {
 
   console.log(`[${new Date().toISOString()}] /descargar-sac: ${cedulas.length} cédula(s): ${cedulas.join(', ')}`);
 
+  // Se responde YA y el scraping sigue en segundo plano: cada cédula tarda entre
+  // 1 y 5 minutos, y así el usuario puede ir generando las demandas de la gente
+  // cuya info ya bajó, sin esperar a que termine todo el lote. El avance llega
+  // por SSE (una notificación por cédula + una final).
+  res.status(202).json({
+    success: true,
+    started: true,
+    total: cedulas.length,
+    cedulas,
+    message: `Descarga del SAC iniciada para ${cedulas.length} cédula(s). Se avisa por cada una que termine.`,
+  });
+
+  void descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass });
+});
+
+// Corre las cédulas en serie (correrPuppeteerCedula ya encola una sesión SAC a la
+// vez) y notifica al backend por cada una. Nunca lanza: un fallo de una cédula no
+// puede tumbar el lote ni el proceso del motor.
+async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass }) {
+  const t0 = Date.now();
   const resultados = [];
-  // Secuencial: correrPuppeteerCedula ya encola una sesión SAC a la vez.
+
+  await notificarBackend({
+    type: 'sac',
+    level: 'info',
+    title: 'Descarga del SAC iniciada',
+    message: `Bajando la información de ${cedulas.length} persona(s)…`,
+    meta: { fase: 'inicio', total: cedulas.length, cedulas },
+  });
+
   for (const cedula of cedulas) {
+    let item;
     try {
       // Escribe en la carpeta MÁS RECIENTE de la cédula (o crea {cedula}), para que
       // el SAC quede junto a lo que el usuario suba (pagaré, DataCrédito, etc.).
@@ -63,23 +93,57 @@ router.post('/descargar-sac', async (req, res) => {
       const r = await correrPuppeteerCedula(cedula, carpeta, sacUrl, sacUser, sacPass);
 
       const archivos = fs.existsSync(carpeta) ? fs.readdirSync(carpeta) : [];
-      resultados.push({
+      item = {
         cedula,
         success:   !!r.success,
         carpeta,
         pdfsSAC:   archivos.filter(f => f.startsWith('SAC_') && f.endsWith('.pdf')),
         contactos: archivos.find(f => f.startsWith('CONTACTOS_') && f.endsWith('.csv')) || null,
         error:     r.success ? undefined : r.error,
-      });
+      };
     } catch (e) {
       console.error(`[${new Date().toISOString()}] /descargar-sac ${cedula}: ${e.message}`);
-      resultados.push({ cedula, success: false, error: e.message });
+      item = { cedula, success: false, error: e.message };
     }
+
+    resultados.push(item);
+
+    // Aviso por PERSONA: es lo que permite ir generando su demanda de una.
+    await notificarBackend({
+      type: 'sac',
+      level: item.success ? 'success' : 'warning',
+      title: item.success ? `SAC listo: ${cedula}` : `SAC falló: ${cedula}`,
+      message: item.success
+        ? `${(item.pdfsSAC || []).length} PDF(s) descargado(s). Ya puedes generar su demanda.`
+        : `No se pudo bajar la información: ${item.error || 'motivo desconocido'}`,
+      meta: {
+        fase: 'cedula',
+        cedula,
+        success: item.success,
+        pdfs: (item.pdfsSAC || []).length,
+        hechas: resultados.length,
+        total: cedulas.length,
+      },
+    });
   }
 
   const ok = resultados.filter(r => r.success).length;
-  console.log(`[${new Date().toISOString()}] /descargar-sac completado: ${ok}/${cedulas.length} OK`);
-  return res.json({ success: ok > 0, total: cedulas.length, ok, resultados });
-});
+  const segs = Math.round((Date.now() - t0) / 1000);
+  console.log(`[${new Date().toISOString()}] /descargar-sac completado: ${ok}/${cedulas.length} OK en ${segs}s`);
+
+  await notificarBackend({
+    type: 'sac',
+    level: ok === cedulas.length ? 'success' : (ok ? 'warning' : 'error'),
+    title: 'Descarga del SAC terminada',
+    message: `${ok} de ${cedulas.length} persona(s) con información descargada.`,
+    meta: {
+      fase: 'fin',
+      ok,
+      total: cedulas.length,
+      segundos: segs,
+      fallidas: resultados.filter(r => !r.success).map(r => r.cedula),
+    },
+  });
+}
 
 module.exports = router;

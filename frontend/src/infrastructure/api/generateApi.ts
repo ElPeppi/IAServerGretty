@@ -19,11 +19,16 @@ export interface DescargarSacItem {
   error?: string;
 }
 
+// La descarga corre EN SEGUNDO PLANO: la respuesta solo confirma que se encoló.
+// El avance llega por SSE (una notificación por cédula que termina + una final).
 export interface DescargarSacResult {
   success: boolean;
+  started?: boolean;
   total: number;
-  ok: number;
-  resultados: DescargarSacItem[];
+  cedulas?: string[];
+  message?: string;
+  ok?: number;
+  resultados?: DescargarSacItem[];
 }
 
 export const generateApi = {
@@ -64,7 +69,8 @@ export const generateApi = {
    * Descarga las obligaciones del SAC (reemplaza el disparo por ZIP). Las cédulas
    * pueden venir de dos fuentes combinables: `cedulas` (texto separado por "-", ","
    * o espacios) y/o `excel` (el Excel de asignación; se sacan de la columna
-   * IDENTIFICACION). Síncrono: el scraping tarda por cédula, timeout alto.
+   * IDENTIFICACION). Devuelve apenas se encola: el scraping sigue en segundo
+   * plano y avisa por notificaciones (SSE) a medida que termina cada persona.
    */
   descargarSac: (cedulas: string, excel?: File | null) => {
     const form = new FormData();
@@ -73,7 +79,7 @@ export const generateApi = {
     return apiClient
       .post<DescargarSacResult>('/generate/descargar-sac', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 3600000,
+        timeout: 60000,
       })
       .then((r) => r.data);
   },

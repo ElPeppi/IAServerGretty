@@ -283,6 +283,19 @@ function analizarCuentas(filas) {
 
 // ─── API principal ────────────────────────────────────────────────────────────
 
+// ¿La ciudad requiere una consulta EN VIVO al Power BI? false si ya está resuelta
+// por config manual confirmada o por cache fresca (< 30 días). Sirve para NO lanzar
+// Puppeteer cuando la Rama ya está cacheada. Requiere loadRamaCache() previo.
+function necesitaConsultaRama(ciudad, cuantia) {
+  const ciudadNorm = normText(ciudad);
+  if (!ciudadNorm) return false; // sin ciudad no hay nada que consultar
+  const cfg = buscarEnConfig(ciudad, cuantia);
+  if (cfg.encontrado && cfg.confirmado) return false; // override manual
+  const hit = _ramaCache[ciudadNorm];
+  if (hit && Date.now() - (hit.ts || 0) < CACHE_TTL && hit.cuentas > 0) return false; // cache fresca
+  return true;
+}
+
 // Retorna { email, hasSmallClaims, hasPromiscuo }
 async function buscarCorreoJuzgado(browser, ciudad, cuantia, cacheFile) {
   const ciudadNorm = normText(ciudad);
@@ -328,4 +341,4 @@ async function buscarCorreoJuzgado(browser, ciudad, cuantia, cacheFile) {
   };
 }
 
-module.exports = { loadRamaCache, buscarCorreoJuzgado };
+module.exports = { loadRamaCache, buscarCorreoJuzgado, necesitaConsultaRama };

@@ -1,5 +1,7 @@
-import { useState, useRef, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { generateApi, type DescargarSacResult } from '../../../infrastructure/api/generateApi';
+import { asignacionApi, type AsignacionPersona } from '../../../infrastructure/api/asignacionApi';
+import { useAsignaciones } from '../../../application/hooks/useAsignaciones';
 
 interface Props {
   onClose: () => void;
@@ -17,34 +19,67 @@ function contarCedulas(raw: string): number {
 }
 
 export function DescargarSacModal({ onClose }: Props) {
-  const [cedulas, setCedulas]   = useState('');
-  const [excel, setExcel]       = useState<File | null>(null);
-  const [isLoading, setLoading] = useState(false);
-  const [error, setError]       = useState<string | null>(null);
-  const [result, setResult]     = useState<DescargarSacResult | null>(null);
-  const excelRef                = useRef<HTMLInputElement>(null);
+  const { asignaciones, isLoading: cargandoAsig } = useAsignaciones();
 
-  const n = contarCedulas(cedulas);
-  const puedeEnviar = n > 0 || !!excel;
+  const [cedulas, setCedulas]         = useState('');
+  const [asignacionId, setAsignacionId] = useState('');
+  const [personas, setPersonas]       = useState<AsignacionPersona[]>([]);
+  const [cargandoPersonas, setCargandoPersonas] = useState(false);
+  const [seleccion, setSeleccion]     = useState<Set<string>>(new Set()); // cédulas marcadas; vacío = todas
+  const [isLoading, setLoading]       = useState(false);
+  const [error, setError]             = useState<string | null>(null);
+  const [result, setResult]           = useState<DescargarSacResult | null>(null);
 
-  const handleExcel = (f: File) => {
-    const ext = f.name.split('.').pop()?.toLowerCase();
-    if (!['xlsx', 'xls', 'csv'].includes(ext ?? '')) {
-      setError('El Excel debe ser .xlsx, .xls o .csv');
-      return;
-    }
-    setExcel(f);
+  // Al elegir una asignación, traer sus personas y limpiar la selección previa.
+  useEffect(() => {
+    setPersonas([]);
+    setSeleccion(new Set());
+    if (!asignacionId) return;
+    let cancelado = false;
+    setCargandoPersonas(true);
     setError(null);
+    asignacionApi
+      .personas(asignacionId)
+      .then((p) => { if (!cancelado) setPersonas(p); })
+      .catch((err: unknown) => {
+        if (cancelado) return;
+        const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
+        setError(msg ?? (err instanceof Error ? err.message : 'Error al cargar personas'));
+      })
+      .finally(() => { if (!cancelado) setCargandoPersonas(false); });
+    return () => { cancelado = true; };
+  }, [asignacionId]);
+
+  const nPegadas = contarCedulas(cedulas);
+  // Filas totales del Excel (incluye repetidas) vs personas únicas del checklist.
+  const asigSel = asignaciones.find((a) => a.id === asignacionId);
+  const repetidas = asigSel ? Math.max(0, asigSel.totalFilas - personas.length) : 0;
+  // Nada marcado en una asignación elegida = TODAS sus personas.
+  const cedulasAsig = asignacionId
+    ? (seleccion.size ? [...seleccion] : personas.map((p) => p.cedula))
+    : [];
+  const totalAsig = cedulasAsig.length;
+  const puedeEnviar = nPegadas > 0 || totalAsig > 0;
+
+  const togglePersona = (cedula: string) => {
+    setSeleccion((prev) => {
+      const next = new Set(prev);
+      if (next.has(cedula)) next.delete(cedula);
+      else next.add(cedula);
+      return next;
+    });
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!puedeEnviar) { setError('Pega cédulas o sube el Excel de asignación.'); return; }
+    if (!puedeEnviar) { setError('Pega cédulas o elige una asignación.'); return; }
     setLoading(true);
     setError(null);
     setResult(null);
     try {
-      const res = await generateApi.descargarSac(cedulas, excel);
+      // Unir cédulas pegadas + las de la asignación (el motor deduplica/normaliza).
+      const todas = [cedulas, ...cedulasAsig].filter(Boolean).join(' ');
+      const res = await generateApi.descargarSac(todas, null);
       setResult(res);
     } catch (err: unknown) {
       const axiosMsg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
@@ -88,64 +123,135 @@ export function DescargarSacModal({ onClose }: Props) {
             <textarea
               value={cedulas}
               onChange={(e) => setCedulas(e.target.value)}
-              rows={4}
+              rows={3}
               placeholder="Ej: 1216970638 - 79876543, 52123456"
               disabled={isLoading}
               className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
             />
             <p className="text-xs text-gray-400 mt-1">
-              {n} cédula{n !== 1 ? 's' : ''} válida{n !== 1 ? 's' : ''} detectada{n !== 1 ? 's' : ''}
+              {nPegadas} cédula{nPegadas !== 1 ? 's' : ''} válida{nPegadas !== 1 ? 's' : ''} detectada{nPegadas !== 1 ? 's' : ''}
             </p>
           </div>
 
           {/* Separador */}
           <div className="flex items-center gap-3">
             <div className="flex-1 h-px bg-gray-200" />
-            <span className="text-xs text-gray-400 font-medium">o con el Excel de asignación</span>
+            <span className="text-xs text-gray-400 font-medium">o desde una asignación</span>
             <div className="flex-1 h-px bg-gray-200" />
           </div>
 
-          {/* Dropzone Excel de asignación → se sacan las cédulas de IDENTIFICACION */}
-          <div
-            onClick={() => excelRef.current?.click()}
-            className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors ${
-              excel ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-            }`}
-          >
-            <input ref={excelRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) handleExcel(e.target.files[0]); }} />
-            <p className="text-sm font-medium text-gray-600">
-              📄 Excel de asignación <span className="text-gray-400 font-normal">(.xlsx — columna IDENTIFICACION)</span>
-            </p>
-            <p className="text-xs text-blue-600 mt-1 font-medium">
-              {excel ? excel.name : 'Sin Excel seleccionado'}
-            </p>
+          {/* Selector de asignación ya cacheada */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Asignación</label>
+            <select
+              value={asignacionId}
+              onChange={(e) => setAsignacionId(e.target.value)}
+              disabled={isLoading || cargandoAsig}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
+            >
+              <option value="">
+                {cargandoAsig ? 'Cargando asignaciones…' : '— Ninguna —'}
+              </option>
+              {asignaciones.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.nombre} ({a.totalFilas})
+                </option>
+              ))}
+            </select>
           </div>
+
+          {/* Checklist de personas de la asignación elegida. Nada marcado = todas. */}
+          {asignacionId && (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-sm font-medium text-gray-700">
+                  Personas <span className="text-gray-400 font-normal">(sin marcar = todas)</span>
+                </label>
+                {personas.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSeleccion(new Set())}
+                    className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
+              <div className="border border-gray-200 rounded-xl max-h-48 overflow-y-auto divide-y divide-gray-100">
+                {cargandoPersonas ? (
+                  <p className="p-3 text-sm text-gray-400">Cargando personas…</p>
+                ) : personas.length === 0 ? (
+                  <p className="p-3 text-sm text-gray-400">Esta asignación no tiene personas con cédula.</p>
+                ) : (
+                  personas.map((p) => {
+                    const marcada = seleccion.has(p.cedula);
+                    return (
+                      <label
+                        key={p.cedula}
+                        className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={marcada}
+                          onChange={() => togglePersona(p.cedula)}
+                          disabled={isLoading}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700 truncate">
+                          {p.nombre || <span className="text-gray-400">(sin nombre)</span>}
+                          <span className="text-gray-400"> — {p.cedula}</span>
+                        </span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              {personas.length > 0 && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {seleccion.size
+                    ? `${seleccion.size} de ${personas.length} seleccionada${seleccion.size !== 1 ? 's' : ''}`
+                    : `Se descargarán las ${personas.length} personas`}
+                  {repetidas > 0 && (
+                    <span className="text-amber-600">
+                      {' '}· {asigSel!.totalFilas} filas, {repetidas} cédula{repetidas !== 1 ? 's' : ''} repetida{repetidas !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                </p>
+              )}
+            </div>
+          )}
 
           {error && (
             <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">{error}</div>
           )}
 
           {result && (
-            <div className="p-3 rounded-xl bg-gray-50 border border-gray-200 text-sm space-y-2 max-h-56 overflow-y-auto">
-              <p className="font-medium text-gray-800">
-                {result.ok}/{result.total} descargada{result.ok !== 1 ? 's' : ''} correctamente
+            <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-sm space-y-1.5">
+              <p className="font-medium text-blue-900">
+                ⏳ Descarga iniciada para {result.total} persona{result.total !== 1 ? 's' : ''}
               </p>
-              <ul className="space-y-1">
-                {result.resultados.map((r) => (
-                  <li key={r.cedula} className="flex items-start gap-2">
-                    <span className={r.success ? 'text-emerald-600' : 'text-red-600'}>
-                      {r.success ? '✅' : '❌'}
-                    </span>
-                    <span className="text-gray-700">
-                      <span className="font-medium">{r.cedula}</span>
-                      {r.success
-                        ? <span className="text-gray-500"> — {r.pdfsSAC?.length ?? 0} PDF{(r.pdfsSAC?.length ?? 0) !== 1 ? 's' : ''}{r.contactos ? ' + contactos' : ''}</span>
-                        : <span className="text-red-500"> — {r.error || 'error'}</span>}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <p className="text-blue-800">
+                Corre en segundo plano. Te avisamos <b>por cada persona</b> que termine, y puedes ir
+                generando su demanda sin esperar al resto. Puedes cerrar esta ventana.
+              </p>
+              {/* Respaldo: si el motor respondiera el lote completo (versión vieja). */}
+              {result.resultados && result.resultados.length > 0 && (
+                <ul className="space-y-1 pt-1 max-h-40 overflow-y-auto">
+                  {result.resultados.map((r) => (
+                    <li key={r.cedula} className="flex items-start gap-2">
+                      <span className={r.success ? 'text-emerald-600' : 'text-red-600'}>
+                        {r.success ? '✅' : '❌'}
+                      </span>
+                      <span className="text-gray-700">
+                        <span className="font-medium">{r.cedula}</span>
+                        {r.success
+                          ? <span className="text-gray-500"> — {r.pdfsSAC?.length ?? 0} PDF{(r.pdfsSAC?.length ?? 0) !== 1 ? 's' : ''}{r.contactos ? ' + contactos' : ''}</span>
+                          : <span className="text-red-500"> — {r.error || 'error'}</span>}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
 
@@ -162,7 +268,7 @@ export function DescargarSacModal({ onClose }: Props) {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  Descargando…
+                  Encolando…
                 </>
               ) : (
                 <>
@@ -170,7 +276,7 @@ export function DescargarSacModal({ onClose }: Props) {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                       d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                   </svg>
-                  Descargar del SAC
+                  Descargar del SAC{puedeEnviar ? ` (${nPegadas + totalAsig})` : ''}
                 </>
               )}
             </button>

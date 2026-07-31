@@ -21,7 +21,6 @@ export class DocumentController {
   async getAll(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { status, from, to, search, page, pageSize } = req.query;
-      const isAdmin = req.user?.role === 'ADMIN';
 
       const p  = parseInt(page as string, 10);
       const ps = parseInt(pageSize as string, 10);
@@ -29,7 +28,9 @@ export class DocumentController {
       const sizeNum = Number.isFinite(ps) && ps > 0 ? Math.min(100, ps) : 24;
 
       const { items, total } = await getDocumentsUseCase.execute({
-        lawyerId: isAdmin ? undefined : req.user?.userId,
+        // La oficina trabaja en común: todos los usuarios (ADMIN y LAWYER) ven
+        // TODAS las demandas, no solo las que generó cada uno.
+        lawyerId: undefined,
         status: status as DocumentStatus | undefined,
         from: from ? new Date(from as string) : undefined,
         to: to ? new Date(to as string) : undefined,
@@ -48,12 +49,7 @@ export class DocumentController {
     try {
       const id = req.params['id'] as string;
       const document = await getDocumentByIdUseCase.execute(id);
-      const isOwner = document.lawyerId === req.user?.userId;
-      const isAdmin = req.user?.role === 'ADMIN';
-      if (!isOwner && !isAdmin) {
-        res.status(403).json({ message: 'Sin permiso para ver este documento' });
-        return;
-      }
+      // Todos los usuarios (ADMIN/LAWYER) pueden ver cualquier demanda.
       res.json(document);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
@@ -76,12 +72,7 @@ export class DocumentController {
       }
 
       const document = await getDocumentByIdUseCase.execute(id);
-      const isOwner = document.lawyerId === req.user?.userId;
-      const isAdmin = req.user?.role === 'ADMIN';
-      if (!isOwner && !isAdmin) {
-        res.status(403).json({ message: 'Sin permiso para editar este documento' });
-        return;
-      }
+      // Trabajo colaborativo: cualquier usuario puede editar (salvo firmadas).
       if (document.status === 'SIGNED') {
         res.status(409).json({ message: 'La demanda ya está firmada; no se puede modificar' });
         return;
@@ -103,6 +94,49 @@ export class DocumentController {
       res.json({ success: true, message: 'Archivo sobrescrito en el NAS', fileUrl: document.fileUrl });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al guardar el archivo';
+      res.status(400).json({ message });
+    }
+  }
+
+  /**
+   * Sobreescribe el .xlsx/.xls de ASIGNACIÓN en el NAS con la versión editada
+   * desde la web (editor de tabla en la pestaña "Asignación"). OJO: la asignación
+   * es el Excel del LOTE completo, compartido por todas las demandas de esa
+   * asignación; editarlo afecta a todas. No depende del estado de firma de la
+   * demanda (es dato de origen, no el documento firmado).
+   */
+  async saveAsignacion(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params['id'] as string;
+      const file = (req as AuthRequest & { file?: { buffer: Buffer } }).file;
+      if (!file) {
+        res.status(400).json({ message: 'Archivo requerido (campo: file)' });
+        return;
+      }
+
+      const document = await getDocumentByIdUseCase.execute(id);
+      if (!nas.enabled) {
+        res.status(503).json({ message: 'DOCS_DIR no está configurado: no se puede sobreescribir en el NAS' });
+        return;
+      }
+      if (!document.asignacionUrl) {
+        res.status(400).json({ message: 'Esta demanda no tiene un Excel de asignación asociado' });
+        return;
+      }
+      const rel = nas.relPathFromUrl(document.asignacionUrl);
+      if (!rel) {
+        res.status(400).json({ message: 'No se pudo determinar la ruta de la asignación en el NAS' });
+        return;
+      }
+      if (!/\.xlsx?$/i.test(rel)) {
+        res.status(400).json({ message: 'La asignación no es un archivo Excel (.xlsx/.xls)' });
+        return;
+      }
+
+      nas.overwrite(rel, file.buffer);
+      res.json({ success: true, message: 'Asignación sobrescrita en el NAS', asignacionUrl: document.asignacionUrl });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error al guardar la asignación';
       res.status(400).json({ message });
     }
   }

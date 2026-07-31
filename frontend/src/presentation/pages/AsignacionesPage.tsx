@@ -3,6 +3,7 @@ import { useAsignaciones } from '../../application/hooks/useAsignaciones';
 import { asignacionApi, type AsignacionResumen } from '../../infrastructure/api/asignacionApi';
 import { SubirAsignacionModal } from '../components/Asignaciones/SubirAsignacionModal';
 import { GenerarPoderesModal } from '../components/Asignaciones/GenerarPoderesModal';
+import { GenerarDemandasModal } from '../components/Asignaciones/GenerarDemandasModal';
 import { PoderFaltanteModal } from '../components/Asignaciones/PoderFaltanteModal';
 
 function fmtFecha(s: string | null): string {
@@ -15,6 +16,7 @@ export function AsignacionesPage() {
   const { asignaciones, isLoading, error, refetch } = useAsignaciones();
   const [showSubir, setShowSubir] = useState(false);
   const [poderTarget, setPoderTarget] = useState<AsignacionResumen | null>(null);   // Generar poderes
+  const [demandasTarget, setDemandasTarget] = useState<AsignacionResumen | null>(null); // modal generar demandas
   const [faltanteTarget, setFaltanteTarget] = useState<AsignacionResumen | null>(null); // popup poder faltante
   const [actualizando, setActualizando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
@@ -35,19 +37,12 @@ export function AsignacionesPage() {
   };
 
   // "Generar demandas": si no hay poder cacheado → popup (subir/generar). Si hay →
-  // dispara la generación en segundo plano (reusa el poder). El backend valida y,
-  // si por alguna razón no hay poder, responde 409 y abrimos el popup igual.
-  const handleGenerarDemandas = async (a: AsignacionResumen) => {
+  // abre el modal (tipo de demanda + selección de personas). El modal reusa el poder
+  // y, si por alguna razón no hay, recibe el 409 y volvemos al popup de poder faltante.
+  const handleGenerarDemandas = (a: AsignacionResumen) => {
     if (!a.tienePoder) { setFaltanteTarget(a); return; }
     setAviso(null);
-    try {
-      const res = await asignacionApi.generarDemandas(a.id);
-      setAviso(res.message);
-    } catch (err: unknown) {
-      const resp = (err as { response?: { status?: number; data?: { codigo?: string; message?: string } } }).response;
-      if (resp?.status === 409 && resp.data?.codigo === 'SIN_PODER') { setFaltanteTarget(a); return; }
-      setAviso(resp?.data?.message ?? (err instanceof Error ? err.message : 'Error al generar demandas'));
-    }
+    setDemandasTarget(a);
   };
 
   return (
@@ -143,6 +138,14 @@ export function AsignacionesPage() {
       {showSubir && <SubirAsignacionModal onClose={() => setShowSubir(false)} onSuccess={refetch} />}
       {poderTarget && (
         <GenerarPoderesModal asignacion={poderTarget} onClose={() => setPoderTarget(null)} onDone={refetch} />
+      )}
+      {demandasTarget && (
+        <GenerarDemandasModal
+          asignacion={demandasTarget}
+          onClose={() => setDemandasTarget(null)}
+          onDone={(msg) => { setDemandasTarget(null); setAviso(msg); void refetch(); }}
+          onSinPoder={() => { const a = demandasTarget; setDemandasTarget(null); setFaltanteTarget(a); }}
+        />
       )}
       {faltanteTarget && (
         <PoderFaltanteModal

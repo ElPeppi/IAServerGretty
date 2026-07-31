@@ -258,12 +258,19 @@ function vehiculoFieldMap(v) {
 }
 
 // Mapa «CAMPO» de la plantilla → valor de la fila de la Plantilla Singular
+// Marcador de dato faltante. Va en el documento allí donde el motor no pudo
+// determinar el valor, para que quien revise vea de una el hueco a llenar.
+const FALTANTE = '#####';
+
 function buildFieldMap(fila, vehiculos = []) {
   // «PLACA» fuera de los bloques de vehículo (punto de pruebas "consulta RUNT"):
   // todas las placas cortas separadas por coma.
   const placasTodas = vehiculos.map(v => placaCorta(v.placa)).filter(Boolean).join(', ');
 
-  return {
+  // Todo campo que quede vacío se rellena con FALTANTE (ver marcarFaltantes abajo):
+  // los bloques cuyos datos no aplican ya fueron eliminados por transformarSecciones,
+  // así que un placeholder vacío que llegue hasta aquí es un dato que SÍ falta.
+  return marcarFaltantes({
     TIPO_DE_JUZGADO:                    fila['TIPO DE JUZGADO']                    || '',
     CIUDAD_DE_JUZGADO:                  fila['CIUDAD DE JUZGADO']                  || '',
     CUANTIA:                            fila['CUANTIA']                             || '',
@@ -298,7 +305,25 @@ function buildFieldMap(fila, vehiculos = []) {
     TIPO_DE_CARROCERIA:                 fila['TIPO DE CARROCERIA']                  || '',
     STRIA_MCPAL_TTOyTTE:                fila['STRIA MCPAL\nTTOyTTE']               || '',
     DIRECCION_ELECTRONICA_DEL_TRANSITO: fila['DIRECCION ELECTRONICA DEL TRANSITO']  || '',
-  };
+  });
+}
+
+// Sustituye por FALTANTE los campos que quedaron vacíos. Se excluyen:
+//   · los de vehículo → su bloque se elimina entero si no hay vehículos;
+//   · NOMBRE/NIT_EMPRESA_TT → fillDocxTemplate decide con ELLOS si hay info
+//     laboral (`tieneEmpresa`); marcarlos haría que el bloque de embargo de
+//     salario nunca se elimine.
+const SIN_MARCAR = new Set([
+  'PLACA', 'SERVICIO', 'CLASE', 'MARCA', 'LINEA', 'MODELO', 'COLOR',
+  'SERIE', 'MOTOR', 'CHASIS', 'TIPO_DE_CARROCERIA',
+  'NOMBRE_EMPRESA_TT', 'NIT_EMPRESA_TT',
+]);
+function marcarFaltantes(map) {
+  for (const [k, v] of Object.entries(map)) {
+    if (SIN_MARCAR.has(k)) continue;
+    if (String(v ?? '').trim() === '') map[k] = FALTANTE;
+  }
+  return map;
 }
 
 // ─── Transformación de secciones (medidas cautelares + pruebas) ──────────────
@@ -387,10 +412,14 @@ function transformarSecciones(xml, vehiculos, tieneEmpresa, esBarranquilla, tien
   //   • FINANDINA (pagaré escaneado)     → se quitan TODOS los párrafos que
   //     mencionen DECEVAL (custodia + certificado desmaterializado); quedan las
   //     variantes de custodia en BANCO FINANDINA.
+  //   El párrafo que describe el título valor "CREADO EN FORMA ELECTRÓNICA
+  //   (LEY 527 DE 1999) … ANOTACIÓN EN CUENTA" solo aplica al pagaré
+  //   desmaterializado; no nombra a DECEVAL, así que se quita aparte.
   const esFinandina = String(tipoPagare || '').toUpperCase() === 'FINANDINA';
+  const RE_DESMATERIALIZADO = /CREADO\s+EN\s+FORMA\s+ELECTR[OÓ]NICA/i;
   for (const p of conTexto) {
     const quitar = esFinandina
-      ? /DECEVAL/i.test(p.text)
+      ? (/DECEVAL/i.test(p.text) || RE_DESMATERIALIZADO.test(p.text))
       : /custodia\s+en\s+BANCO\s+FINANDINA/i.test(p.text);
     if (quitar) ediciones.push({ start: p.start, end: p.end, contenido: '' });
   }

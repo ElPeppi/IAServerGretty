@@ -77,6 +77,7 @@ model Asignacion {
   totalFilas      Int        @default(0)
   poderUrl        String?                      // Word combinado de poderes (cuando se genera)
   poderGeneradoAt DateTime?
+  correoPoderUrl  String?                      // PDF del correo del banco → ANEXO 1 de la demanda
   docsEnServidor  Boolean    @default(false)   // último estado del checklist global al generar poderes
   lawyerId        String
   lawyer          User       @relation(fields: [lawyerId], references: [id])

@@ -186,7 +186,10 @@ export class GenerateController {
    * Descarga las obligaciones del SAC por CÉDULA (reemplaza el disparo por ZIP/n8n).
    * Recibe cédulas separadas por "-", "," o espacios; el motor corre el scraping
    * (Puppeteer) y deja SAC_*.pdf + CONTACTOS_*.csv en la carpeta de cada cliente.
-   * Síncrono (con timeout alto): el SAC tarda por cédula y corre secuencial.
+   *
+   * EN SEGUNDO PLANO: el motor responde 202 al encolar y va avisando por SSE
+   * (una notificación por cédula que termina + una final). Así se pueden ir
+   * generando las demandas de quien ya tenga la información, sin esperar al lote.
    */
   async descargarSac(req: AuthRequest, res: Response): Promise<void> {
     try {
@@ -206,7 +209,7 @@ export class GenerateController {
       }
 
       const result = await engineService.descargarSac({ cedulas });
-      res.status(200).json(result);
+      res.status(202).json(result);
     } catch (error: unknown) {
       const axiosCode = (error as { code?: string }).code;
       if (axiosCode === 'ECONNREFUSED' || axiosCode === 'ENOTFOUND') {

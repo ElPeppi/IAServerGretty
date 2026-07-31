@@ -68,19 +68,45 @@ function listarNombres(outBase) {
   return names;
 }
 
+// Nombres de mes en español → número. Para carpetas escritas a mano con el mes
+// en texto: {cedula}_{año}_{mes} o {cedula}_{mes}_{año} (ej. 12345678_2026_Julio).
+const MESES_ES = {
+  enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7,
+  agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
+};
+
+// Extrae {anio, mes} de un sufijo de carpeta. Tolerante: cualquier separador
+// (_ / - / espacio) y el mes como número (1-12) o nombre en español, en cualquier
+// orden. Casos:
+//   ""             → {0,0}     (carpeta original {cedula}, la más antigua)
+//   "2026"         → {2026,0}  ({cedula}_{año})
+//   "06_2026"      → {2026,6}  ({cedula}_{MM}_{año}, convención del motor)
+//   "2026_Julio"   → {2026,7}  (mes en texto)
+//   "Julio_2026"   → {2026,7}
+function parseSufijoFecha(sufijo) {
+  let anio = 0, mes = 0;
+  for (const p of String(sufijo).toLowerCase().split(/[_\-\s]+/).filter(Boolean)) {
+    if (/^\d{4}$/.test(p)) anio = parseInt(p, 10);
+    else if (/^\d{1,2}$/.test(p)) { const n = parseInt(p, 10); if (!mes && n >= 1 && n <= 12) mes = n; }
+    else if (MESES_ES[p]) mes = MESES_ES[p];
+  }
+  return { anio, mes };
+}
+
 function carpetasDeCedula(outBase, cedula) {
   const ced = String(cedula);
-  const re  = new RegExp(`^${ced}(?:_(\\d{1,2})_(\\d{4})|_(\\d{4}))?$`);
+  // La carpeta es EXACTAMENTE la cédula, o la cédula seguida de "_<sufijo>".
+  const re  = new RegExp(`^${ced}(?:_(.+))?$`);
   const out = [];
   for (const name of listarNombres(outBase)) {
     const m = name.match(re);
     if (!m) continue;
-    const anio = parseInt(m[2] || m[3] || '0', 10);
-    const mes  = parseInt(m[1] || '0', 10);
+    const { anio, mes } = parseSufijoFecha(m[1] || '');
     out.push({ name, anio, mes, path: path.join(outBase, name) });
   }
-  // Más reciente primero: año desc, luego mes desc (sin sufijo queda de última)
-  out.sort((a, b) => (b.anio - a.anio) || (b.mes - a.mes));
+  // Más reciente primero: año desc, luego mes desc. A igualdad, la de nombre más
+  // corto primero (la original {cedula} sin sufijo) para un orden estable.
+  out.sort((a, b) => (b.anio - a.anio) || (b.mes - a.mes) || (a.name.length - b.name.length));
   return out;
 }
 

@@ -46,7 +46,12 @@ export class PrismaDocumentRepository implements IDocumentRepository {
     const page = Math.max(1, filters?.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, filters?.pageSize ?? 24));
 
-    const [items, total] = await prisma.$transaction([
+    // Dos LECTURAS para paginar: NO necesitan atomicidad. Usar $transaction aquí
+    // abría una transacción real que, bajo ráfaga (cada demanda generada 1-a-1
+    // dispara refetch + los writes de persistirDemanda), agotaba el pool y fallaba
+    // con "Unable to start a transaction in the given time". Promise.all corre las
+    // dos queries en paralelo sin transacción → sin ese error.
+    const [items, total] = await Promise.all([
       prisma.document.findMany({
         where,
         include: {

@@ -136,10 +136,11 @@ async function parsearExcelEntrada(buffer) {
   const fin = {};
   for (let r = 1; r < hoja2.length; r++) {
     const row    = hoja2[r];
-    const cedula = String(getCol(row, h2, 'CEDULA', 'IDENTIFICACION') ?? '').trim();
+    // La cédula en Hoja2 (LIQUIDACIONES) a veces viene como "ID" (no CEDULA/IDENTIFICACION).
+    const cedula = String(getCol(row, h2, 'CEDULA', 'IDENTIFICACION', 'ID', 'ID_CLIENTE') ?? '').trim();
     if (!cedula) continue;
 
-    const nombre  = String(getCol(row, h2, 'NOMBRE', 'NOMBRE_CLIENTE') ?? '').trim();
+    const nombre  = String(getCol(row, h2, 'NOMBRE', 'NOMBRE_CLIENTE', 'NOMBRBE_CLIENTE') ?? '').trim();
     const cap     = toNum(getCol(row, h2, 'CAPITAL'));
     // TOTAL_INTERES = intereses de mora acumulados (monto real a cobrar).
     // MORA puede estar en $0 cuando los intereses van bajo TOTAL_INTERES.

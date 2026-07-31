@@ -63,9 +63,9 @@ export class EngineService implements IEngineService {
       `${this.baseUrl}/descargar-sac`,
       { cedulas: input.cedulas },
       {
-        // El scraping del SAC (Puppeteer) tarda por cédula y corre secuencial en
-        // el motor. Timeout alto y configurable (mismo env que la generación).
-        timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000, // 60 min por defecto
+        // El motor responde 202 apenas encola el lote (el scraping sigue en
+        // segundo plano y avisa por SSE), así que basta un timeout corto.
+        timeout: 30000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
       }
@@ -77,10 +77,12 @@ export class EngineService implements IEngineService {
     const { data } = await axios.post<GenerarPoderesOutput>(
       `${this.baseUrl}/generar-poderes`,
       {
-        filas: input.filas,
+        excelBase64: input.excel.toString('base64'),
         docsEnServidor: !!input.docsEnServidor,
         fechaAsignacion: input.fechaAsignacion,
         nombre: input.nombre,
+        smmv: input.smmv,
+        soloCedulas: input.soloCedulas?.length ? input.soloCedulas : undefined,
       },
       {
         timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,

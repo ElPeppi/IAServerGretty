@@ -18,13 +18,19 @@ const config   = require('../config');
 const sacQueue = require('./colaSac');
 const { resolverCarpetaLectura } = require('../utils/carpetas');
 
+// Tiempo máximo por cédula. Una sesión del SAC (login + obligaciones + Dir y Tel
+// + PDFs) tarda entre 70 s y ~5 min según lo cargado que esté el banco; con 5 min
+// se estaban matando descargas que iban bien. SAC_TIMEOUT_MS para ajustarlo.
+const TIMEOUT_CEDULA_MS = Number(process.env.SAC_TIMEOUT_MS) || 900000; // 15 min
+
 // ─── Lote: N clientes en una sesión (usado por /procesar-zips) ────────────────
 // IMPORTANTE: esta función se llama desde DENTRO de sacQueue.run() en el flujo
 // de ZIPs; NO wrappear con sacQueue.run() aquí — causaría deadlock
 // (inner espera outer, outer espera inner).
 async function correrPuppeteerLote(clientes, sacUrl, sacUser, sacPass) {
-  // Procesamiento secuencial: ~6 min por cliente con margen extra
-  const timeoutMs  = clientes.length * 360000;
+  // Procesamiento secuencial: mismo presupuesto por cliente que la ruta de una
+  // sola cédula (TIMEOUT_CEDULA_MS), para no matar lotes que van bien.
+  const timeoutMs  = clientes.length * TIMEOUT_CEDULA_MS;
   const cedulasStr = clientes.map(c => c.cedula).join(', ');
   console.log(`[${new Date().toISOString()}] Puppeteer: ${clientes.length} cédula(s) secuencial: ${cedulasStr}`);
 
@@ -82,12 +88,25 @@ async function correrPuppeteerLote(clientes, sacUrl, sacUser, sacPass) {
   return resultado;
 }
 
+// El worker reporta los fallos de UNA cédula dentro de `clientes[0].error`, no en
+// el `error` de primer nivel. Sin esto el motor loguea "undefined" y la web no
+// muestra el motivo.
+function normalizarResultado(res, cedula) {
+  if (!res || typeof res !== 'object') return { success: false, error: 'sin respuesta del worker', cedula };
+  if (!res.error) {
+    const delCliente = (res.clientes || []).find(c => c && c.error);
+    if (delCliente) res.error = delCliente.error;
+  }
+  if (!res.error && !res.success) res.error = 'el worker terminó sin descargar nada (revisa el log)';
+  return res;
+}
+
 // ─── Una cédula (usado por /procesar-zip) ─────────────────────────────────────
 // Encola la ejecución en la cola SAC y devuelve el resultado parseado del worker.
 // Nunca lanza: ante errores devuelve { success: false, error, cedula }.
 async function correrPuppeteerCedula(cedula, carpetaSalida, sacUrl, sacUser, sacPass) {
   const posEnCola = sacQueue.size + 1;
-  console.log(`[${new Date().toISOString()}] ZIP encolado para cédula ${cedula} (posición en cola: ${posEnCola})`);
+  console.log(`[${new Date().toISOString()}] SAC encolado para cédula ${cedula} (posición en cola: ${posEnCola})`);
 
   let resultadoPuppeteer;
   try {
@@ -99,7 +118,7 @@ async function correrPuppeteerCedula(cedula, carpetaSalida, sacUrl, sacUser, sac
       execFile(
         process.execPath,
         [config.SCRIPT_PUPPETEER, clientesArg, sacUrl, sacUser, sacPass],
-        { timeout: 300000, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 },
+        { timeout: TIMEOUT_CEDULA_MS, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 },
         (err, stdout, stderr) => {
           if (err) reject({ err, stdout: stdout || '', stderr: stderr || '' });
           else     resolve(stdout || '');
@@ -108,23 +127,37 @@ async function correrPuppeteerCedula(cedula, carpetaSalida, sacUrl, sacUser, sac
     }));
 
     const lineas = stdout.trim().split('\n').filter(l => l.trim().startsWith('{'));
-    resultadoPuppeteer = JSON.parse(lineas[lineas.length - 1]);
-    console.log(`[${new Date().toISOString()}] Puppeteer OK para cédula ${cedula}`);
+    resultadoPuppeteer = normalizarResultado(JSON.parse(lineas[lineas.length - 1]), cedula);
+    if (resultadoPuppeteer.success) {
+      console.log(`[${new Date().toISOString()}] Puppeteer OK para cédula ${cedula}`);
+    } else {
+      console.error(`[${new Date().toISOString()}] Puppeteer SIN DATOS para cédula ${cedula}: ${resultadoPuppeteer.error}`);
+    }
 
   } catch (e) {
     // execFile rechaza con { err, stdout, stderr } si el proceso termina con código ≠ 0
     const stdoutData = (e.stdout || '').toString();
     const lineas = stdoutData.trim().split('\n').filter(l => l.trim().startsWith('{'));
     if (lineas.length > 0) {
-      try { resultadoPuppeteer = JSON.parse(lineas[lineas.length - 1]); } catch (_) {}
+      try { resultadoPuppeteer = normalizarResultado(JSON.parse(lineas[lineas.length - 1]), cedula); } catch (_) {}
+    }
+    // execFile mata el proceso al vencer `timeout` y avisa con err.killed / SIGTERM.
+    // Sin este caso el motivo real ("se pasó del tiempo") quedaba invisible.
+    const porTimeout = !!(e.err && (e.err.killed || e.err.signal === 'SIGTERM'));
+    if (porTimeout) {
+      resultadoPuppeteer = {
+        success: false,
+        cedula,
+        error: `se agotó el tiempo (${Math.round(TIMEOUT_CEDULA_MS / 1000)}s). El SAC iba lento o se quedó pegado; súbelo con SAC_TIMEOUT_MS.`,
+      };
     }
     if (!resultadoPuppeteer) {
       const detalle = (e.stderr || e.err?.message || e.message || '').toString()
         .replace(/\x1B\[[0-9;]*m/g, '')
         .slice(0, 800);
-      resultadoPuppeteer = { success: false, error: detalle, cedula };
+      resultadoPuppeteer = { success: false, error: detalle || 'error desconocido en el worker', cedula };
     }
-    console.error(`[${new Date().toISOString()}] Puppeteer ERROR para cédula ${cedula}:`, resultadoPuppeteer.error?.slice(0, 200));
+    console.error(`[${new Date().toISOString()}] Puppeteer ERROR para cédula ${cedula}:`, String(resultadoPuppeteer.error || '').slice(0, 200));
   }
 
   return resultadoPuppeteer;

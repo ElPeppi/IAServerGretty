@@ -62,11 +62,26 @@ const navItems: NavItem[] = [
   },
 ];
 
+// Ancho del riel colapsado (solo iconos). MainLayout reserva ESTE ancho, así que
+// al expandirse el menú flota por encima del contenido y el editor no se re-maqueta.
+export const SIDEBAR_RAIL_PX = 64; // w-16
+
+const PIN_KEY = 'sidebarPinned';
+
 export function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [theme, setTheme] = useState(getTheme());
   const [showPwd, setShowPwd] = useState(false);
+  // Fijado = siempre expandido (para quien no quiera depender del hover, o en táctil).
+  const [pinned, setPinned] = useState(() => localStorage.getItem(PIN_KEY) === '1');
+
+  const togglePin = () => {
+    setPinned((p) => {
+      localStorage.setItem(PIN_KEY, p ? '0' : '1');
+      return !p;
+    });
+  };
 
   const handleLogout = () => {
     logout();
@@ -79,91 +94,123 @@ export function Sidebar() {
     setTheme(next);
   };
 
+  // La expansión es puro CSS (hover / focus-within): sin estado, sin re-render y
+  // sin parpadeo al mover el ratón. focus-within lo hace usable con teclado.
+  const anchoAside = pinned ? 'w-64' : 'w-16 hover:w-64 focus-within:w-64';
+  // Todo lo que sea texto se desvanece cuando el riel está colapsado.
+  const txt = pinned
+    ? 'opacity-100'
+    : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
+
   return (
-    <aside className="w-64 h-screen flex-shrink-0 bg-gray-900 flex flex-col">
+    <aside
+      className={`group fixed left-0 top-0 z-40 h-screen bg-gray-900 flex flex-col overflow-x-hidden
+        transition-[width] duration-200 ease-out shadow-xl ${anchoAside}`}
+    >
       {/* Logo */}
-      <div className="px-6 py-6 border-b border-gray-700">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-purple-600 flex items-center justify-center">
+      <div className="h-[76px] flex-shrink-0 px-4 flex items-center border-b border-gray-700">
+        <div className="flex items-center gap-3 w-full">
+          <div className="w-9 h-9 flex-shrink-0 rounded-lg bg-purple-600 flex items-center justify-center">
             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
             </svg>
           </div>
-          <div>
-            <p className="text-white font-semibold text-sm">GrettyAI Legal</p>
-            <p className="text-gray-400 text-xs">Sistema Jurídico</p>
+          <div className={`min-w-0 flex-1 whitespace-nowrap transition-opacity duration-200 ${txt}`}>
+            <p className="text-white font-semibold text-sm truncate">GrettyAI Legal</p>
+            <p className="text-gray-400 text-xs truncate">Sistema Jurídico</p>
           </div>
+          {/* Fijar / soltar el menú */}
+          <button
+            onClick={togglePin}
+            title={pinned ? 'Soltar menú (se colapsa)' : 'Fijar menú abierto'}
+            aria-label={pinned ? 'Soltar menú' : 'Fijar menú'}
+            aria-pressed={pinned}
+            className={`flex-shrink-0 p-1.5 rounded-lg transition-opacity duration-200 ${txt} ${
+              pinned ? 'text-purple-400 hover:bg-gray-800' : 'text-gray-500 hover:text-white hover:bg-gray-800'
+            }`}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />
+            </svg>
+          </button>
         </div>
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden">
         {navItems.filter((item) => !item.adminOnly || user?.role === 'ADMIN').map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
+            title={item.label}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+              `flex items-center gap-3 px-2.5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 isActive
                   ? 'bg-purple-600 text-white'
                   : 'text-gray-400 hover:bg-gray-800 hover:text-white'
               }`
             }
           >
-            {item.icon}
-            {item.label}
+            <span className="flex-shrink-0">{item.icon}</span>
+            <span className={`whitespace-nowrap transition-opacity duration-200 ${txt}`}>{item.label}</span>
           </NavLink>
         ))}
       </nav>
 
       {/* User */}
-      <div className="px-4 py-4 border-t border-gray-700">
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-white text-sm font-semibold">
+      <div className="flex-shrink-0 px-3 py-4 border-t border-gray-700">
+        <div className="flex items-center gap-3 mb-3 px-0.5">
+          <div className="w-8 h-8 flex-shrink-0 rounded-full bg-purple-600 flex items-center justify-center text-white text-sm font-semibold">
             {user?.name?.charAt(0).toUpperCase()}
           </div>
-          <div className="flex-1 min-w-0">
+          <div className={`flex-1 min-w-0 whitespace-nowrap transition-opacity duration-200 ${txt}`}>
             <p className="text-white text-sm font-medium truncate">{user?.name}</p>
             <p className="text-gray-400 text-xs truncate">{user?.email}</p>
           </div>
         </div>
         <button
           onClick={() => setShowPwd(true)}
-          className="w-full flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg text-sm transition-colors"
+          title="Cambiar contraseña"
+          className="w-full flex items-center gap-3 px-2.5 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg text-sm transition-colors"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
           </svg>
-          Cambiar contraseña
+          <span className={`whitespace-nowrap transition-opacity duration-200 ${txt}`}>Cambiar contraseña</span>
         </button>
         <button
           onClick={toggleTheme}
-          className="w-full flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg text-sm transition-colors"
+          title={theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+          className="w-full flex items-center gap-3 px-2.5 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg text-sm transition-colors"
         >
           {theme === 'dark' ? (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
             </svg>
           ) : (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
             </svg>
           )}
-          {theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+          <span className={`whitespace-nowrap transition-opacity duration-200 ${txt}`}>
+            {theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+          </span>
         </button>
         <button
           onClick={handleLogout}
-          className="w-full flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg text-sm transition-colors"
+          title="Cerrar sesión"
+          className="w-full flex items-center gap-3 px-2.5 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg text-sm transition-colors"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
-          Cerrar sesión
+          <span className={`whitespace-nowrap transition-opacity duration-200 ${txt}`}>Cerrar sesión</span>
         </button>
       </div>
 

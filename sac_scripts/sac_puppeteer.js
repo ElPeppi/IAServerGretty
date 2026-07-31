@@ -575,8 +575,9 @@ async function main() {
 
   // 'shell' = old headless mode (compatible con Angular/Material y page.pdf()).
   // En Puppeteer 21+ headless:true usa el NUEVO motor que rompe muchos selectores.
+  // HEADLESS=false abre el navegador visible (solo para diagnosticar el login a mano).
   const browser = await puppeteer.launch({
-    headless: 'shell',
+    headless: process.env.HEADLESS === 'false' ? false : 'shell',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -592,14 +593,24 @@ async function main() {
   const page = await browser.newPage();
   await page.setViewport({ width: 1920, height: 1080 });
   page.setDefaultTimeout(300000);
-  page.setDefaultNavigationTimeout(60000);
+  // El SAC a veces tarda >60 s en responder el login; con 60 s se perdían cédulas
+  // por "Navigation timeout" aunque el banco estuviera bien, solo lento.
+  const NAV_TIMEOUT = Number(process.env.SAC_NAV_TIMEOUT_MS) || 120000;
+  page.setDefaultNavigationTimeout(NAV_TIMEOUT);
 
   const resultados = [];
 
   try {
     // ── 1. Login ──────────────────────────────────────────────────────────────
+    // Un reintento del goto: la carga inicial del SAC es la que más suele colgarse
+    // de forma transitoria; reintentar una vez evita perder la cédula por eso.
     console.error(`[INFO] Navegando a login: ${LOGIN_URL}`);
-    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    try {
+      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    } catch (e) {
+      console.error(`[INFO] Login lento (${e.message}); reintentando una vez…`);
+      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    }
     await waitMs(3000);
 
     const loginUrl = page.url();
@@ -670,10 +681,42 @@ async function main() {
     console.error(`[INFO] Haciendo clic en botón: "${btnText}"`);
     await btnLogin.click();
 
-    await page.waitForFunction(
-      () => !window.location.href.toLowerCase().includes('/login'),
-      { timeout: 90000 }
-    );
+    // El SAC no siempre redirige solo tras el login: a veces la URL se queda en
+    // /login aunque la autenticación fue correcta (bug observado en la oficina —
+    // hubo que cambiar la URL al home a mano). Por eso NO dependemos del redirect:
+    // esperamos la señal de sesión (token en storage) y, pase lo que pase,
+    // forzamos nosotros la navegación al home.
+    try {
+      await page.waitForFunction(
+        () => {
+          if (!window.location.href.toLowerCase().includes('/login')) return true; // redirigió solo
+          const tieneToken = (store) => {
+            try {
+              for (let i = 0; i < store.length; i++) {
+                const k = store.key(i);
+                if (/token|auth|jwt|session/i.test(k) && store.getItem(k)) return true;
+              }
+            } catch { /* storage bloqueado */ }
+            return false;
+          };
+          return tieneToken(window.localStorage) || tieneToken(window.sessionStorage);
+        },
+        { timeout: 30000 }
+      );
+    } catch {
+      console.error('[INFO] Sin redirect ni token tras 30 s; navego al home a mano (como en la oficina).');
+    }
+
+    // Forzamos la navegación al home: equivale a que el usuario cambie la URL al
+    // dashboard cuando el SAC no redirige solo tras el login.
+    await page.goto(GESTION_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    await waitForAngular(page, 2000);
+
+    // Si tras navegar el SAC nos devuelve a /login, la sesión no quedó activa
+    // (credenciales incorrectas o token rechazado).
+    if (page.url().toLowerCase().includes('/login')) {
+      throw new Error('Login falló: el SAC volvió a /login tras autenticar (revisa usuario/contraseña).');
+    }
     const urlPostLogin = page.url();
     console.error(`[INFO] Login exitoso → ${urlPostLogin}. Procesando ${clientes.length} cliente(s).`);
 

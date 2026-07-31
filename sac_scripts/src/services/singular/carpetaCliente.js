@@ -269,7 +269,8 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
   const dir = resolverCarpetaCedula(sacDocsDir, cedula);
   if (!fs.existsSync(dir)) return result;
 
-  let escaneadoPath = ''; // pagaré sin texto (imagen) → candidato a OCR (tipo FINANDINA)
+  let escaneadoPath  = ''; // pagaré sin texto (imagen) → candidato a OCR (tipo FINANDINA)
+  let certificadoPath = ''; // PDF que se detectó como certificado DECEVAL
 
   // PDFs de pagaré: DECEVAL.pdf, PAGARE.pdf, PAGARE 001.pdf, etc.
   // Excluir: DATACREDITO.pdf, FOR EJE.pdf, FOR INI.pdf, PRENDA.pdf, TESTIGO.pdf, SAC_*.pdf
@@ -298,6 +299,7 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
         && RE_DECEVAL.test(texto);
       if (esCertificado && !result.certificadoValido) {
         result.certificadoValido = true;
+        certificadoPath = path.join(dir, pdfName);
         console.error(`[PDF-DECEVAL] ${cedula}/${pdfName}: certificado DECEVAL válido ✓`);
       }
 
@@ -361,6 +363,18 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
     }
   }
 
+  // ── Validación DECEVAL: debe traer el número de pagaré ───────────────────────
+  // Un certificado DECEVAL real SIEMPRE indica el "pagaré No. XXXXXXXX". Si lo
+  // detectamos como DECEVAL pero NO hay número, la detección no es confiable
+  // (texto que solo parece certificado). En ese caso se trata como pagaré
+  // ESCANEADO (FINANDINA): se OCR-ea el mismo PDF (o el escaneado si hay otro) y
+  // el número vendrá de la OBLIGACION del Excel. Evita demandas DECEVAL sin nº.
+  if (result.certificadoValido && !result.numeroPagare) {
+    console.error(`[PDF-DECEVAL] ${cedula}: clasificado DECEVAL pero SIN número de pagaré → se reintenta como escaneado (FINANDINA)`);
+    result.certificadoValido = false;
+    if (!escaneadoPath) escaneadoPath = certificadoPath;
+  }
+
   // ── Tipo de pagaré ──────────────────────────────────────────────────────────
   if (result.certificadoValido) {
     result.tipoPagare = 'DECEVAL';
@@ -375,9 +389,24 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
       if (!result.direccion && c.direccion)            result.direccion = c.direccion;
       if (!result.fechaSuscripcion && c.fechaCorta)    result.fechaSuscripcion = c.fechaCorta;
       if (c.nombre)                                    result.nombre = c.nombre;
+
+      // Señal ADICIONAL de "diligenciado" desde la CAPA DE TEXTO del PDF.
+      // Muchos pagarés Finandina son híbridos: imagen escaneada (acuse de recibo,
+      // tarjeta, etc.) + una capa de texto delgada con los campos LLENOS (ciudad,
+      // fecha, capital, intereses). El OCR a veces lee la página equivocada y no ve
+      // el cuerpo del pagaré (caso YEYSON: el OCR leyó el acuse de la tarjeta), pero
+      // la capa de texto sí trae los montos. Si hay ≥1 monto en pesos con formato
+      // colombiano (p.ej. 5.210.410 → ≥ $100.000), el cuerpo está diligenciado.
+      let cuerpoLlenoPorTexto = false;
+      try {
+        const textoLayer = (await pdfParse(fs.readFileSync(escaneadoPath), { max: 0 })).text || '';
+        cuerpoLlenoPorTexto = (textoLayer.match(/\b\d{1,3}(?:\.\d{3})+\b/g) || [])
+          .some((s) => parseInt(s.replace(/\./g, ''), 10) >= 100000);
+      } catch { /* sin capa de texto → solo cuenta el OCR */ }
+
       // Pagaré escaneado en blanco (sin diligenciar) → no se puede demandar.
-      result.diligenciado = !!c.diligenciado;
-      console.error(`[PDF-FINANDINA] ${cedula}: pagaré escaneado → OCR (diligenciado=${result.diligenciado}, nombre="${c.nombre}", dir="${c.direccion}", fecha=${c.fechaCorta || '-'})`);
+      result.diligenciado = !!c.diligenciado || cuerpoLlenoPorTexto;
+      console.error(`[PDF-FINANDINA] ${cedula}: pagaré escaneado → OCR (diligenciado=${result.diligenciado}, señal=${c.diligenciado ? 'OCR' : cuerpoLlenoPorTexto ? 'capa-texto' : 'ninguna'}, nombre="${c.nombre}", dir="${c.direccion}", fecha=${c.fechaCorta || '-'})`);
     } catch (e) {
       console.error(`[PDF-FINANDINA] ${cedula}: OCR falló: ${e.message}`);
     }

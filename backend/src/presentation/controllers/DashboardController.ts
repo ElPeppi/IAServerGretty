@@ -8,24 +8,21 @@ const documentRepository = new PrismaDocumentRepository();
 const getDashboardStatsUseCase = new GetDashboardStatsUseCase(documentRepository);
 
 export class DashboardController {
-  async getStats(req: AuthRequest, res: Response): Promise<void> {
+  async getStats(_req: AuthRequest, res: Response): Promise<void> {
     try {
-      const isAdmin = req.user?.role === 'ADMIN';
-      const stats = await getDashboardStatsUseCase.execute(
-        isAdmin ? undefined : req.user?.userId
-      );
+      // Trabajo en común: todos los usuarios ven las estadísticas de TODAS las
+      // demandas, igual que el listado de Documentos.
+      const stats = await getDashboardStatsUseCase.execute(undefined);
       res.json(stats);
     } catch {
       res.status(500).json({ message: 'Error al obtener estadísticas' });
     }
   }
 
-  // Observaciones: demandas NO generadas (y por qué). Admin ve todas; abogado, las suyas.
-  async getObservaciones(req: AuthRequest, res: Response): Promise<void> {
+  // Observaciones: demandas NO generadas (y por qué). Todos ven todas.
+  async getObservaciones(_req: AuthRequest, res: Response): Promise<void> {
     try {
-      const isAdmin = req.user?.role === 'ADMIN';
       const items = await prisma.observacion.findMany({
-        where: isAdmin ? {} : { lawyerId: req.user?.userId },
         orderBy: { createdAt: 'desc' },
         take: 100,
         select: { id: true, cedula: true, nombre: true, motivo: true, lote: true, createdAt: true },

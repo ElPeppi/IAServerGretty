@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useDocuments } from '../../application/hooks/useDocuments';
+import { useRefreshOnNotification } from '../../application/context/NotificationContext';
 import { DocumentCard } from '../components/Documents/DocumentCard';
 import { SubirAsignacionModal } from '../components/Asignaciones/SubirAsignacionModal';
 import { DescargarSacModal } from '../components/Documents/DescargarSacModal';
@@ -38,6 +39,10 @@ export function DocumentsPage() {
     page,
     pageSize: PAGE_SIZE,
   });
+
+  // Cada demanda se genera y notifica una a una: al llegar el aviso, recargamos
+  // la lista para que aparezca de inmediato sin tener que pulsar "Actualizar".
+  useRefreshOnNotification(refetch);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 

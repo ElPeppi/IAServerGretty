@@ -1,0 +1,6 @@
+# Nunca commitear secretos ni dependencias
+node_modules/
+.env
+sa-key.json
+*.json.key
+poc-gretty-test.txt

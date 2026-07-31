@@ -21,8 +21,12 @@
 const config = require('./src/config');
 const app    = require('./src/app');
 
-app.listen(config.PORT, () => {
-  console.log(`SAC Processor Server corriendo en http://localhost:${config.PORT}`);
+// Atado a 127.0.0.1: el motor NO tiene autenticación y dispara sesiones del SAC
+// con las credenciales del banco. Solo el backend (misma máquina) debe llamarlo.
+const HOST = process.env.HOST || '127.0.0.1';
+
+app.listen(config.PORT, HOST, () => {
+  console.log(`SAC Processor Server corriendo en http://${HOST}:${config.PORT}`);
   console.log(`  Carpeta salida : ${config.OUT_DIR}`);
   console.log(`  SAC URL        : ${config.SAC_URL}`);
   console.log(`  SAC usuario    : ${config.SAC_USER}`);

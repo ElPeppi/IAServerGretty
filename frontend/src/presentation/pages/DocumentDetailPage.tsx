@@ -11,6 +11,7 @@ import { SignatureModal } from '../components/Documents/SignatureModal';
 const DemandEditor = lazy(() =>
   import('../components/Documents/DemandEditor').then((m) => ({ default: m.DemandEditor }))
 );
+import { AsignacionEditor } from '../components/Documents/AsignacionEditor';
 import type { Document, DocumentNote } from '../../domain/types/document';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -204,9 +205,18 @@ export function DocumentDetailPage() {
   const [showSignModal, setShowSignModal] = useState(false);
   const [showRegenConfirm, setShowRegenConfirm] = useState(false);
   const [tab, setTab] = useState<RightTab>('anexos');
+  const [fullscreen, setFullscreen] = useState(false);
 
   // Cuando el motor termina (SSE), recargar la demanda para ver la versión nueva.
   useRefreshOnNotification(refetch);
+
+  // Salir de pantalla completa con Esc.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
 
   if (isLoading) {
     return (
@@ -246,8 +256,32 @@ export function DocumentDetailPage() {
   };
 
   return (
-    <div className="p-4 lg:p-6 h-[calc(100vh-1rem)] flex flex-col">
-      {/* Header */}
+    <div className={
+      fullscreen
+        ? 'fixed inset-0 z-50 bg-gray-100 p-3 flex flex-col'
+        : 'p-4 lg:p-6 h-[calc(100vh-1rem)] flex flex-col'
+    }>
+      {/* Header: barra compacta en pantalla completa, header completo en normal.
+          Los paneles quedan SIEMPRE como 2º hijo → el editor NO se remonta al
+          alternar pantalla completa (no se pierden ediciones sin guardar). */}
+      {fullscreen ? (
+        <div className="flex items-center justify-between gap-3 mb-2 px-1 flex-shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <DocumentStatusBadge status={document.status} />
+            <span className="text-sm font-semibold text-gray-800 truncate">{document.title}</span>
+          </div>
+          <button
+            onClick={() => setFullscreen(false)}
+            title="Salir de pantalla completa (Esc)"
+            className="px-3 py-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 flex-shrink-0"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9V5m0 4H5m4 0L4 4m11 5h4m-4 0V5m0 4l5-5M9 15v4m0-4H5m4 0l-5 5m11-5h4m-4 0v4m0-4l5 5" />
+            </svg>
+            Salir (Esc)
+          </button>
+        </div>
+      ) : (
       <div className="flex items-start justify-between gap-4 mb-4">
         <div className="min-w-0">
           <button
@@ -267,6 +301,16 @@ export function DocumentDetailPage() {
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           <DocumentStatusBadge status={document.status} />
+          <button
+            onClick={() => setFullscreen(true)}
+            title="Pantalla completa (solo demanda + panel derecho)"
+            className="px-3 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+            </svg>
+            Pantalla completa
+          </button>
           {canRegen && (
             <button
               onClick={() => setShowRegenConfirm(true)}
@@ -301,6 +345,7 @@ export function DocumentDetailPage() {
           )}
         </div>
       </div>
+      )}
 
       {/* Visor de 2 paneles: demanda (izq) | anexos/antecedentes/asignación/notas (der) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0">
@@ -351,6 +396,12 @@ export function DocumentDetailPage() {
           <div className="flex-1 min-h-0 bg-white">
             {tab === 'notas' ? (
               <NotesPanel notes={document.notes} />
+            ) : tab === 'asignacion' && document.asignacionUrl && /\.xlsx?(\?|$)/i.test(document.asignacionUrl) ? (
+              <AsignacionEditor
+                url={document.asignacionUrl}
+                documentId={document.id}
+                canEdit={document.status !== 'SIGNED'}
+              />
             ) : (
               <FileViewer url={rightUrl(document, tab)} label={tab} />
             )}

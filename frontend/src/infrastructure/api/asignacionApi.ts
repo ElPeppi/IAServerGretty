@@ -9,6 +9,7 @@ export interface AsignacionResumen {
   poderUrl: string | null;
   poderGeneradoAt: string | null;
   docsEnServidor: boolean;
+  correoPoderUrl: string | null; // PDF del correo del banco guardado para el ANEXO 1
   poderesCacheados: number;
   demandas: number;
   createdAt: string;
@@ -22,9 +23,19 @@ export interface GenerarPoderesResult {
   excluidos: Array<{ cedula: string; nombre?: string; motivo: string }>;
 }
 
+export interface AsignacionPersona {
+  cedula: string;
+  nombre: string;
+  tipo: string; // etiqueta normalizada: EJECUTIVO SINGULAR / RESTITUCIÓN / TRÁMITE PAGO DIRECTO / SIN PROCESO
+}
+
 export const asignacionApi = {
   listar: () =>
     apiClient.get<{ asignaciones: AsignacionResumen[] }>('/asignaciones').then((r) => r.data.asignaciones),
+
+  // Personas (cédula + nombre) de una asignación, para elegir a quién bajar del SAC.
+  personas: (id: string) =>
+    apiClient.get<{ personas: AsignacionPersona[] }>(`/asignaciones/${id}/personas`).then((r) => r.data.personas),
 
   // Sube el Excel de asignación → lo CACHEA (ya no genera demandas).
   subir: (excel: File, fechaAsignacion?: string) => {
@@ -55,16 +66,32 @@ export const asignacionApi = {
       .then((r) => r.data);
   },
 
-  // Genera el Word combinado de poderes de una asignación.
-  generarPoderes: (id: string, docsEnServidor: boolean) =>
+  // Genera el Word combinado de poderes de una asignación. `cedulas` (opcional) =
+  // subconjunto; vacío/omitido = todas (solo proceso ejecutivo singular).
+  generarPoderes: (id: string, docsEnServidor: boolean, cedulas?: string[]) =>
     apiClient
-      .post<GenerarPoderesResult>(`/asignaciones/${id}/generar-poderes`, { docsEnServidor }, { timeout: 3600000 })
+      .post<GenerarPoderesResult>(
+        `/asignaciones/${id}/generar-poderes`,
+        { docsEnServidor, ...(cedulas && cedulas.length ? { cedulas } : {}) },
+        { timeout: 3600000 },
+      )
       .then((r) => r.data),
 
   // Genera las demandas de la asignación reusando el poder cacheado (segundo plano).
+  // `cedulas` (opcional) = subconjunto a generar; vacío/omitido = todas las que el
+  // motor acepte (solo ejecutivo singular). `correoPoder` (opcional) = PDF del correo
+  // del banco para el ANEXO 1; si no se manda, se reusa el guardado en la asignación.
   // Lanza 409 { codigo: 'SIN_PODER' } si no hay poder enlazado.
-  generarDemandas: (id: string) =>
-    apiClient
-      .post<{ success: boolean; started: boolean; message: string }>(`/asignaciones/${id}/generar-demandas`)
-      .then((r) => r.data),
+  generarDemandas: (id: string, cedulas?: string[], correoPoder?: File | null) => {
+    const form = new FormData();
+    if (cedulas && cedulas.length) form.append('cedulas', JSON.stringify(cedulas));
+    if (correoPoder) form.append('correoPoder', correoPoder);
+    return apiClient
+      .post<{ success: boolean; started: boolean; message: string }>(
+        `/asignaciones/${id}/generar-demandas`,
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      )
+      .then((r) => r.data);
+  },
 };

@@ -1,0 +1,13 @@
+{
+  "name": "drive-poc",
+  "private": true,
+  "version": "0.0.0",
+  "description": "POC minimo: consultar y modificar archivos en Google Drive (Shared Drive) con service account",
+  "scripts": {
+    "poc": "node poc.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0"
+  }
+}

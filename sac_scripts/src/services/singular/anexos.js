@@ -93,7 +93,11 @@ function resolverCompartidos() {
     ccoJRamos: archivoMasReciente(D, f => /J\s*RAMOS/i.test(f) && !/SIRNA/i.test(f)),
     sirna:     archivoMasReciente(D, f => /SIRNA/i.test(f)),
     superfin:  archivoMasReciente(F, f => /SUPER/i.test(f)),
-    ccoFin:    archivoMasReciente(F, f => /CCO\s*FINANDINA/i.test(f) && /COMPRIMID/i.test(f)),
+    // ANEXO 7 — Cámara de Comercio de Banco Finandina. Se prefiere la versión
+    // COMPRIMIDA (más liviana al unir) si existe; si no, cualquier "CCO FINANDINA"
+    // (p.ej. "CCO FINANDINA JULIO 2026.pdf", que ya no lleva "COMPRIMIDA").
+    ccoFin:    archivoMasReciente(F, f => /CCO\s*FINANDINA/i.test(f) && /COMPRIMID/i.test(f))
+            || archivoMasReciente(F, f => /CCO\s*FINANDINA/i.test(f)),
     // Correo de otorgamiento del poder (ANEXO 1), respaldo si la web no lo envía.
     // Solo singulares ejecutivos; se excluyen los de pago directo.
     correoPoder: archivoMasRecienteRec(config.ANEXOS_DIR_PODERES,
