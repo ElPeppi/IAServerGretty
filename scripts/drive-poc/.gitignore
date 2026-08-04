@@ -4,3 +4,7 @@ node_modules/
 sa-key.json
 *.json.key
 poc-gretty-test.txt
+# OAuth (variante cuenta personal)
+oauth-credentials.json
+credentials.json
+token.json

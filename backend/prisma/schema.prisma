@@ -134,3 +134,16 @@ model Observacion {
   @@index([createdAt])
   @@map("observaciones")
 }
+
+// Índice relPath ↔ fileId para el almacenamiento en Google Drive (DriveStorage).
+// Drive no tiene rutas: cada archivo se ubica por fileId. Esta tabla evita
+// resolver el fileId por API en cada acceso (menos cuota/latencia) y sobrevive
+// reinicios. Solo se usa con STORAGE_DRIVER=drive; en modo nas queda vacía.
+model DriveFile {
+  relPath   String   @id                 // "{cedula}/{nombre}" (posix)
+  fileId    String                        // id del archivo en la Shared Drive
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@map("drive_files")
+}

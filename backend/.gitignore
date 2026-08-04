@@ -1,0 +1,5 @@
+# Secretos de Google Drive (delegación de dominio) — NUNCA commitear
+sa-key.json
+*.sa-key.json
+drive-sa-*.json
+token.json

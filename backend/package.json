@@ -30,6 +30,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "form-data": "^4.0.0",
+    "googleapis": "^144.0.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
     "pdf-lib": "^1.17.1",

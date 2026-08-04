@@ -68,3 +68,35 @@ El archivo de prueba `poc-gretty-test.txt` queda en la unidad; puedes borrarlo.
 
 - **NO** subas `sa-key.json` ni `.env` a git (ya están en `.gitignore` de esta carpeta).
 - La clave del service account da acceso a la Shared Drive: trátala como una contraseña.
+
+---
+
+## Variante OAuth — probar con cuenta personal (`poc-oauth.js`)
+
+Para **probar YA con tu Gmail personal** (sin Workspace ni Shared Drives). Autoriza
+con **tu propia cuenta** y valida crear/leer/sobrescribir en tu "Mi unidad".
+
+> Solo valida que la **API de Drive** (consultar + modificar) funciona. **NO** valida
+> el mecanismo de producción (service account + Shared Drive) — eso se prueba con
+> `poc.js` cuando tengas el Workspace.
+
+**Setup (una sola vez, ~5 min):**
+
+1. **Proyecto + API** — igual que arriba: proyecto en Google Cloud + habilitar **Google Drive API**.
+2. **Pantalla de consentimiento** — APIs y servicios → **Pantalla de consentimiento OAuth**
+   → tipo **Externo** → rellena nombre de app y tu correo. En **Usuarios de prueba**
+   agrega **tu propio Gmail** (el que vas a autorizar).
+3. **OAuth client** — Credenciales → **Crear credenciales** → **ID de cliente de OAuth**
+   → tipo de aplicación **App de escritorio** → crear → **Descargar JSON**. Guárdalo como
+   `oauth-credentials.json` **dentro de esta carpeta** (`scripts/drive-poc/`).
+4. **Correr:**
+   ```bash
+   cd scripts/drive-poc
+   npm install        # solo la primera vez
+   node poc-oauth.js
+   ```
+   Se abre el navegador → autorizas con tu cuenta (pantalla "app no verificada" →
+   *Continuar*, es normal en modo prueba) → vuelve a la terminal. El token queda en
+   `token.json` y se reutiliza en corridas siguientes.
+
+**Secretos (ya en `.gitignore`):** `oauth-credentials.json`, `token.json`.

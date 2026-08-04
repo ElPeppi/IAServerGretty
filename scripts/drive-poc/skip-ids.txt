@@ -1,0 +1,17 @@
+# Archivos NO migrados: parecen webshells/artefactos de un servidor comprometido.
+# Revisar/borrar aparte. dbcred.php puede tener credenciales → rotar.
+# formato: un fileId por línea (lo que va tras # se ignora)
+1CWB7DX9wM1BWZDHfKTZqoVPyQqHrvNFk  # dbcred.php
+196cyi3cGgpEDIqHyK4jTX4IxYGcuyI9k  # ..%2f..shell.php
+1AgBXSluBrjU6NCu2DyudUkgbiJmOpUf4  # ..%2f..trav.php
+1PGZ4IUwNFim5FKGYBXCimKYN8bITfH9H  # test.cgi
+1Jha7885tnO2VQgisQmV7iNXt9O3B3ibG  # test.inc
+1KNWa33FkbfGrBkR4PqBEW7gUQPkZ1M2T  # test.pht
+1kfuePazNzb-6sfYYI3e3DkxBVELqqCBW  # test.shtml
+16RevIrZW3bKcrHOnhSLUT8KEgvTPzI_z  # test.php7
+1Lzkct3r45CbHEPIV32gYp2HNevtr6zh8  # test.phtml
+12jNBaai8gc5K4aooX4qKBINZGOXfaGoW  # test.phar
+1BOXvyPVe74ILhU53hNypFXN2C1UR7Kiu  # test.php5
+1n_jxy54Yrxj5Lbflw9LPOw5uCcyTG6hm  # cmd.php
+1dAP9e-r8xGQiSyYwgQCy1cVZTOMo3eBM  # t.php
+1K0Fkbo2fZx1F2yyuAESzgXp9KQQqy95G  # __REVISAR_SEGURIDAD__ (cuarentena, NO mover a la unidad)
