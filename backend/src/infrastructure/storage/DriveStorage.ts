@@ -3,31 +3,60 @@
  * Workspace) vía API, con DELEGACIÓN DE DOMINIO.
  *
  * Auth: service account (JWT) que SUPLANTA a una cuenta del dominio
- * (`DRIVE_IMPERSONATE_USER`, p. ej. servidor@jramosabogados.com). El super-admin
- * autoriza el Client ID del SA en la Consola de Admin (Controles de API →
- * Delegación de todo el dominio) con el scope `drive`. Así el backend actúa COMO
- * esa cuenta y escribe en su "Mi unidad" (dueño = la cuenta, cuota del Workspace).
- * No hay Shared Drive: los archivos van bajo `DRIVE_ROOT_FOLDER_ID` (o la raíz).
+ * (`DRIVE_IMPERSONATE_USER`, p. ej. servidor@jramosabogados.com), que es MIEMBRO
+ * de la Unidad Compartida. El super-admin autoriza el Client ID del SA en la
+ * Consola de Admin (Controles de API → Delegación de todo el dominio) con el scope
+ * `drive`. Así el backend actúa COMO esa cuenta y escribe en la Unidad Compartida
+ * (dueño = la unidad/organización, cuota del Workspace).
+ *
+ * Destino: `DRIVE_SHARED_DRIVE_ID` (Unidad Compartida) + `DRIVE_ROOT_FOLDER_ID`
+ * (carpeta dedicada dentro de la unidad). Si no hay SHARED_DRIVE_ID, cae a "Mi
+ * unidad" del usuario suplantado (modo dev).
+ *
+ * Modo OAuth (pruebas con cuenta PERSONAL Gmail): DRIVE_AUTH=oauth. Sin Workspace no
+ * hay delegación ni Unidad Compartida; se usa OAuth (cliente de escritorio + refresh
+ * token) y se escribe en "Mi unidad" de la cuenta autorizada.
  *
  * Env:
- *   DRIVE_SA_KEY           ruta al JSON del service account
- *   DRIVE_IMPERSONATE_USER correo de la cuenta a suplantar (dueña del Drive)
- *   DRIVE_ROOT_FOLDER_ID   carpeta raíz donde crear las {cedula}/... (default: 'root')
+ *   DRIVE_AUTH             'delegation' (default) | 'oauth'
+ *   DRIVE_SA_KEY           [delegation] ruta al JSON del service account
+ *   DRIVE_IMPERSONATE_USER [delegation] correo de la cuenta a suplantar (miembro de la unidad)
+ *   DRIVE_SHARED_DRIVE_ID  [delegation] ID de la Unidad Compartida
+ *   DRIVE_OAUTH_CRED       [oauth] ruta al oauth-credentials.json (App de escritorio)
+ *   DRIVE_OAUTH_TOKEN      [oauth] ruta al token.json (con refresh token)
+ *   DRIVE_ROOT_FOLDER_ID   carpeta raíz donde crear las {cedula}/... (default: la unidad / 'root')
  *
  * Índice relPath→fileId: tabla Prisma `DriveFile` (persistente).
  *
  * STORAGE_DRIVER=drive → esta implementación.
  */
+import fs from 'fs';
 import { google, drive_v3 } from 'googleapis';
+import type { OAuth2Client } from 'google-auth-library';
 import { Readable } from 'stream';
 import { IStorage, StorageObject } from './IStorage';
 import { prisma } from '../database/prisma/client';
 
+// Modo de autenticación:
+//   'delegation' (default) → service account + delegación de dominio (Workspace, prod).
+//   'oauth'                → OAuth de una cuenta personal (Gmail, para pruebas).
+const DRIVE_AUTH = (process.env.DRIVE_AUTH || 'delegation').toLowerCase();
 const SA_KEY = process.env.DRIVE_SA_KEY || '';
 const IMPERSONATE_USER = process.env.DRIVE_IMPERSONATE_USER || '';
-const ROOT_FOLDER_ID = process.env.DRIVE_ROOT_FOLDER_ID || 'root';
+const SHARED_DRIVE_ID = process.env.DRIVE_SHARED_DRIVE_ID || '';
+// OAuth (cuenta personal): JSON del OAuth client "App de escritorio" + token con refresh.
+const OAUTH_CRED = process.env.DRIVE_OAUTH_CRED || '';
+const OAUTH_TOKEN = process.env.DRIVE_OAUTH_TOKEN || '';
+// Raíz donde el backend crea las {cedula}/...: carpeta dedicada, o la unidad, o Mi unidad.
+const ROOT_FOLDER_ID = process.env.DRIVE_ROOT_FOLDER_ID || SHARED_DRIVE_ID || 'root';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+// Parámetros extra para acotar las búsquedas a la Unidad Compartida (si aplica).
+// En "Mi unidad" (sin SHARED_DRIVE_ID) se omiten y busca en el espacio del usuario.
+const DRIVE_SCOPE = SHARED_DRIVE_ID
+  ? { corpora: 'drive' as const, driveId: SHARED_DRIVE_ID }
+  : {};
 
 function baseUrl(): string {
   return process.env.BASE_URL ?? `http://localhost:${process.env.PORT ?? 3001}`;
@@ -60,18 +89,38 @@ export class DriveStorage implements IStorage {
   /** Cliente Drive perezoso: no autentica hasta el primer uso real. */
   private get drive(): drive_v3.Drive {
     if (!this._drive) {
-      const auth = new google.auth.JWT({
-        keyFile: SA_KEY,
-        scopes: ['https://www.googleapis.com/auth/drive'],
-        subject: IMPERSONATE_USER, // delegación de dominio: actúa COMO esta cuenta
-      });
+      const auth: OAuth2Client = DRIVE_AUTH === 'oauth'
+        ? this.oauthClient()
+        : new google.auth.JWT({
+            keyFile: SA_KEY,
+            scopes: ['https://www.googleapis.com/auth/drive'],
+            subject: IMPERSONATE_USER, // delegación de dominio: actúa COMO esta cuenta
+          });
       this._drive = google.drive({ version: 'v3', auth });
     }
     return this._drive;
   }
 
+  /** Cliente OAuth2 de una cuenta personal (Gmail): cliente de escritorio + refresh token. */
+  private oauthClient(): OAuth2Client {
+    const raw = JSON.parse(fs.readFileSync(OAUTH_CRED, 'utf8'));
+    const cfg = raw.installed || raw.web;
+    if (!cfg?.client_id) throw new Error(`${OAUTH_CRED} no es un OAuth client de "App de escritorio" válido.`);
+    const oauth = new google.auth.OAuth2(cfg.client_id, cfg.client_secret);
+    oauth.setCredentials(JSON.parse(fs.readFileSync(OAUTH_TOKEN, 'utf8')));
+    // Persiste el token si googleapis lo refresca (para no re-autorizar).
+    oauth.on('tokens', (t) => {
+      try {
+        const cur = JSON.parse(fs.readFileSync(OAUTH_TOKEN, 'utf8'));
+        fs.writeFileSync(OAUTH_TOKEN, JSON.stringify({ ...cur, ...t }, null, 2));
+      } catch { /* best-effort */ }
+    });
+    return oauth;
+  }
+
   get enabled(): boolean {
-    return !!(SA_KEY && IMPERSONATE_USER);
+    if (DRIVE_AUTH === 'oauth') return !!(OAUTH_CRED && OAUTH_TOKEN);
+    return !!(SA_KEY && IMPERSONATE_USER && SHARED_DRIVE_ID);
   }
 
   urlFor(relPath: string): string {
@@ -103,6 +152,7 @@ export class DriveStorage implements IStorage {
       spaces: 'drive',
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
+      ...DRIVE_SCOPE,
     });
     return res.data.files?.[0]?.id ?? null;
   }
@@ -222,6 +272,7 @@ export class DriveStorage implements IStorage {
         supportsAllDrives: true,
         pageSize: 1000,
         pageToken,
+        ...DRIVE_SCOPE,
       });
       for (const f of res.data.files ?? []) if (f.name) names.push(f.name);
       pageToken = res.data.nextPageToken ?? undefined;

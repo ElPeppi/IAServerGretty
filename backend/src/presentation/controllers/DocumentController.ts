@@ -4,11 +4,9 @@ import { GetDocumentByIdUseCase } from '../../application/use-cases/documents/Ge
 import { SignDocumentUseCase } from '../../application/use-cases/documents/SignDocumentUseCase';
 import { PrismaDocumentRepository } from '../../infrastructure/database/prisma/DocumentRepository';
 import { PrismaUserRepository } from '../../infrastructure/database/prisma/UserRepository';
-import { NasStorage } from '../../infrastructure/services/NasStorage';
+import { storage } from '../../infrastructure/storage';
 import { AuthRequest } from '../middlewares/authMiddleware';
 import { DocumentStatus } from '../../domain/entities/Document';
-
-const nas = new NasStorage();
 
 const documentRepository = new PrismaDocumentRepository();
 const userRepository = new PrismaUserRepository();
@@ -77,21 +75,21 @@ export class DocumentController {
         res.status(409).json({ message: 'La demanda ya está firmada; no se puede modificar' });
         return;
       }
-      if (!nas.enabled) {
-        res.status(503).json({ message: 'DOCS_DIR no está configurado: no se puede sobreescribir en el NAS' });
+      if (!storage.enabled) {
+        res.status(503).json({ message: 'El almacenamiento no está configurado: no se puede sobreescribir el archivo' });
         return;
       }
 
       const meta = (document.metadata ?? {}) as { demandaRelPath?: string };
       const rel = meta.demandaRelPath
-        ?? (document.fileUrl ? nas.relPathFromUrl(document.fileUrl) : null);
+        ?? (document.fileUrl ? storage.relPathFromUrl(document.fileUrl) : null);
       if (!rel) {
-        res.status(400).json({ message: 'No se pudo determinar la ruta del archivo en el NAS' });
+        res.status(400).json({ message: 'No se pudo determinar la ruta del archivo en el almacenamiento' });
         return;
       }
 
-      nas.overwrite(rel, file.buffer);
-      res.json({ success: true, message: 'Archivo sobrescrito en el NAS', fileUrl: document.fileUrl });
+      await storage.overwrite(rel, file.buffer);
+      res.json({ success: true, message: 'Archivo sobrescrito', fileUrl: document.fileUrl });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al guardar el archivo';
       res.status(400).json({ message });
@@ -115,17 +113,17 @@ export class DocumentController {
       }
 
       const document = await getDocumentByIdUseCase.execute(id);
-      if (!nas.enabled) {
-        res.status(503).json({ message: 'DOCS_DIR no está configurado: no se puede sobreescribir en el NAS' });
+      if (!storage.enabled) {
+        res.status(503).json({ message: 'El almacenamiento no está configurado: no se puede sobreescribir la asignación' });
         return;
       }
       if (!document.asignacionUrl) {
         res.status(400).json({ message: 'Esta demanda no tiene un Excel de asignación asociado' });
         return;
       }
-      const rel = nas.relPathFromUrl(document.asignacionUrl);
+      const rel = storage.relPathFromUrl(document.asignacionUrl);
       if (!rel) {
-        res.status(400).json({ message: 'No se pudo determinar la ruta de la asignación en el NAS' });
+        res.status(400).json({ message: 'No se pudo determinar la ruta de la asignación en el almacenamiento' });
         return;
       }
       if (!/\.xlsx?$/i.test(rel)) {
@@ -133,8 +131,8 @@ export class DocumentController {
         return;
       }
 
-      nas.overwrite(rel, file.buffer);
-      res.json({ success: true, message: 'Asignación sobrescrita en el NAS', asignacionUrl: document.asignacionUrl });
+      await storage.overwrite(rel, file.buffer);
+      res.json({ success: true, message: 'Asignación sobrescrita', asignacionUrl: document.asignacionUrl });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al guardar la asignación';
       res.status(400).json({ message });

@@ -17,7 +17,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
-import { NasStorage } from './NasStorage';
+import { storage } from '../storage';
+import type { IStorage } from '../storage';
 import { estamparFirmaDocx } from './firmaStamp';
 import { Document } from '../../domain/entities/Document';
 
@@ -58,7 +59,7 @@ export interface SignedPdfResult {
 }
 
 export class SignedPdfService {
-  constructor(private readonly nas: NasStorage = new NasStorage()) {}
+  constructor(private readonly store: IStorage = storage) {}
 
   /** Convierte bytes de un .docx a PDF (Buffer) usando LibreOffice headless. */
   private async docxToPdf(docxBytes: Buffer, baseName: string): Promise<Buffer> {
@@ -90,14 +91,14 @@ export class SignedPdfService {
     }
   }
 
-  /** URL pública guardada (anexos/antecedentes) → ruta ABSOLUTA en el NAS, si existe. */
-  private absFromUrl(url?: string | null): string | null {
+  /** URL pública guardada (anexos/antecedentes) → sus bytes desde el storage, si existe. */
+  private async readFromUrl(url?: string | null): Promise<Buffer | null> {
     if (!url) return null;
-    const rel = this.nas.relPathFromUrl(url);
+    const rel = this.store.relPathFromUrl(url);
     if (!rel) return null;
     try {
-      const abs = this.nas.absFromRelPath(rel);
-      return fs.existsSync(abs) ? abs : null;
+      if (!(await this.store.exists(rel))) return null;
+      return await this.store.read(rel);
     } catch {
       return null;
     }
@@ -114,21 +115,20 @@ export class SignedPdfService {
    * Devuelve la URL pública y la ruta relativa.
    */
   async build(document: Document): Promise<SignedPdfResult> {
-    if (!this.nas.enabled) throw new Error('DOCS_DIR no está configurado: no se puede guardar en el NAS.');
+    if (!this.store.enabled) throw new Error('El almacenamiento (DOCS_DIR o Drive) no está configurado: no se puede guardar el PDF firmado.');
 
-    // Ruta del .docx de la demanda en el NAS (metadata.demandaRelPath o desde fileUrl).
+    // Ruta del .docx de la demanda en el storage (metadata.demandaRelPath o desde fileUrl).
     const relDocx =
       (document.metadata?.['demandaRelPath'] as string | undefined) ||
       (document.fileUrl && /\.docx?(\?|$)/i.test(document.fileUrl)
-        ? this.nas.relPathFromUrl(document.fileUrl) ?? undefined
+        ? this.store.relPathFromUrl(document.fileUrl) ?? undefined
         : undefined);
     if (!relDocx) throw new Error('No se encontró el .docx de la demanda para convertir a PDF.');
-    const docxAbs = this.nas.absFromRelPath(relDocx);
-    if (!fs.existsSync(docxAbs)) throw new Error('El .docx de la demanda no existe en el NAS.');
+    if (!(await this.store.exists(relDocx))) throw new Error('El .docx de la demanda no existe en el almacenamiento.');
 
-    // 1) Estampar la firma en el docx (sobre una COPIA en memoria: el archivo del NAS
+    // 1) Estampar la firma en el docx (sobre una COPIA en memoria: el archivo original
     //    queda sin firma), y convertir a PDF. La firma se aplica AL FIRMAR, no antes.
-    let docxBytes: Buffer = fs.readFileSync(docxAbs);
+    let docxBytes: Buffer = await this.store.read(relDocx);
     const firma = cargarFirma();
     if (firma) docxBytes = estamparFirmaDocx(docxBytes, firma);
     const baseName = path.basename(String(relDocx)).replace(/\.docx?$/i, '');
@@ -138,15 +138,15 @@ export class SignedPdfService {
     //    Los ANTECEDENTES NO van en la demanda firmada (se radican aparte).
     const out = await PDFDocument.create();
     await this.appendPdf(out, demandaPdf);
-    const anexosAbs = this.absFromUrl(document.anexosUrl);
-    if (anexosAbs) await this.appendPdf(out, fs.readFileSync(anexosAbs));
+    const anexosBytes = await this.readFromUrl(document.anexosUrl);
+    if (anexosBytes) await this.appendPdf(out, anexosBytes);
 
     // 3) Guardar junto a la demanda, en la carpeta del cliente.
     const dir = path.posix.dirname(String(relDocx).replace(/\\/g, '/'));
     const idSeg = document.clientCedula || document.id;
     const relPdf = `${dir}/DEMANDA FIRMADA - ${idSeg}.pdf`;
     const bytes = Buffer.from(await out.save());
-    const url = this.nas.saveBuffer(bytes, relPdf);
+    const url = (await this.store.save(relPdf, bytes, 'application/pdf')).url;
 
     return { relPath: relPdf, url, pages: out.getPageCount() };
   }

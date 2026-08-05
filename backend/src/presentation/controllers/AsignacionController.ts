@@ -6,7 +6,10 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../infrastructure/database/prisma/client';
 import { EngineService } from '../../infrastructure/services/EngineService';
 import { FileStorage } from '../../infrastructure/services/FileStorage';
-import { NasStorage } from '../../infrastructure/services/NasStorage';
+import { storage } from '../../infrastructure/storage';
+import {
+  RAIZ_DEMANDAS, detectarBanco, detectarAnio, carpetaAsignaciones, carpetaGarantias, unir,
+} from '../../infrastructure/storage/rutas';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { getSettings } from '../../infrastructure/config/settings';
 import { EngineFile, EngineClientInfo, EngineDocument } from '../../application/services/IEngineService';
@@ -14,7 +17,6 @@ import { AuthRequest } from '../middlewares/authMiddleware';
 
 const engineService = new EngineService();
 const fileStorage = new FileStorage();
-const nas = new NasStorage();
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -180,9 +182,14 @@ export class AsignacionController {
         (req.body.fechaAsignacion ? new Date(req.body.fechaAsignacion as string) : null) ||
         fechaDesdeNombre(nombre);
 
+      // Ruta DERIVADA del contenido: banco (de EMPRESA/NIT) + año (de la fecha/nombre)
+      // → DEMANDAS/{banco}/ASIGNACION/{año}/{nombre}.xlsx. Así "Subir asignación" deja
+      // el Excel en la MISMA carpeta que si alguien lo dejara a mano (misma convención).
+      const banco = detectarBanco(filas);
+      const anio = detectarAnio(fecha, nombre);
       const safeName = nombre.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const excelUrl = nas.enabled
-        ? nas.saveBuffer(file.buffer, `_asignaciones/${safeName}-${Date.now()}.xlsx`)
+      const excelUrl = storage.enabled
+        ? (await storage.save(unir(carpetaAsignaciones(banco, anio), `${nombre}.xlsx`), file.buffer, XLSX_MIME)).url
         : fileStorage.saveBuffer(file.buffer, `${safeName}.xlsx`, XLSX_MIME).url;
 
       const asignacion = await prisma.asignacion.upsert({
@@ -249,53 +256,77 @@ export class AsignacionController {
   // POST /api/asignaciones/actualizar → escanea ASIGNACIONES_DIR y agrega las que falten.
   async actualizar(req: AuthRequest, res: Response): Promise<void> {
     try {
-      const dir = process.env.ASIGNACIONES_DIR || '';
-      if (!dir) {
-        res.status(400).json({ message: 'ASIGNACIONES_DIR no está configurado en el backend (.env).' });
+      if (!storage.enabled) {
+        res.status(400).json({ message: 'El almacenamiento no está configurado (revisa STORAGE_DRIVER y las credenciales).' });
         return;
       }
-      if (!fs.existsSync(dir)) {
-        res.status(400).json({ message: `La carpeta de asignaciones no existe: ${dir}` });
-        return;
-      }
-      const archivos = fs.readdirSync(dir).filter((f) => /\.(xlsx|xls)$/i.test(f) && !f.startsWith('~$'));
+      // Recorre el árbol de la oficina: DEMANDAS/{banco}/ASIGNACION/{año}/*.xlsx
+      // (o *.xlsx sueltos dentro de ASIGNACION). El BANCO y el AÑO salen de la RUTA
+      // misma —no del contenido—: la carpeta donde alguien dejó el Excel dice a qué
+      // banco/año pertenece. Se referencia el archivo EN SU carpeta (no se copia).
+      const encontrados = await this.escanearAsignaciones();
       const existentes = new Set((await prisma.asignacion.findMany({ select: { nombre: true } })).map((a) => a.nombre));
 
       let agregadas = 0;
       const nuevas: string[] = [];
-      for (const f of archivos) {
-        const nombre = nombreLote(f);
-        if (existentes.has(nombre)) continue;
+      for (const it of encontrados) {
+        if (existentes.has(it.nombre)) continue;
         try {
-          const buffer = fs.readFileSync(path.join(dir, f));
+          const buffer = await storage.read(it.relPath);
           const filas = parseFilas(buffer);
           if (!filas.length) continue;
-          const fecha = fechaDesdeNombre(nombre);
-          const safeName = nombre.replace(/[^a-zA-Z0-9._-]/g, '_');
-          const excelUrl = nas.enabled
-            ? nas.saveBuffer(buffer, `_asignaciones/${safeName}-${Date.now()}.xlsx`)
-            : fileStorage.saveBuffer(buffer, `${safeName}.xlsx`, XLSX_MIME).url;
+          // Año: del nombre; si no, de la carpeta {año} donde está el archivo.
+          const fecha = fechaDesdeNombre(it.nombre) || (it.anio ? new Date(Number(it.anio), 0, 1) : null);
           await prisma.asignacion.create({
             data: {
-              nombre,
+              nombre: it.nombre,
               fechaAsignacion: fecha ?? null,
-              excelUrl,
+              // Referencia al archivo en su carpeta real (DEMANDAS/{banco}/ASIGNACION/{año}).
+              excelUrl: storage.urlFor(it.relPath),
               filas: filas as unknown as Prisma.InputJsonValue,
               totalFilas: contarCedulas(filas),
               lawyerId: req.user!.userId,
             },
           });
           agregadas++;
-          nuevas.push(nombre);
+          nuevas.push(it.nombre);
+          existentes.add(it.nombre);
         } catch (e) {
-          console.error('[asignaciones/actualizar]', f, e instanceof Error ? e.message : e);
+          console.error('[asignaciones/actualizar]', it.relPath, e instanceof Error ? e.message : e);
         }
       }
-      res.json({ success: true, escaneadas: archivos.length, agregadas, nuevas });
+      res.json({ success: true, escaneadas: encontrados.length, agregadas, nuevas });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al actualizar asignaciones';
       res.status(500).json({ message });
     }
+  }
+
+  // Recorre DEMANDAS/{banco}/ASIGNACION/{año}/*.xlsx y devuelve los Excel hallados,
+  // con su banco y año DEDUCIDOS DE LA RUTA. Acepta también *.xlsx sueltos dentro de
+  // ASIGNACION (sin subcarpeta de año). Ignora temporales (~$) y no-Excel.
+  private async escanearAsignaciones(): Promise<Array<{ relPath: string; nombre: string; banco: string; anio: string }>> {
+    const out: Array<{ relPath: string; nombre: string; banco: string; anio: string }> = [];
+    const esExcel = (n: string) => /\.(xlsx|xls)$/i.test(n) && !n.startsWith('~$');
+    const bancos = await storage.list(RAIZ_DEMANDAS).catch(() => []);
+    for (const banco of bancos) {
+      const asigDir = unir(RAIZ_DEMANDAS, banco, 'ASIGNACION');
+      const entradas = await storage.list(asigDir).catch(() => []);
+      for (const e of entradas) {
+        if (esExcel(e)) {
+          // Excel suelto directamente en ASIGNACION (sin carpeta de año).
+          out.push({ relPath: unir(asigDir, e), nombre: nombreLote(e), banco, anio: '' });
+        } else {
+          // Subcarpeta de año (2025, 2026, …) → sus Excel.
+          const anio = e;
+          const files = await storage.list(unir(asigDir, anio)).catch(() => []);
+          for (const f of files) {
+            if (esExcel(f)) out.push({ relPath: unir(asigDir, anio, f), nombre: nombreLote(f), banco, anio });
+          }
+        }
+      }
+    }
+    return out;
   }
 
   // POST /api/asignaciones/:id/generar-poderes  { docsEnServidor } → Word combinado + cache Poder.
@@ -308,7 +339,7 @@ export class AsignacionController {
         return;
       }
       const docsEnServidor = !!req.body.docsEnServidor;
-      const excel = this.leerExcelOriginal(asignacion.excelUrl);
+      const excel = await this.leerExcelOriginal(asignacion.excelUrl);
       if (!excel) {
         res.status(400).json({ message: 'No se pudo leer el Excel original de la asignación. Vuelve a subir la asignación.' });
         return;
@@ -334,8 +365,8 @@ export class AsignacionController {
       let poderUrl: string | undefined;
       if (result.poderBase64) {
         const buf = Buffer.from(result.poderBase64, 'base64');
-        poderUrl = nas.enabled
-          ? nas.saveBuffer(buf, `_poderes/${asignacion.id}.docx`)
+        poderUrl = storage.enabled
+          ? (await storage.save(`_poderes/${asignacion.id}.docx`, buf, DOCX_MIME)).url
           : fileStorage.saveBase64(result.poderBase64, result.poderFilename || `poderes-${asignacion.id}.docx`, DOCX_MIME).url;
       }
 
@@ -419,7 +450,7 @@ export class AsignacionController {
         return;
       }
       // Excel ORIGINAL (2 hojas) — el caché solo guarda Hoja1 y el motor necesita Hoja2.
-      const excel = this.leerExcelOriginal(asignacion.excelUrl);
+      const excel = await this.leerExcelOriginal(asignacion.excelUrl);
       if (!excel) {
         res.status(400).json({ message: 'No se pudo leer el Excel original de la asignación. Vuelve a subir la asignación.' });
         return;
@@ -430,19 +461,19 @@ export class AsignacionController {
       // La petición puede ser JSON (array) o multipart (string JSON) si trae el correo.
       const soloCedulas = parseCedulas(req.body.cedulas);
 
-      // Correo del banco (PDF) → ANEXO 1. Si llega uno nuevo se guarda en el NAS y
+      // Correo del banco (PDF) → ANEXO 1. Si llega uno nuevo se guarda en el storage y
       // queda enlazado a la asignación; si no, se reusa el que ya tenga guardado.
       let correoPoderUrl = asignacion.correoPoderUrl;
       if (req.file) {
-        if (!nas.enabled) {
-          res.status(400).json({ message: 'DOCS_DIR no está configurado: no se puede guardar el correo del poder.' });
+        if (!storage.enabled) {
+          res.status(400).json({ message: 'El almacenamiento no está configurado: no se puede guardar el correo del poder.' });
           return;
         }
         const safe = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_') || 'correo_poder.pdf';
-        correoPoderUrl = nas.saveBuffer(req.file.buffer, `_asignaciones/${asignacion.id}/${Date.now()}-${safe}`);
+        correoPoderUrl = (await storage.save(`_asignaciones/${asignacion.id}/${Date.now()}-${safe}`, req.file.buffer, 'application/pdf')).url;
         await prisma.asignacion.update({ where: { id: asignacion.id }, data: { correoPoderUrl } });
       }
-      const correoPoder = this.leerArchivoNas(correoPoderUrl);
+      const correoPoder = await this.leerArchivo(correoPoderUrl);
 
       res.status(202).json({
         success: true,
@@ -495,6 +526,8 @@ export class AsignacionController {
       where: { id: input.asignacionId }, select: { filas: true },
     });
     const filas = (asig?.filas as unknown as Array<Record<string, unknown>>) ?? [];
+    // Banco de esta asignación (de EMPRESA/NIT) → define la carpeta GARANTIAS destino.
+    const banco = detectarBanco(filas);
     let objetivo = personasDeFilas(filas).filter((p) => p.tipo === 'EJECUTIVO SINGULAR');
     if (input.soloCedulas?.length) {
       const set = new Set(input.soloCedulas);
@@ -559,7 +592,7 @@ export class AsignacionController {
         }
 
         const info = (result.clientes ?? []).find((c) => c.cedula === doc.cedula);
-        await this.persistirDemanda(doc, info, input, fechaDMYStr);
+        await this.persistirDemanda(doc, info, input, fechaDMYStr, banco);
         await this.reconciliarPoder(input.asignacionId, doc.cedula, doc.nombre, info);
         generadas++;
 
@@ -597,26 +630,26 @@ export class AsignacionController {
     });
   }
 
-  // ¿La persona tiene la información del SAC descargada en su carpeta del NAS?
-  // El SAC deja SAC_{ced}_DIRYTEL.pdf / SAC_{ced}_OBL*.pdf; sin ellos la demanda
-  // saldría sin antecedentes ni correo de notificación. Si no hay NAS, no se puede
+  // ¿La persona tiene la información del SAC descargada?
+  // El motor descarga el SAC a SU disco local (DOCS_DIR = carpeta de salida del motor),
+  // NO al storage de documentos (Drive). Por eso este gate mira el disco local del motor,
+  // no Drive. Deja SAC_{ced}_DIRYTEL.pdf / SAC_{ced}_OBL*.pdf; sin ellos la demanda
+  // saldría sin antecedentes ni correo de notificación. Sin DOCS_DIR no se puede
   // verificar → no se bloquea (se asume presente).
   private tieneInfoSac(cedula: string): boolean {
-    if (!nas.enabled) return true;
+    const root = process.env.DOCS_DIR || '';
+    if (!root) return true;
     try {
+      if (!fs.existsSync(root)) return false;
       // El motor lee la carpeta MÁS RECIENTE de la cédula ({cedula}, {cedula}_{año},
       // {cedula}_{MM}_{año}, {cedula}_{año}_{Mes}…). El SAC puede haber quedado en
-      // cualquiera de ellas, no solo en la plana. Revisamos TODAS las carpetas cuyo
-      // nombre sea la cédula o empiece por "{cedula}_" y basta con que UNA tenga SAC_*.pdf.
-      const root = nas.root;
-      if (!root || !fs.existsSync(root)) return false;
+      // cualquiera de ellas. Revisamos TODAS las carpetas cuyo nombre sea la cédula o
+      // empiece por "{cedula}_" y basta con que UNA tenga SAC_*.pdf.
       const ced = String(cedula);
-      const carpetas = fs.readdirSync(root).filter(
-        (n) => n === ced || n.startsWith(`${ced}_`),
-      );
+      const carpetas = fs.readdirSync(root).filter((n) => n === ced || n.startsWith(`${ced}_`));
       return carpetas.some((n) => {
         try {
-          return fs.readdirSync(nas.absFromRelPath(n)).some((f) => /^SAC_.*\.pdf$/i.test(f));
+          return fs.readdirSync(path.join(root, n)).some((f) => /^SAC_.*\.pdf$/i.test(f));
         } catch {
           return false;
         }
@@ -634,22 +667,34 @@ export class AsignacionController {
     info: EngineClientInfo | undefined,
     input: { asignacionId: string; excelUrl: string | null; lawyerId: string },
     fechaDMYStr: string | undefined,
+    banco: string,
   ): Promise<void> {
-    const fileRef = (f?: EngineFile | null): string | undefined => {
-      if (!f) return undefined;
-      if (nas.enabled && f.relPath) return nas.urlForRelPath(f.relPath);
-      return fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url;
+    // Archivo del motor → storage: el motor escribe en SU disco y devuelve base64+relPath
+    // ({cedula}/...). Se PREFIJA con la carpeta GARANTIAS del banco (DEMANDAS/{banco}/
+    // EJECUTIVAS SINGULARES/GARANTIAS) —la raíz del storage es el top de la oficina— y se
+    // sube ahí. Sin storage, copia el base64 al almacenamiento local (comportamiento previo).
+    const subir = async (f?: EngineFile | null): Promise<{ url?: string; rel?: string }> => {
+      if (!f) return {};
+      if (storage.enabled && f.relPath) {
+        const rel = unir(carpetaGarantias(banco), f.relPath);
+        if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
+        return { url: storage.urlFor(rel), rel };
+      }
+      return { url: fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url };
     };
 
+    const demanda = await subir(doc.archivos?.demanda);
+    const anexos = await subir(doc.archivos?.anexos);
+    const antecedentes = await subir(doc.archivos?.antecedentes);
     const datos = {
       title: `Demanda Ejecutiva Singular — ${doc.nombre || doc.cedula}`,
       type: 'DEMANDA_SINGULAR',
       status: 'GENERATED' as const,
       clientName: doc.nombre || doc.cedula,
       clientCedula: doc.cedula,
-      fileUrl: fileRef(doc.archivos?.demanda),
-      anexosUrl: fileRef(doc.archivos?.anexos),
-      antecedentesUrl: fileRef(doc.archivos?.antecedentes),
+      fileUrl: demanda.url,
+      anexosUrl: anexos.url,
+      antecedentesUrl: antecedentes.url,
       // El visor lee asignacionUrl (pestaña "Asignación") y "Regenerar" lo exige
       // para releer el Excel: el asignacionId solo sirve de FK.
       asignacionUrl: input.excelUrl ?? undefined,
@@ -657,7 +702,8 @@ export class AsignacionController {
       notes: (doc.notas ?? []) as unknown as Prisma.InputJsonValue,
       metadata: {
         numeroPagare: info?.numeroPagare,
-        demandaRelPath: doc.archivos?.demanda?.relPath,
+        // Ruta YA prefijada (GARANTIAS/{cedula}/...) → la usan firma y editor.
+        demandaRelPath: demanda.rel ?? doc.archivos?.demanda?.relPath,
         fechaAsignacion: fechaDMYStr ?? null,
       } as Prisma.InputJsonValue,
     };
@@ -716,8 +762,8 @@ export class AsignacionController {
         res.status(404).json({ message: 'Asignación no encontrada' });
         return;
       }
-      const poderUrl = nas.enabled
-        ? nas.saveBuffer(file.buffer, `_poderes/${asignacion.id}.docx`)
+      const poderUrl = storage.enabled
+        ? (await storage.save(`_poderes/${asignacion.id}.docx`, file.buffer, DOCX_MIME)).url
         : fileStorage.saveBuffer(file.buffer, `poderes-${asignacion.id}.docx`, DOCX_MIME).url;
 
       await prisma.asignacion.update({
@@ -735,17 +781,17 @@ export class AsignacionController {
   // Se usa el original —no las filas cacheadas— porque el motor necesita AMBAS hojas:
   // Hoja1 (maestros) + Hoja2 (financieros: capital/interés/obligaciones → cuantía).
   // El caché solo guarda Hoja1, así que reconstruir desde `filas` perdería Hoja2.
-  private leerExcelOriginal(excelUrl: string | null): Buffer | null {
-    return this.leerArchivoNas(excelUrl);
+  private leerExcelOriginal(excelUrl: string | null): Promise<Buffer | null> {
+    return this.leerArchivo(excelUrl);
   }
 
   // Lee un archivo guardado por el backend a partir de la URL persistida: primero
-  // desde el NAS (/docs) y, como respaldo, desde uploads/ (instalaciones sin NAS).
-  private leerArchivoNas(url: string | null): Buffer | null {
+  // desde el storage (/docs) y, como respaldo, desde uploads/ (instalaciones sin storage).
+  private async leerArchivo(url: string | null): Promise<Buffer | null> {
     if (!url) return null;
     try {
-      const rel = nas.relPathFromUrl(url);
-      if (nas.enabled && rel) return fs.readFileSync(nas.absFromRelPath(rel));
+      const rel = storage.relPathFromUrl(url);
+      if (storage.enabled && rel) return await storage.read(rel);
       const m = url.match(/\/uploads\/([^/?#]+)$/);
       if (m) {
         const p = path.join(process.cwd(), 'uploads', decodeURIComponent(m[1]));

@@ -1,5 +1,4 @@
 import { Response } from 'express';
-import fs from 'fs';
 import * as XLSX from 'xlsx';
 import { PrismaDocumentRepository } from '../../infrastructure/database/prisma/DocumentRepository';
 import { PrismaUserRepository } from '../../infrastructure/database/prisma/UserRepository';
@@ -8,7 +7,8 @@ import { getSettings } from '../../infrastructure/config/settings';
 import { N8nService } from '../../infrastructure/services/N8nService';
 import { EngineService } from '../../infrastructure/services/EngineService';
 import { FileStorage } from '../../infrastructure/services/FileStorage';
-import { NasStorage } from '../../infrastructure/services/NasStorage';
+import { storage } from '../../infrastructure/storage';
+import { detectarBanco, carpetaGarantias, unir } from '../../infrastructure/storage/rutas';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { EngineFile } from '../../application/services/IEngineService';
 import { AuthRequest } from '../middlewares/authMiddleware';
@@ -18,9 +18,20 @@ const userRepository = new PrismaUserRepository();
 const n8nService = new N8nService();
 const engineService = new EngineService();
 const fileStorage = new FileStorage();
-const nas = new NasStorage();
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+// Banco (carpeta destino) de un Excel de asignación: de EMPRESA/NIT de la 1ª hoja.
+function bancoDeExcel(buffer: Buffer): string {
+  try {
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const filas = sheet ? XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet) : [];
+    return detectarBanco(filas);
+  } catch {
+    return detectarBanco([]);
+  }
+}
 
 // Saca las cédulas del Excel de asignación (columna IDENTIFICACION; con respaldos
 // por si el encabezado varía). Solo dígitos, únicas. El motor valida/normaliza.
@@ -258,14 +269,14 @@ export class GenerateController {
         return;
       }
 
-      // Recuperar el Excel de asignación desde el NAS.
+      // Recuperar el Excel de asignación desde el almacenamiento.
       let excel: Buffer;
       try {
-        const rel = nas.relPathFromUrl(document.asignacionUrl);
-        if (!nas.enabled || !rel) throw new Error('asignación fuera del NAS');
-        excel = fs.readFileSync(nas.absFromRelPath(rel));
+        const rel = storage.relPathFromUrl(document.asignacionUrl);
+        if (!storage.enabled || !rel) throw new Error('asignación fuera del almacenamiento');
+        excel = await storage.read(rel);
       } catch {
-        res.status(400).json({ message: 'No se pudo leer el Excel de asignación en el NAS' });
+        res.status(400).json({ message: 'No se pudo leer el Excel de asignación en el almacenamiento' });
         return;
       }
 
@@ -331,17 +342,28 @@ export class GenerateController {
         return;
       }
 
-      const fileRef = (f?: EngineFile | null): string | undefined => {
+      const banco = bancoDeExcel(input.excel);
+      const fileRef = async (f?: EngineFile | null): Promise<string | undefined> => {
         if (!f) return undefined;
-        if (nas.enabled && f.relPath) return nas.urlForRelPath(f.relPath);
+        if (storage.enabled && f.relPath) {
+          // El motor escribe en SU disco y devuelve base64+relPath ({cedula}/...). Se
+          // prefija con la carpeta GARANTIAS del banco (la raíz del storage es el top de
+          // la oficina) y se sube ahí. En NAS re-subir el base64 es idempotente.
+          const rel = unir(carpetaGarantias(banco), f.relPath);
+          if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
+          return storage.urlFor(rel);
+        }
         return fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url;
       };
 
+      const fileUrl = await fileRef(doc.archivos?.demanda);
+      const anexosUrl = await fileRef(doc.archivos?.anexos);
+      const antecedentesUrl = await fileRef(doc.archivos?.antecedentes);
       await documentRepository.update(input.documentId, {
         status: 'GENERATED',
-        fileUrl: fileRef(doc.archivos?.demanda),
-        anexosUrl: fileRef(doc.archivos?.anexos),
-        antecedentesUrl: fileRef(doc.archivos?.antecedentes),
+        fileUrl,
+        anexosUrl,
+        antecedentesUrl,
         notes: doc.notas ?? [],
       });
 
@@ -410,43 +432,53 @@ export class GenerateController {
         transito: input.transito,
       });
 
-      // Almacenamiento: SOLO el NAS (ni S3 ni disco del servidor). Si DOCS_DIR
-      // está configurado y el motor devolvió la ruta relativa, se referencia el
-      // archivo en el NAS (/docs); si no, se cae al respaldo local (uploads/).
+      // Almacenamiento: el `storage` configurado (NAS/disco o Drive), no S3. Si está
+      // habilitado y el motor devolvió la ruta relativa, se referencia el archivo por
+      // /docs; si no, se cae al respaldo local (uploads/).
       const safeName = (n: string) => n.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const asignacionUrl = nas.enabled
-        ? nas.saveBuffer(
+      const asignacionUrl = storage.enabled
+        ? (await storage.save(
+            `_asignaciones/${input.lawyerId}/${Date.now()}-${safeName(input.excelFilename || 'asignacion.xlsx')}`,
             input.excel,
-            `_asignaciones/${input.lawyerId}/${Date.now()}-${safeName(input.excelFilename || 'asignacion.xlsx')}`
-          )
+            XLSX_MIME,
+          )).url
         : fileStorage.saveBuffer(input.excel, input.excelFilename || 'asignacion.xlsx', XLSX_MIME).url;
 
-      // Referencia de un archivo del motor: preferir el NAS (relPath); si no hay
-      // NAS configurado, copiar el base64 al almacenamiento local (comportamiento previo).
-      const fileRef = (f?: EngineFile | null): string | undefined => {
-        if (!f) return undefined;
-        if (nas.enabled && f.relPath) return nas.urlForRelPath(f.relPath);
-        return fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url;
+      // Archivo del motor → storage: el motor devuelve base64+relPath ({cedula}/...). Se
+      // prefija con la carpeta GARANTIAS del banco (raíz del storage = top de la oficina)
+      // y se sube ahí. Sin storage, copia el base64 al almacenamiento local (previo).
+      const banco = bancoDeExcel(input.excel);
+      const subir = async (f?: EngineFile | null): Promise<{ url?: string; rel?: string }> => {
+        if (!f) return {};
+        if (storage.enabled && f.relPath) {
+          const rel = unir(carpetaGarantias(banco), f.relPath);
+          if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
+          return { url: storage.urlFor(rel), rel };
+        }
+        return { url: fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url };
       };
 
       let creados = 0;
       for (const doc of result.documentos ?? []) {
+        const demanda = await subir(doc.archivos?.demanda);
+        const anexos = await subir(doc.archivos?.anexos);
+        const antecedentes = await subir(doc.archivos?.antecedentes);
         await documentRepository.create({
           title: `Demanda Ejecutiva Singular — ${doc.nombre || doc.cedula}`,
           type: 'DEMANDA_SINGULAR',
           status: 'GENERATED',
           clientName: doc.nombre || doc.cedula,
           clientCedula: doc.cedula,
-          fileUrl: fileRef(doc.archivos?.demanda),
-          anexosUrl: fileRef(doc.archivos?.anexos),
-          antecedentesUrl: fileRef(doc.archivos?.antecedentes),
+          fileUrl: demanda.url,
+          anexosUrl: anexos.url,
+          antecedentesUrl: antecedentes.url,
           asignacionUrl,
           notes: doc.notas ?? [],
           lawyerId: input.lawyerId,
           metadata: {
             numeroPagare: (result.clientes ?? []).find((c) => c.cedula === doc.cedula)?.numeroPagare,
-            // Ruta del .docx en el NAS → la usa el editor para sobreescribir el archivo.
-            demandaRelPath: doc.archivos?.demanda?.relPath,
+            // Ruta YA prefijada (GARANTIAS/{cedula}/...) → la usa el editor/firma.
+            demandaRelPath: demanda.rel ?? doc.archivos?.demanda?.relPath,
             // Se guarda para poder REGENERAR la demanda con la misma fecha de asignación.
             fechaAsignacion: input.fechaAsignacion ?? null,
           },

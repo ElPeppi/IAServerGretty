@@ -71,6 +71,42 @@ async function main() {
   const rootRes = await drive.files.get({ fileId: 'root', fields: 'id,name' });
   const rootId = rootRes.data.id;
 
+  // Modo shortcuts: crea un ACCESO DIRECTO en la Unidad Compartida por cada carpeta
+  // propia de Mi unidad (no mueve datos; la carpeta real sigue en Mi unidad).
+  if (process.argv.includes('--shortcuts')) {
+    const SKIP = loadSkipIds();
+    const res = await drive.files.list({
+      q: `'${rootId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
+      fields: 'files(id,name,ownedByMe)', spaces: 'drive', pageSize: 1000,
+    });
+    const folders = (res.data.files || []).filter((f) => f.ownedByMe !== false && !SKIP.has(f.id));
+    console.log(`Carpetas para enlazar: ${folders.length}\n`);
+    let ok = 0, dup = 0, err = 0;
+    for (const f of folders) {
+      try {
+        const ex = await drive.files.list({
+          q: `name = '${f.name.replace(/'/g, "\\'")}' and '${SHARED_DRIVE_ID}' in parents and mimeType = 'application/vnd.google-apps.shortcut' and trashed = false`,
+          fields: 'files(id)', corpora: 'drive', driveId: SHARED_DRIVE_ID,
+          includeItemsFromAllDrives: true, supportsAllDrives: true,
+        });
+        if (ex.data.files?.length) { dup++; console.log(`   ⏭️  ya existe: ${f.name}`); continue; }
+        await drive.files.create({
+          requestBody: {
+            name: f.name,
+            mimeType: 'application/vnd.google-apps.shortcut',
+            parents: [SHARED_DRIVE_ID],
+            shortcutDetails: { targetId: f.id },
+          },
+          supportsAllDrives: true, fields: 'id',
+        });
+        ok++; console.log(`   ✅ acceso directo: ${f.name}`);
+      } catch (e) { err++; console.log(`   ❌ ${f.name}: ${e?.errors?.[0]?.message || e.message}`); }
+    }
+    console.log('─'.repeat(70));
+    console.log(`🎉 Shortcuts: ${ok} creados, ${dup} ya existían, ${err} con error.`);
+    return;
+  }
+
   // Modo cuarentena: aparta los archivos de skip-ids.txt a una carpeta en Mi unidad,
   // para que en la raíz queden SOLO las carpetas legítimas (facilita el "Mover a" en la web).
   if (process.argv.includes('--quarantine')) {
