@@ -93,7 +93,9 @@ function extraerCamposPagare(text) {
   const t = (text || '').replace(/\r/g, '');
   const cap = (re) => { const m = t.match(re); return m ? (m[1] || m[2] || '').trim() : ''; };
 
-  const nombre = cap(/Nombre o Raz[oó]n Social:\s*([A-ZÁÉÍÓÚÑ]+(?:\s+[A-ZÁÉÍÓÚÑ]+){1,5})/i);
+  // Las palabras del nombre NO deben cruzar renglón (si no, se come "IDENTIFICACIÓN"
+  // de la línea siguiente): separador entre palabras = espacios/tabs, no \n.
+  const nombre = cap(/Nombre o Raz[oó]n Social:\s*([A-ZÁÉÍÓÚÑ]+(?:[ \t]+[A-ZÁÉÍÓÚÑ]+){1,5})/i);
   const cedula = cap(/Identificaci[oó]n\s*\([^)]*\)\s*:?\s*(\d{6,})/i);
   // Dirección: tomar la línea y aislar el patrón de vía colombiana (CR/CL/KR…).
   const dirLinea = cap(/Direcci[oó]n:\s*([^\n]+)/i);
@@ -116,7 +118,8 @@ function extraerCamposPagare(text) {
   //   • Número de pagaré escrito (top "PAGARÉ No. <dígitos>" o en la carta de instr.)
   //   • Fecha de vencimiento de la cláusula PRIMERO ("…del año YYYY, en sus oficinas")
   //   • Monto de capital ("POR CAPITAL ($ <dígitos>")
-  const numM = t.match(/PAGAR[EÉ]\s*N[o0]\.?\s*[_:\s]*([0-9][0-9.\s]{4,}[0-9])/i);
+  // El OCR suele meter un guión (— – -) entre "No." y el número → se tolera además de _ : espacios.
+  const numM = t.match(/PAGAR[EÉ]\s*N[o0]\.?\s*[-–—_:\s]*([0-9][0-9.\s]{4,}[0-9])/i);
   const numeroPagare = numM ? numM[1].replace(/[^\d]/g, '') : '';
   const tieneVencimiento = /el d[ií]a[_\s]*\(?\s*\d{1,2}\s*\)?[_\s]*del mes de[_\s]*[A-Za-zÁÉÍÓÚÑáéíóúñ]+[\s\S]{0,20}?del a[ñn]o[_\s]*\d{4}[\s\S]{0,25}?oficinas/i.test(t);
   const tieneCapital = /POR\s+CAPITAL[\s\S]{0,40}?\$\s*([0-9][0-9.\s]{2,})/i.test(t);

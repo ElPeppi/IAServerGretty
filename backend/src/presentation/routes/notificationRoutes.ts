@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { JwtService } from '../../infrastructure/services/JwtService';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
+import { subirSacDeCedula } from '../../infrastructure/storage/sacSync';
 
 const router = Router();
 const jwtService = new JwtService();
@@ -62,6 +63,14 @@ router.post('/engine', (req, res) => {
     message: message || '',
     meta,
   });
+
+  // El motor avisa por cédula cuando terminó de bajar su SAC (a SU disco). Al recibirlo,
+  // subimos esos archivos a Drive para que el SAC también quede en el servidor, no solo
+  // en local. En segundo plano (no bloquea la respuesta del aviso).
+  if (type === 'sac' && meta && meta.fase === 'cedula' && meta.success && meta.cedula) {
+    void subirSacDeCedula(String(meta.cedula));
+  }
+
   res.json({ ok: true, id: n.id, clients: notificationHub.clientCount() });
 });
 

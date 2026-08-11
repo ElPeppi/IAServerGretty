@@ -82,6 +82,15 @@ DEMANDAS/{BANCO}/EJECUTIVAS SINGULARES/PODERES       ← poderes
 - **Demandas del motor**: el `relPath` `{cedula}/...` se **prefija** con
   `carpetaGarantias(banco)` antes de subir a Drive. `metadata.demandaRelPath` guarda la
   ruta ya prefijada (firma/editor leen el sitio correcto).
+- **SAC en Drive — Drive es la fuente de verdad** (`sacSync.ts`); el disco local
+  (`DOCS_DIR`) es un caché EFÍMERO:
+  - Al **descargar** el SAC: el motor lo deja en `DOCS_DIR/{cedula}/` y avisa por cédula
+    (`POST /api/notifications/engine`, `type:'sac', meta.fase:'cedula'`). El backend lo
+    **sube** a `GARANTIAS/{cedula}/` y **borra la copia local** (`subirSacDeCedula`).
+  - El gate `tieneInfoSac` mira **Drive** (`GARANTIAS/{cedula}` tiene `SAC_*.pdf`).
+  - Al **generar**: el backend **hidrata** de Drive a `DOCS_DIR/{cedula}/`
+    (`hidratarCedula`) para que el motor lea los SAC del disco, y al terminar **borra la
+    carpeta local** (`limpiarLocalCedula`, en `finally`).
 
 ## 4. Cómo correr (dev)
 
@@ -150,6 +159,7 @@ DOCS_DIR=<carpeta de salida del motor>
 | F2 | Controllers usan `storage` (async); `NasStorage` eliminado; el motor sube outputs a Drive | ✅ (tsc; falta e2e con motor) |
 | F3 | `/docs` por streaming (`DocsController`) | ✅ (probado offline) |
 | Rutas | Ruteo por banco/año (`rutas.ts`) en leer/subir/demandas | ✅ (probado en Drive real: tree-walk + write) |
+| SAC→Drive | Drive = fuente: subir+borrar-local al descargar, gate mira Drive, hidratar al generar, borrar local al terminar (`sacSync.ts`) | ✅ ciclo probado en Drive real; falta e2e con motor |
 | OAuth | Modo cuenta personal en `DriveStorage` | ✅ (validado e2e contra Gmail) |
 
 **Probado end-to-end en la app (modo oauth):** subir asignación → Drive; "Actualizar

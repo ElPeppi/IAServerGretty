@@ -10,6 +10,7 @@ import { storage } from '../../infrastructure/storage';
 import {
   RAIZ_DEMANDAS, detectarBanco, detectarAnio, carpetaAsignaciones, carpetaGarantias, unir,
 } from '../../infrastructure/storage/rutas';
+import { hidratarCedula, limpiarLocalCedula } from '../../infrastructure/storage/sacSync';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { getSettings } from '../../infrastructure/config/settings';
 import { EngineFile, EngineClientInfo, EngineDocument } from '../../application/services/IEngineService';
@@ -347,6 +348,19 @@ export class AsignacionController {
       // Subconjunto de personas (vacío/omitido = todas las de proceso singular).
       const soloCedulas = parseCedulas(req.body.cedulas);
 
+      // docsEnServidor: el motor lee el Nº de pagaré del DECEVAL/pagaré en la carpeta
+      // del cliente EN SU DISCO. Con Drive como fuente, hay que BAJAR (hidratar) los
+      // docs de cada cédula objetivo de Drive → local antes de correr el motor; si no,
+      // el motor no los encuentra y excluye a todos ("sin documentos en el servidor").
+      if (docsEnServidor && storage.enabled) {
+        const filas = (asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [];
+        const banco = detectarBanco(filas);
+        const objetivo = soloCedulas.length
+          ? soloCedulas
+          : personasDeFilas(filas).filter((p) => p.tipo === 'EJECUTIVO SINGULAR').map((p) => p.cedula);
+        for (const ced of objetivo) await hidratarCedula(ced, banco);
+      }
+
       const result = await engineService.generarPoderes({
         excel,
         docsEnServidor,
@@ -548,14 +562,15 @@ export class AsignacionController {
       meta: { asignacionId: input.asignacionId, total: objetivo.length },
     });
 
-    let generadas = 0, sinSac = 0, omitidas = 0, fallidas = 0;
+    let generadas = 0, sinSac = 0, sinPagare = 0, omitidas = 0, fallidas = 0;
 
     for (const persona of objetivo) {
       const quien = `${persona.nombre || persona.cedula} (CC ${persona.cedula})`;
 
-      // Requisito: sin la información del SAC descargada, la demanda saldría sin
-      // antecedentes ni correo de notificación → no se genera.
-      if (!this.tieneInfoSac(persona.cedula)) {
+      // Requisitos (en Drive) para generar: SAC + pagaré. Si falta alguno, se ABORTA
+      // esa demanda y se avisa el motivo específico; el resto del lote sigue.
+      const insumos = await this.insumosSac(persona.cedula, banco);
+      if (!insumos.sac) {
         sinSac++;
         notificationHub.broadcast({
           type: 'generacion', level: 'warning', title: 'Falta info del SAC',
@@ -564,8 +579,21 @@ export class AsignacionController {
         });
         continue;
       }
+      if (!insumos.pagare) {
+        sinPagare++;
+        notificationHub.broadcast({
+          type: 'generacion', level: 'warning', title: 'Falta el pagaré',
+          message: `No se generó la demanda de ${quien}: falta el pagaré. Súbelo y vuelve a generar.`,
+          meta: { asignacionId: input.asignacionId, cedula: persona.cedula, motivo: 'sin_pagare' },
+        });
+        continue;
+      }
 
       try {
+        // Drive es la fuente: bajamos la carpeta de la cédula al disco del motor para
+        // que pueda leer los SAC y armar la demanda. Al terminar se borra (finally).
+        await hidratarCedula(persona.cedula, banco);
+
         const result = await engineService.generateSingular({
           excel: input.excel,
           excelFilename: `${input.nombre}.xlsx`,
@@ -612,50 +640,44 @@ export class AsignacionController {
           message: `${quien}: ${String(msg)}`,
           meta: { asignacionId: input.asignacionId, cedula: persona.cedula },
         });
+      } finally {
+        // Drive es la fuente de verdad: se borra la copia local de la cédula tras generar.
+        limpiarLocalCedula(persona.cedula);
       }
     }
 
     const segs = ((Date.now() - t0) / 1000).toFixed(0);
-    console.error(`[asignaciones/demandas] FIN — ${generadas} generada(s), ${sinSac} sin SAC, ${omitidas} omitida(s), ${fallidas} fallida(s) en ${segs}s`);
-    const problemas = sinSac + omitidas + fallidas;
+    console.error(`[asignaciones/demandas] FIN — ${generadas} generada(s), ${sinSac} sin SAC, ${sinPagare} sin pagaré, ${omitidas} omitida(s), ${fallidas} fallida(s) en ${segs}s`);
+    const problemas = sinSac + sinPagare + omitidas + fallidas;
     notificationHub.broadcast({
       type: 'generacion',
       level: generadas ? (problemas ? 'warning' : 'success') : 'error',
       title: 'Generación de demandas terminada',
       message: `"${input.nombre}": ${generadas} generada(s)`
         + `${sinSac ? `, ${sinSac} sin info del SAC` : ''}`
+        + `${sinPagare ? `, ${sinPagare} sin pagaré` : ''}`
         + `${omitidas ? `, ${omitidas} omitida(s)` : ''}`
         + `${fallidas ? `, ${fallidas} con error` : ''}.`,
-      meta: { asignacionId: input.asignacionId, generadas, sinSac, omitidas, fallidas },
+      meta: { asignacionId: input.asignacionId, generadas, sinSac, sinPagare, omitidas, fallidas },
     });
   }
 
-  // ¿La persona tiene la información del SAC descargada?
-  // El motor descarga el SAC a SU disco local (DOCS_DIR = carpeta de salida del motor),
-  // NO al storage de documentos (Drive). Por eso este gate mira el disco local del motor,
-  // no Drive. Deja SAC_{ced}_DIRYTEL.pdf / SAC_{ced}_OBL*.pdf; sin ellos la demanda
-  // saldría sin antecedentes ni correo de notificación. Sin DOCS_DIR no se puede
-  // verificar → no se bloquea (se asume presente).
-  private tieneInfoSac(cedula: string): boolean {
-    const root = process.env.DOCS_DIR || '';
-    if (!root) return true;
+  // Revisa en Drive (`GARANTIAS/{cedula}`) los INSUMOS para generar la demanda:
+  //  - sac:    hay SAC_*.pdf (antecedentes/correo). Se sube a Drive al descargar.
+  //  - pagare: hay el PDF del pagaré. Regla espejo del motor (anexos.js): PDF que NO
+  //            empieza por SAC_, NO es DATACREDITO, y el nombre tiene PAGARE o DECEVAL.
+  // Una sola llamada a Drive. Sin storage no se puede verificar → no se bloquea.
+  private async insumosSac(cedula: string, banco: string): Promise<{ sac: boolean; pagare: boolean }> {
+    if (!storage.enabled) return { sac: true, pagare: true };
     try {
-      if (!fs.existsSync(root)) return false;
-      // El motor lee la carpeta MÁS RECIENTE de la cédula ({cedula}, {cedula}_{año},
-      // {cedula}_{MM}_{año}, {cedula}_{año}_{Mes}…). El SAC puede haber quedado en
-      // cualquiera de ellas. Revisamos TODAS las carpetas cuyo nombre sea la cédula o
-      // empiece por "{cedula}_" y basta con que UNA tenga SAC_*.pdf.
-      const ced = String(cedula);
-      const carpetas = fs.readdirSync(root).filter((n) => n === ced || n.startsWith(`${ced}_`));
-      return carpetas.some((n) => {
-        try {
-          return fs.readdirSync(path.join(root, n)).some((f) => /^SAC_.*\.pdf$/i.test(f));
-        } catch {
-          return false;
-        }
-      });
+      const archivos = await storage.list(unir(carpetaGarantias(banco), String(cedula)));
+      const sac = archivos.some((f) => /^SAC_.*\.pdf$/i.test(f));
+      const pagare = archivos.some(
+        (f) => /\.pdf$/i.test(f) && !/^SAC_/i.test(f) && !/DATACREDITO/i.test(f) && /(PAGARE|DECEVAL)/i.test(f),
+      );
+      return { sac, pagare };
     } catch {
-      return false;
+      return { sac: false, pagare: false };
     }
   }
 
