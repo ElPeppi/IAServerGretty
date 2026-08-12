@@ -32,10 +32,10 @@ const path      = require('path');
 const puppeteer = require('puppeteer');
 
 const config = require('../config');
-const { generarPoderesCombinado } = require('../services/singular/poderes');
+const { generarPoderesCombinado, camposPagoDirecto, sinPostProceso } = require('../services/singular/poderes');
 const { parsearExcelEntrada }     = require('../services/singular/excelEntrada');
 const { construirFilas }          = require('../services/singular/plantillaXlsx');
-const { calcularCuantia, tipoCuantia } = require('../domain/cuantia');
+const { calcularCuantia, tipoCuantia, tipoJuzgadoPagoDirecto, normalizarTipoJuzgado } = require('../domain/cuantia');
 const { parseAnyDate, todayString }    = require('../utils/fechas');
 const { leerDatosDeDeceval } = require('../services/singular/carpetaCliente');
 const { loadRamaCache, buscarCorreoJuzgado, necesitaConsultaRama } = require('../services/singular/ramaJudicial');
@@ -65,9 +65,15 @@ function docsDelCliente(outBase, cedula) {
 }
 
 // ─── POST /generar-poderes ────────────────────────────────────────────────────
-// Body: { excelBase64, docsEnServidor?, fechaAsignacion?, nombre?, soloCedulas?, smmv?, outputBaseDir? }
+// Body: { excelBase64, tipo?, docsEnServidor?, fechaAsignacion?, nombre?, soloCedulas?, smmv?, outputBaseDir? }
 // excelBase64 = Excel ORIGINAL de la asignación (Hoja1 + Hoja2). Se requiere Hoja2:
 // de ahí salen capital/interés (→ cuantía → tipo de juzgado) y TODAS las obligaciones.
+//
+// tipo: 'singular' (por defecto) → PODER EJECUTIVO SINGULAR.
+//       'pago_directo'           → PODER DE TRÁMITE DE PAGO DIRECTO (garantía
+//                                  mobiliaria, Ley 1676/2013): aprehensión y
+//                                  entrega del vehículo. Otra plantilla, otros
+//                                  marcadores, y NO usa cuantía ni pagaré.
 router.post('/generar-poderes', async (req, res) => {
   let excelBuffer = null;
   if (req.body.excelBase64) {
@@ -86,15 +92,19 @@ router.post('/generar-poderes', async (req, res) => {
     ? new Set(req.body.soloCedulas.map(c => String(c).replace(/\D/g, '')))
     : null;
   const nombreLote     = String(req.body.nombre || 'ASIGNACION').replace(/[<>:"/\\|?*]/g, ' ').trim();
+  // Tipo de poder. Cualquier valor desconocido cae a 'singular' (comportamiento previo).
+  const esPagoDirecto  = String(req.body.tipo || '').toLowerCase() === 'pago_directo';
 
-  console.log(`[${new Date().toISOString()}] /generar-poderes: Excel ${excelBuffer.length} bytes, docsEnServidor=${docsEnServidor}`);
+  console.log(`[${new Date().toISOString()}] /generar-poderes: Excel ${excelBuffer.length} bytes, tipo=${esPagoDirecto ? 'pago_directo' : 'singular'}, docsEnServidor=${docsEnServidor}`);
 
   // ── Enriquecer con el pipeline de la demanda (mapeo de columnas + financieros) ──
   // parsearExcelEntrada mapea NOMBRE_CLIENTE→NOMBRE, agrega OBLIGACIONES por cédula
   // (Hoja2), deduplica y excluye procesos que NO son ejecutivo singular.
   let clientesEnriquecidos;
   try {
-    clientesEnriquecidos = await parsearExcelEntrada(excelBuffer);
+    clientesEnriquecidos = await parsearExcelEntrada(excelBuffer, {
+      proceso: esPagoDirecto ? 'pago_directo' : 'singular',
+    });
   } catch (e) {
     console.error(`[/generar-poderes] error parseando Excel: ${e.message}`);
     return res.status(500).json({ success: false, error: `Error leyendo la asignación: ${e.message}` });
@@ -143,12 +153,16 @@ router.post('/generar-poderes', async (req, res) => {
       const nombre = String(cliente.nombre || '').trim();
       const f = cliente.financieros || {};
       const total = f.total || calcularCuantia(f.capital, f.interes);
-      const cuantiaLbl = tipoCuantia(total, smmv);
+      // El pago directo no tiene cuantía (no es un ejecutivo). Se pide 'MINIMA'
+      // solo para que la consulta a la Rama resuelva el nivel MUNICIPAL, que es
+      // de donde sale hasPromiscuo.
+      const cuantiaLbl = esPagoDirecto ? 'MINIMA' : tipoCuantia(total, smmv);
 
       let numeroPagare = String(f.obligacion || '').trim(); // por defecto: OBLIGACION del Excel
       let pagareDesdeDocs = false;
 
-      if (docsEnServidor) {
+      // El poder de pago directo no menciona el pagaré → no se leen los documentos.
+      if (docsEnServidor && !esPagoDirecto) {
         const info = docsDelCliente(outBase, cedula);
         if (!info.existe) {
           excluidos.push({ cedula, nombre, motivo: `sin documentos en el servidor (${info.dir})` });
@@ -179,11 +193,34 @@ router.post('/generar-poderes', async (req, res) => {
         }
       }
       // Barranquilla con pequeñas causas → la ciudad del juzgado lleva la LOCALIDAD.
+      // No aplica al pago directo: ese nunca va a Pequeñas Causas (ver más abajo).
       let ciudadJuzgado = ciudad;
-      if (/^BARRANQUILLA\b/i.test(ciudad) && courtInfo.hasSmallClaims) {
+      if (!esPagoDirecto && /^BARRANQUILLA\b/i.test(ciudad) && courtInfo.hasSmallClaims) {
         let loc = '';
         try { loc = await determinarLocalidad(cliente.direccion); } catch { /* noop */ }
         ciudadJuzgado = loc ? `BARRANQUILLA LOCALIDAD ${loc}` : 'BARRANQUILLA LOCALIDAD #######';
+      }
+
+      // ── PAGO DIRECTO: item propio, sin la fila canónica de la demanda ────────
+      // El juzgado NO sale de la cuantía: civil municipal, o promiscuo donde no
+      // hay civil (lo dice la Rama). El bien se identifica con marca/modelo/placa.
+      if (esPagoDirecto) {
+        const tipoJ = normalizarTipoJuzgado(tipoJuzgadoPagoDirecto(courtInfo.hasPromiscuo));
+        const placa = (cliente.placas && cliente.placas[0]) || '';
+        if (!placa) {
+          excluidos.push({ cedula, nombre, motivo: 'sin placa del vehículo dado en garantía' });
+          continue;
+        }
+        items.push({
+          cedula, nombre,
+          tipoJuzgado: tipoJ,
+          ciudadJuzgado,
+          placa,
+          marca:  cliente.garantia,        // "CHEVROLET ONIX" (marca + línea)
+          modelo: cliente.modeloVehiculo,  // año del vehículo
+        });
+        metaPorCedula.set(cedula, { nombre, ciudadJuzgado, tipoJuzgado: tipoJ, placa });
+        continue;
       }
 
       // Fila canónica (misma que la demanda): TIPO/CIUDAD DE JUZGADO, NOMBRE, CUANTIA,
@@ -216,16 +253,25 @@ router.post('/generar-poderes', async (req, res) => {
 
   let buffer, clientesGen;
   try {
-    ({ buffer, clientes: clientesGen } = generarPoderesCombinado(items, config.PLANTILLA_PODER));
+    const plantilla = esPagoDirecto ? config.PLANTILLA_PODER_PAGO_DIRECTO : config.PLANTILLA_PODER;
+    const opts = esPagoDirecto
+      ? { construirCampos: camposPagoDirecto, postProcesar: sinPostProceso }
+      : {};
+    ({ buffer, clientes: clientesGen } = generarPoderesCombinado(items, plantilla, opts));
   } catch (e) {
     console.error(`[/generar-poderes] error armando el Word: ${e.message}`);
     return res.status(500).json({ success: false, error: e.message });
   }
 
-  // Guardar el Word combinado en la carpeta PODERES/{año}.
+  // Guardar el Word combinado en la carpeta PODERES/{año} del disco. Cada proceso
+  // tiene la suya: la del pago directo aparte, porque ANEXOS_DIR_PODERES es además
+  // de donde se toma el correo de otorgamiento (ANEXO 1) del ejecutivo singular.
+  // El que cuenta es el que sube el backend a Drive; éste es la copia local.
   const anio   = fechaAsig ? fechaAsig.getFullYear() : new Date().getFullYear();
-  const poderDir = path.join(config.ANEXOS_DIR_PODERES, String(anio));
-  const filename = `PODERES EJECUTIVOS ${nombreLote}.docx`;
+  const baseDir  = esPagoDirecto ? config.ANEXOS_DIR_PODERES_PAGO_DIRECTO : config.ANEXOS_DIR_PODERES;
+  const poderDir = path.join(baseDir, String(anio));
+  // Nombres como los históricos de la oficina en cada carpeta.
+  const filename = `${esPagoDirecto ? 'PODER PAGO DIRECTO' : 'PODERES EJECUTIVOS'} ${nombreLote}.docx`;
   let savedPath = null;
   try {
     mkdirpSync(poderDir);

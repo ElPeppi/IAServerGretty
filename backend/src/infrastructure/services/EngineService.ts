@@ -13,6 +13,8 @@ import {
   DescargarSacOutput,
   GenerarPoderesInput,
   GenerarPoderesOutput,
+  MapearColumnasInput,
+  MapearColumnasOutput,
 } from '../../application/services/IEngineService';
 
 const XLSX_MIME =
@@ -78,6 +80,7 @@ export class EngineService implements IEngineService {
       `${this.baseUrl}/generar-poderes`,
       {
         excelBase64: input.excel.toString('base64'),
+        tipo: input.tipo || 'singular',
         docsEnServidor: !!input.docsEnServidor,
         fechaAsignacion: input.fechaAsignacion,
         nombre: input.nombre,
@@ -88,6 +91,20 @@ export class EngineService implements IEngineService {
         timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
+      }
+    );
+    return data;
+  }
+
+  async mapearColumnas(input: MapearColumnasInput): Promise<MapearColumnasOutput> {
+    const { data } = await axios.post<MapearColumnasOutput>(
+      `${this.baseUrl}/mapear-columnas`,
+      { headers: input.headers, filas: input.filas },
+      {
+        // La heurística es instantánea; el peor caso es el primer Excel de un
+        // formato nuevo, que consulta a Ollama (carga del modelo a RAM). Después
+        // el motor lo cachea por firma de encabezados.
+        timeout: Number(process.env.ENGINE_MAPEO_TIMEOUT_MS) || 300000,
       }
     );
     return data;

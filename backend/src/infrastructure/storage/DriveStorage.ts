@@ -120,7 +120,10 @@ export class DriveStorage implements IStorage {
 
   get enabled(): boolean {
     if (DRIVE_AUTH === 'oauth') return !!(OAUTH_CRED && OAUTH_TOKEN);
-    return !!(SA_KEY && IMPERSONATE_USER && SHARED_DRIVE_ID);
+    // Basta con poder suplantar y saber DÓNDE escribir: la unidad compartida, o
+    // una carpeta concreta (la data de la oficina vive en "Mi unidad" de servidor@;
+    // la Unidad Compartida solo tiene un ACCESO DIRECTO a ella).
+    return !!(SA_KEY && IMPERSONATE_USER && (SHARED_DRIVE_ID || ROOT_FOLDER_ID !== 'root'));
   }
 
   urlFor(relPath: string): string {
@@ -138,23 +141,35 @@ export class DriveStorage implements IStorage {
 
   // ── Resolución de carpetas/archivos ──────────────────────────────────────────
 
-  /** Busca un hijo por nombre dentro de un parent. Devuelve fileId o null. */
+  /**
+   * Busca un hijo por nombre dentro de un parent. Devuelve fileId o null.
+   * Sigue los ACCESOS DIRECTOS (shortcuts): en la unidad compartida la carpeta
+   * "05 DOCUMENTOS ACTUALIZADOS 2019" es un shortcut a la carpeta real, y el
+   * árbol puede tener más. Se filtra carpeta/archivo en código (no en la query)
+   * porque el mimeType del shortcut no es el del destino.
+   */
   private async findChild(parentId: string, name: string, folder: boolean): Promise<string | null> {
     const q = [
       `name = '${name.replace(/'/g, "\\'")}'`,
       `'${parentId}' in parents`,
-      `mimeType ${folder ? '=' : '!='} '${FOLDER_MIME}'`,
       'trashed = false',
     ].join(' and ');
     const res = await this.drive.files.list({
       q,
-      fields: 'files(id,name)',
+      fields: 'files(id,name,mimeType,shortcutDetails(targetId,targetMimeType))',
       spaces: 'drive',
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
       ...DRIVE_SCOPE,
     });
-    return res.data.files?.[0]?.id ?? null;
+    for (const f of res.data.files ?? []) {
+      const sc = f.shortcutDetails;
+      const id = sc?.targetId ?? f.id;
+      const mime = sc?.targetMimeType ?? f.mimeType;
+      if (!id) continue;
+      if (folder === (mime === FOLDER_MIME)) return id;
+    }
+    return null;
   }
 
   /** Crea (o devuelve) una carpeta hija. */
@@ -205,9 +220,8 @@ export class DriveStorage implements IStorage {
     const clean = String(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
     const { parentId, name, fileId } = await this.resolve(clean, true);
     const media = { mimeType: mime, body: bufferToStream(data) };
-    if (fileId) {
-      await this.drive.files.update({ fileId, media, supportsAllDrives: true });
-    } else {
+
+    const crear = async (): Promise<void> => {
       const res = await this.drive.files.create({
         requestBody: { name, parents: [parentId] },
         media,
@@ -215,6 +229,30 @@ export class DriveStorage implements IStorage {
         supportsAllDrives: true,
       });
       await this.idxSet(clean, res.data.id!);
+    };
+
+    if (fileId) {
+      try {
+        // `trashed: false` REVIVE el archivo si estaba en la papelera. El fileId
+        // puede venir del índice, que no sabe si alguien lo borró a mano en Drive:
+        // sin esto el update escribe sobre el archivo borrado y el usuario nunca
+        // lo ve reaparecer (ni en la UI ni en `list`, que filtran trashed).
+        await this.drive.files.update({
+          fileId,
+          media,
+          requestBody: { trashed: false },
+          supportsAllDrives: true,
+        });
+      } catch (e) {
+        // Borrado DEFINITIVO (vaciaron la papelera) → el fileId ya no existe:
+        // se descarta del índice y se crea de nuevo.
+        const status = (e as { code?: number; status?: number })?.code ?? (e as { status?: number })?.status;
+        if (status !== 404) throw e;
+        await this.idxDel(clean);
+        await crear();
+      }
+    } else {
+      await crear();
     }
     return { relPath: clean, url: this.urlFor(clean) };
   }

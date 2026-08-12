@@ -40,14 +40,17 @@ function extraerCedulasDeExcel(buffer: Buffer): string[] {
   const sheet = wb.Sheets[wb.SheetNames[0]];
   if (!sheet) return [];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
-  const COLS = ['IDENTIFICACION', 'IDENTIFICACIÓN', 'CEDULA', 'CÉDULA', 'DOCUMENTO'];
+  // Mismo orden que AsignacionController.CED_COLS: los Excel crudos del banco
+  // traen la cédula en `ID`, por eso va de última (la menos específica).
+  const COLS = ['IDENTIFICACION', 'IDENTIFICACIÓN', 'CEDULA', 'CÉDULA', 'DOCUMENTO', 'ID'];
   const out = new Set<string>();
   for (const row of rows) {
     for (const col of COLS) {
       if (row[col] == null) continue;
       const ced = String(row[col]).replace(/\D/g, '');
-      if (/^\d{5,12}$/.test(ced)) out.add(ced);
-      break; // primera columna que exista en la fila
+      // No cortar en la primera columna que EXISTA: puede venir vacía o con
+      // basura ("----") y la cédula estar en la siguiente.
+      if (/^\d{5,12}$/.test(ced)) { out.add(ced); break; }
     }
   }
   return [...out];

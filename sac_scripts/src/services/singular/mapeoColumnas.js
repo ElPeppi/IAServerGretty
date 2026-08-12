@@ -81,7 +81,11 @@ const ESQUEMA = {
     validar: vals => frac(vals, v => /^[A-ZÁÉÍÓÚÑÜ .]{3,30}$/i.test(String(v).trim())) >= 0.5,
   },
   NIT_EMPLEADOR: {
-    tokens: ['NIT', 'EMPLEADOR', 'SALARIO', 'ID', 'PATRONO'],
+    // OJO: 'ID' NO va aquí. Estaba pensado para "ID EMPLEADOR", pero hacía que
+    // una columna llamada solo "ID" —que en los Excel crudos del banco es la
+    // CÉDULA DEL DEUDOR— se mapeara como NIT del patrono (y de paso se la
+    // quitaba a IDENTIFICACION). "ID EMPLEADOR" sigue puntuando por 'EMPLEADOR'.
+    tokens: ['NIT', 'EMPLEADOR', 'SALARIO', 'PATRONO'],
     antiTokens: ['NOMBRE'],
     validar: vals => frac(vals, v => RE_NUM_DOC.test(limpiarNum(v))) >= 0.2,
   },
@@ -149,6 +153,14 @@ function nameScore(headerNorm, tokens, antiTokens) {
   const palabras = headerNorm.split(' ');
   for (const anti of antiTokens) {
     if (palabras.includes(anti)) return -1;
+    // Encabezados PEGADOS sin separador ("CEDULANEGOCIADOR", "CEDULASUPERVISOR")
+    // quedan como UNA sola palabra, así que la comparación exacta no los veía:
+    // el token "CEDULA" puntuaba por prefijo, el contenido validaba (son cédulas)
+    // y IDENTIFICACION terminaba apuntando a la cédula del NEGOCIADOR en vez de
+    // la del deudor. Para anti-tokens largos se busca también como subcadena;
+    // los cortos ('ID', 'CC', 'EMP', 'DOC') se dejan en exacto para no barrer
+    // encabezados legítimos ("CIUDAD" contiene "ID").
+    if (anti.length >= 5 && palabras.some(p => p.includes(anti))) return -1;
   }
   let hits = 0;
   for (const t of tokens) {
@@ -182,6 +194,20 @@ function mapearHeuristica(columnas) {
     if (mapeo[c.campo] !== undefined || usadas.has(c.idx)) continue;
     mapeo[c.campo] = c.idx;
     usadas.add(c.idx);
+  }
+
+  // Último recurso para la cédula: una columna llamada exactamente "ID" (los
+  // Excel crudos del banco la usan en vez de "IDENTIFICACION"/"CEDULA"). No se
+  // pone 'ID' entre los tokens porque es demasiado genérico y empataría con la
+  // columna buena cuando ambas existen; aquí solo entra si NADA la resolvió y el
+  // contenido pasa el validador de documento (un consecutivo 1,2,3… no pasa).
+  if (mapeo.IDENTIFICACION === undefined) {
+    const col = columnas.find(c => c.headerNorm === 'ID' && !usadas.has(c.idx)
+                                && ESQUEMA.IDENTIFICACION.validar(c.muestra));
+    if (col) {
+      mapeo.IDENTIFICACION = col.idx;
+      usadas.add(col.idx);
+    }
   }
 
   // Regla por estructura: el NIT del empleador suele ser la columna numérica

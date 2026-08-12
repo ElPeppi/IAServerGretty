@@ -15,6 +15,16 @@ export interface AsignacionResumen {
   createdAt: string;
 }
 
+// Proceso del poder. Debe coincidir con `TipoPoder` del backend.
+export type TipoPoder = 'singular' | 'pago_directo';
+
+// Etiqueta del proceso (la que devuelve /personas) → parámetro que espera la API.
+// Solo los procesos aquí listados se pueden generar; el resto es informativo.
+export const TIPOS_PODER: Record<string, TipoPoder> = {
+  'EJECUTIVO SINGULAR': 'singular',
+  'TRÁMITE PAGO DIRECTO': 'pago_directo',
+};
+
 export interface GenerarPoderesResult {
   success: boolean;
   poderUrl?: string;
@@ -67,12 +77,13 @@ export const asignacionApi = {
   },
 
   // Genera el Word combinado de poderes de una asignación. `cedulas` (opcional) =
-  // subconjunto; vacío/omitido = todas (solo proceso ejecutivo singular).
-  generarPoderes: (id: string, docsEnServidor: boolean, cedulas?: string[]) =>
+  // subconjunto; vacío/omitido = todas las del tipo. `tipo` elige el proceso (y con
+  // él la plantilla): ejecutivo singular o trámite de pago directo.
+  generarPoderes: (id: string, docsEnServidor: boolean, cedulas?: string[], tipo: TipoPoder = 'singular') =>
     apiClient
       .post<GenerarPoderesResult>(
         `/asignaciones/${id}/generar-poderes`,
-        { docsEnServidor, ...(cedulas && cedulas.length ? { cedulas } : {}) },
+        { docsEnServidor, tipo, ...(cedulas && cedulas.length ? { cedulas } : {}) },
         { timeout: 3600000 },
       )
       .then((r) => r.data),

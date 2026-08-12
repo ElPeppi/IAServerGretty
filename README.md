@@ -118,21 +118,29 @@ Login: si no hay usuario, `cd backend && npm run prisma:seed`.
 > `ENGINE_NOTIFY_SECRET`, `backend/sa-key.json`, `scripts/drive-poc/token.json`,
 > `scripts/drive-poc/oauth-credentials.json`. Consíguelos del password manager del equipo.
 
-### Modo producción (Workspace, Unidad Compartida)
+### Modo producción (Workspace, delegación de dominio) ← **modo actual**
 ```
 STORAGE_DRIVER=drive
 DRIVE_AUTH=delegation
 DRIVE_SA_KEY=./sa-key.json
 DRIVE_IMPERSONATE_USER=servidor@jramosabogados.com
-DRIVE_SHARED_DRIVE_ID=0AA8hMZ5Qyvr9Uk9PVA
-DRIVE_ROOT_FOLDER_ID=<carpeta raíz de la oficina dentro de la unidad>
-DOCS_DIR=<carpeta de salida del motor en disco, p.ej. .../GARANTIAS>   # solo para el gate SAC
+DRIVE_ROOT_FOLDER_ID=1UawSt3PseEcjxRiEBmdI-NsUG-n7ZtEb   # "05 DOCUMENTOS ACTUALIZADOS 2019"
+#DRIVE_SHARED_DRIVE_ID=0AA8hMZ5Qyvr9Uk9PVA               # a propósito SIN definir, ver abajo
+DOCS_DIR=<carpeta de trabajo local del motor, p.ej. C:/SAC_Documentos>
 ENGINE_BASE_URL=<url del motor>
 ```
 - La service account (`gretty-backend@grettysia-drive-connection.iam.gserviceaccount.com`,
   Client ID `111992794330854899979`) debe estar autorizada en Admin console → Delegación
   de dominio, scope `https://www.googleapis.com/auth/drive`.
-- `servidor@` debe ser **Administrador de contenido** de la Unidad Compartida.
+- ⚠️ **`DRIVE_SHARED_DRIVE_ID` va vacío.** La data real de la oficina vive en **"Mi unidad"
+  de `servidor@`**; en la Unidad Compartida ("Servidor Compartido", `0AA8hMZ5Qyvr9Uk9PVA`)
+  solo hay un **acceso directo** a la carpeta. Definirlo activa `corpora=drive` y acota las
+  búsquedas al corpus de la unidad → no encontraría nada. Por eso `DriveStorage.findChild`
+  **sigue los shortcuts** y `enabled` acepta `ROOT_FOLDER_ID` sin `SHARED_DRIVE_ID`.
+- Estructura idéntica a la del NAS, relativa a esa raíz:
+  `DEMANDAS/{banco}/ASIGNACION/{año}` y `DEMANDAS/{banco}/EJECUTIVAS SINGULARES/{GARANTIAS,PLANTILLAS,PODERES}`.
+- Al **cambiar de cuenta/modo**, vaciar el índice (los `fileId` son por cuenta):
+  `cd backend && echo "DELETE FROM drive_files;" | npx prisma db execute --stdin`
 
 ### Modo pruebas (Gmail personal, OAuth)
 ```
@@ -147,8 +155,30 @@ DOCS_DIR=<carpeta de salida del motor>
   días): `cd scripts/drive-poc && node poc-oauth.js`. O publicar la app OAuth a
   "Producción" para que no expire.
 
-> `DOCS_DIR` en modo Drive ya NO sirve archivos; solo lo usa el gate "info SAC"
-> (`tieneInfoSac`) para verificar en el disco del motor que se descargaron los `SAC_*.pdf`.
+> `DOCS_DIR` en modo Drive ya NO sirve archivos: es el **scratch** del motor. El backend
+> sube a Drive y borra local (`sacSync.ts`), y vuelve a bajar una copia justo antes de generar.
+
+### Qué va en Drive y qué va en el disco del servidor (EC2)
+
+**Drive = fuente de verdad** de todo lo que cambia por caso: asignaciones, `SAC_*.pdf`,
+`CONTACTOS_*.csv`, pagarés (los suben a mano), demandas y poderes generados, firmados.
+
+**Disco del servidor = inputs estáticos del motor + secretos + scratch.** El motor
+(`sac_scripts`) es un proceso Node que solo sabe leer/escribir disco: no habla con la API
+de Drive. En EC2 no hay Drive Desktop, así que sus inputs se despliegan **como assets
+locales** (`sac_scripts/.env`):
+
+| Var | Contenido | Origen en Drive |
+|---|---|---|
+| `PLANTILLA_SINGULAR` / `_DEMANDA` / `_PODER`, `SAC_FIRMA_PATH` | plantillas + `Firma.png` | `…/EJECUTIVAS SINGULARES/PLANTILLAS` |
+| `ANEXOS_DEMANDAS` | ANEXO 4 (CCO J Ramos), ANEXO 5 (SIRNA) | `DEMANDAS/` (sueltos) |
+| `ANEXOS_FINANDINA` | ANEXO 6 (SuperFinanciera), ANEXO 7 (CCO Finandina) | `DEMANDAS/FINANDINA/` (sueltos) |
+| `ANEXOS_PODERES` | ANEXO 1 (correo de otorgamiento, respaldo) | `…/EJECUTIVAS SINGULARES/PODERES` |
+
+⚠️ El motor elige **"el más reciente por `mtime`"** (`anexos.js: archivoMasReciente`). Al
+bajarlos de Drive hay que **conservar la fecha** (`fs.utimesSync`); la migración masiva
+dejó todos los `modifiedTime` iguales, así que conviene derivar la fecha del **nombre**
+("10 DE JULIO DE 2026"). Solo mira `.pdf`.
 
 ## 6. Estado de la migración NAS → Drive
 
@@ -161,21 +191,69 @@ DOCS_DIR=<carpeta de salida del motor>
 | Rutas | Ruteo por banco/año (`rutas.ts`) en leer/subir/demandas | ✅ (probado en Drive real: tree-walk + write) |
 | SAC→Drive | Drive = fuente: subir+borrar-local al descargar, gate mira Drive, hidratar al generar, borrar local al terminar (`sacSync.ts`) | ✅ ciclo probado en Drive real; falta e2e con motor |
 | OAuth | Modo cuenta personal en `DriveStorage` | ✅ (validado e2e contra Gmail) |
+| Workspace | Delegación contra el Drive REAL de la oficina (shortcut + Mi unidad de `servidor@`) | ✅ list/save/read/delete validados |
+| Assets motor | Plantillas, firma y anexos fuera del NAS → disco local, bajados de Drive | ✅ (falta el SIRNA) |
 
 **Probado end-to-end en la app (modo oauth):** subir asignación → Drive; "Actualizar
 asignaciones" → tree-walk importa por banco/año. **Falta** probar generar una demanda
 completa (necesita el motor corriendo) para ver el prefijo GARANTIAS en vivo.
 
+**Nota sobre los datos históricos:** las ~342 carpetas de cédula que ya existen traen
+pantallazos manuales `__ SAC __ v6.0.02.pdf`. El motor **no** los usa: exige
+`SAC_{cedula}_DIRYTEL.pdf` (`sac_puppeteer.js:209`). Por eso el gate de generación pide
+`SAC_*.pdf` y marcará "falta info del SAC" en los casos viejos — es el comportamiento
+correcto: hay que volver a descargar el SAC.
+
+## 6.b Tipos de proceso
+
+Una asignación trae clientes de varios procesos (columna "POSIBLE PROCESO"). Hoy el
+sistema genera dos:
+
+**Cada proceso tiene su PROPIO árbol** en Drive, con la misma forma (`GARANTIAS/{cédula}`,
+`PODERES/{año}`, `PLANTILLAS`) — no se mezclan (`CARPETA_PROCESO` en `rutas.ts`):
+
+```
+DEMANDAS/{banco}/ASIGNACION/{año}            ← común: el Excel trae los procesos mezclados
+DEMANDAS/{banco}/EJECUTIVAS SINGULARES/…     ← ejecutivo singular
+DEMANDAS/{banco}/GARANTIA MOBILIARIAS/…      ← trámite de pago directo
+```
+
+| Proceso | Poder | Plantilla | Juzgado |
+|---|---|---|---|
+| **Ejecutivo singular** | `EJECUTIVAS SINGULARES/PODERES/{año}/PODERES EJECUTIVOS {lote}.docx` | `PLANTILLA PODER SINGULAR AI.docx` | por **cuantía** (capital+interés → Pequeñas Causas / Civil Municipal / Circuito) |
+| **Trámite de pago directo** (garantía mobiliaria, Ley 1676/2013) | `GARANTIA MOBILIARIAS/PODERES/{año}/PODER PAGO DIRECTO {lote}.docx` | `PLANTILLA PODER BANCO FINANDINA PAGO DIRECTO.docx` | **sin cuantía**: `CIVIL MUNICIPAL`, o `PROMISCUO MUNICIPAL` donde la Rama no reporta civil |
+
+- Se elige con `tipo: 'singular' | 'pago_directo'` en `POST /api/asignaciones/:id/generar-poderes`
+  (y en `POST /generar-poderes` del motor). Por defecto `singular`.
+- Marcadores del pago directo: `TIPO_DE_JUZGADO`, `CIUDAD_JUZGADO` (⚠️ sin "DE", distinto
+  del singular), `DEMANDADO_1` (solo el nombre), `MARCA` (columna `GARANTIA` completa,
+  p.ej. "CHEVROLET ONIX"), `MODELO` (año) y `PLACA`. Sin cuantía, obligaciones ni pagaré.
+- Los dos conviven: `Poder.tipo` (`SINGULAR`/`PAGO_DIRECTO`) y columnas separadas
+  `poderUrl` / `poderPagoDirectoUrl`. Regenerar un tipo NO borra el otro.
+- ⚠️ La plantilla de pago directo venía de un **mail-merge de Word**: el motor aplana los
+  `MERGEFIELD` y desactiva la combinación de correspondencia (`aplanarCamposWord` /
+  `desactivarMailMerge` en `poderes.js`). Sin eso, Word re-evalúa los campos contra un
+  origen de datos inexistente y borra los valores.
+- Falta: la **demanda** (solicitud de aprehensión y entrega) de pago directo; hoy solo el poder.
+
 ## 7. Pendientes (TODO)
 
 - [ ] **Generar demanda e2e** con el motor (validar prefijo GARANTIAS, firma y editor en Drive).
-- [ ] **Poderes** aún se guardan en `_poderes/`; ruteardos a `DEMANDAS/{banco}/EJECUTIVAS SINGULARES/PODERES/{año}`.
+- [x] ~~**Poderes** aún se guardan en `_poderes/`~~: ya van a
+      `DEMANDAS/{banco}/EJECUTIVAS SINGULARES/PODERES/{año}/{nombre}.docx` (helper `relPoder`),
+      tanto al generarlos como al subirlos a mano. Validado e2e por la API.
+      Queda por borrar la carpeta vieja `_poderes/` con los .docx de nombre cuid.
 - [ ] **Multi-banco**: hoy solo FINANDINA. `detectarBanco` (rutas.ts) cae al default porque
       el Excel no trae columna de banco fiable (`EMPRESA` suele venir "------"). Para varios
       bancos: usar la carpeta (drop manual, ya funciona) o un **selector de banco al subir**.
-- [ ] **Cambio a producción (Workspace)**: (1) `.env` a modo `delegation`; (2) **limpiar el
-      índice** `DELETE FROM drive_files;` (los fileId de pruebas apuntan a Drive personal);
-      (3) verificar permisos de `servidor@` en la Unidad Compartida. Ver §5.
+- [x] ~~**Cambio a producción (Workspace)**~~: hecho — `.env` en `delegation`, índice
+      `drive_files` vaciado, delegación validada contra el Drive real.
+- [ ] **Falta el ANEXO 5 (SIRNA)**: no está suelto en `DEMANDAS/` (solo copias de
+      `SIRNA OCTUBRE 2024.pdf` dentro de `DEMANDAS/GMAC/...`). Subir el certificado vigente a
+      `DEMANDAS/` y volver a bajarlo, o el anexo sale como carátula sin PDF.
+- [ ] **Anexos frescos en EC2**: hoy se copian a disco una vez y envejecen (los certificados
+      se renuevan). Opción B: que el backend los **hidrate desde Drive** antes de llamar al
+      motor (mismo patrón que `hidratarCedula`), conservando `mtime`.
 - [ ] 🔒 **Seguridad**: el "Mi unidad" de `servidor@` tenía ~13 webshells (compromiso de un
       server viejo), en cuarentena `__REVISAR_SEGURIDAD__`. Revisar `dbcred.php` y **rotar las
       credenciales de BD** filtradas.

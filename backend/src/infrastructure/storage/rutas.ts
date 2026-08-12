@@ -4,8 +4,11 @@
  *
  * Reusa los MISMOS nombres que el motor (sac_scripts/src/config.js):
  *   DEMANDAS/{BANCO}/ASIGNACION/{AÑO}                    ← buzón de asignaciones (entrada)
- *   DEMANDAS/{BANCO}/EJECUTIVAS SINGULARES/GARANTIAS     ← demandas generadas ({cedula}/...)
- *   DEMANDAS/{BANCO}/EJECUTIVAS SINGULARES/PODERES       ← poderes
+ *   DEMANDAS/{BANCO}/{PROCESO}/GARANTIAS                 ← demandas generadas ({cedula}/...)
+ *   DEMANDAS/{BANCO}/{PROCESO}/PODERES                   ← poderes
+ *
+ * {PROCESO} = "EJECUTIVAS SINGULARES" o "GARANTIA MOBILIARIAS" (pago directo):
+ * cada proceso tiene su propio árbol, no se mezclan.
  *
  * La RUTA codifica el banco y el año. Al LEER (recorrer el árbol) se sacan de la
  * carpeta; al ESCRIBIR (subir por web / guardar demanda) se DERIVAN del contenido:
@@ -52,17 +55,34 @@ export function detectarAnio(fecha: Date | null | undefined, nombre?: string): s
 
 const baseBanco = (banco: string) => `${RAIZ_DEMANDAS}/${banco}`;
 
-/** Buzón de asignaciones de un banco/año: DEMANDAS/{banco}/ASIGNACION/{año}. */
+/**
+ * Cada tipo de proceso tiene su PROPIO árbol dentro del banco, con la misma forma
+ * (GARANTIAS/{cédula}, PODERES/{año}, PLANTILLAS). Así lo tiene la oficina:
+ *   DEMANDAS/FINANDINA/EJECUTIVAS SINGULARES/…   ← ejecutivo singular
+ *   DEMANDAS/FINANDINA/GARANTIA MOBILIARIAS/…    ← trámite de pago directo
+ */
+export const CARPETA_PROCESO = {
+  singular: 'EJECUTIVAS SINGULARES',
+  pago_directo: 'GARANTIA MOBILIARIAS',
+} as const;
+
+export type Proceso = keyof typeof CARPETA_PROCESO;
+
+const baseProceso = (banco: string, proceso: Proceso) =>
+  `${baseBanco(banco)}/${CARPETA_PROCESO[proceso]}`;
+
+/** Buzón de asignaciones de un banco/año: DEMANDAS/{banco}/ASIGNACION/{año}.
+ *  Es común a todos los procesos: el Excel del banco los trae mezclados. */
 export const carpetaAsignaciones = (banco: string, anio: string): string =>
   `${baseBanco(banco)}/ASIGNACION/${anio}`;
 
-/** Carpeta de las demandas generadas: DEMANDAS/{banco}/EJECUTIVAS SINGULARES/GARANTIAS. */
-export const carpetaGarantias = (banco: string): string =>
-  `${baseBanco(banco)}/EJECUTIVAS SINGULARES/GARANTIAS`;
+/** Carpeta de las demandas generadas: DEMANDAS/{banco}/{proceso}/GARANTIAS. */
+export const carpetaGarantias = (banco: string, proceso: Proceso = 'singular'): string =>
+  `${baseProceso(banco, proceso)}/GARANTIAS`;
 
-/** Carpeta de los poderes: DEMANDAS/{banco}/EJECUTIVAS SINGULARES/PODERES. */
-export const carpetaPoderes = (banco: string): string =>
-  `${baseBanco(banco)}/EJECUTIVAS SINGULARES/PODERES`;
+/** Carpeta de los poderes: DEMANDAS/{banco}/{proceso}/PODERES. */
+export const carpetaPoderes = (banco: string, proceso: Proceso = 'singular'): string =>
+  `${baseProceso(banco, proceso)}/PODERES`;
 
 /** Une segmentos en un relPath posix, ignorando vacíos y barras sobrantes. */
 export function unir(...partes: Array<string | undefined | null>): string {

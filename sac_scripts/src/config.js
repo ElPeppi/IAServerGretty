@@ -42,6 +42,13 @@ const PLANTILLA_DEMANDA = process.env.PLANTILLA_DEMANDA
 const PLANTILLA_PODER = process.env.PLANTILLA_PODER
   || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PLANTILLAS\\PLANTILLA PODER SINGULAR AI.docx';
 
+// Poder del TRÁMITE DE PAGO DIRECTO (garantía mobiliaria, Ley 1676/2013): pide la
+// APREHENSIÓN Y ENTREGA del vehículo dado en garantía. Otros marcadores que el
+// ejecutivo singular (sin cuantía ni obligaciones; con placa/marca/modelo).
+// Por defecto, junto a las demás plantillas.
+const PLANTILLA_PODER_PAGO_DIRECTO = process.env.PLANTILLA_PODER_PAGO_DIRECTO
+  || path.join(path.dirname(PLANTILLA_PODER), 'PLANTILLA PODER BANCO FINANDINA PAGO DIRECTO.docx');
+
 // Imagen de la firma del abogado (PNG) — se estampa en la demanda. Por defecto
 // en la misma carpeta PLANTILLAS que las plantillas, archivo "Firma.png".
 const FIRMA_PATH = process.env.SAC_FIRMA_PATH
@@ -59,6 +66,13 @@ const ANEXOS_DIR_FINANDINA = process.env.ANEXOS_FINANDINA
 // envía el correo, se toma el más reciente de aquí como respaldo.
 const ANEXOS_DIR_PODERES = process.env.ANEXOS_PODERES
   || '\\\\10.0.10.10\\compartida\\DOCUMENTOS ACTUALIZADOS 2019\\DEMANDAS\\FINANDINA\\EJECUTIVAS SINGULARES\\PODERES';
+
+// Poderes del TRÁMITE DE PAGO DIRECTO. En la oficina cuelgan de otro árbol
+// (…\FINANDINA\GARANTIA MOBILIARIAS\PODERES), no del de ejecutivas singulares.
+// Se mantiene aparte también en disco para no mezclarlos con el origen del
+// ANEXO 1 (correo de otorgamiento) del ejecutivo singular.
+const ANEXOS_DIR_PODERES_PAGO_DIRECTO = process.env.ANEXOS_PODERES_PAGO_DIRECTO
+  || path.join(ANEXOS_DIR_PODERES, 'PAGO DIRECTO');
 
 // ─── Ollama (LLM local para mapeo de columnas del Excel) ─────────────────────
 
@@ -95,10 +109,12 @@ module.exports = {
   PLANTILLA_SINGULAR,
   PLANTILLA_DEMANDA,
   PLANTILLA_PODER,
+  PLANTILLA_PODER_PAGO_DIRECTO,
   FIRMA_PATH,
   ANEXOS_DIR_DEMANDAS,
   ANEXOS_DIR_FINANDINA,
   ANEXOS_DIR_PODERES,
+  ANEXOS_DIR_PODERES_PAGO_DIRECTO,
   OLLAMA_URL,
   OLLAMA_MODEL,
   OLLAMA_TIMEOUT,

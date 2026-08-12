@@ -91,8 +91,14 @@ export interface DescargarSacOutput {
 }
 
 // ─── Generación del Word combinado de poderes (una asignación) ──────────────────
+// Tipo de proceso del poder. 'singular' = ejecutivo singular (el de siempre);
+// 'pago_directo' = trámite de pago directo / garantía mobiliaria (Ley 1676/2013),
+// que usa otra plantilla y pide la aprehensión y entrega del vehículo.
+export type TipoPoder = 'singular' | 'pago_directo';
+
 export interface GenerarPoderesInput {
   excel: Buffer;                          // Excel ORIGINAL (Hoja1 + Hoja2) de la asignación
+  tipo?: TipoPoder;                       // por defecto 'singular'
   docsEnServidor?: boolean;               // leer Nº pagaré del doc (si no, OBLIGACION del Excel)
   fechaAsignacion?: string;               // año de la carpeta PODERES/{año} (DD/MM/YYYY o ISO)
   nombre?: string;                        // nombre del lote → nombre del archivo Word
@@ -108,6 +114,10 @@ export interface PoderClienteOut {
   numeroPagare?: string;
   pagare?: string;
   pagareDesdeDocs?: boolean;
+  // Solo en 'pago_directo': el vehículo dado en garantía que se va a aprehender.
+  placa?: string;
+  marca?: string;
+  modelo?: string;
 }
 
 export interface GenerarPoderesOutput {
@@ -121,8 +131,25 @@ export interface GenerarPoderesOutput {
   error?: string;
 }
 
+// ─── Mapeo de columnas del Excel de asignación ──────────────────────────────────
+// Los Excel del banco cambian de encabezados en cada envío. El motor ya resuelve
+// "qué columna es qué" (heurística + Ollama local, validando el CONTENIDO de la
+// columna propuesta); el backend lo reusa en vez de tener su propia versión.
+export interface MapearColumnasInput {
+  headers: string[];
+  filas: unknown[][]; // muestra de filas, por índice de columna
+}
+
+export interface MapearColumnasOutput {
+  success: boolean;
+  mapeo: Record<string, number>;    // CAMPO → índice de columna
+  porNombre: Record<string, string>; // CAMPO → nombre del encabezado
+  error?: string;
+}
+
 export interface IEngineService {
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
   descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
   generarPoderes(input: GenerarPoderesInput): Promise<GenerarPoderesOutput>;
+  mapearColumnas(input: MapearColumnasInput): Promise<MapearColumnasOutput>;
 }

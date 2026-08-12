@@ -74,9 +74,19 @@ model Asignacion {
   fechaAsignacion DateTime?                    // fecha de la asignación (valida la antigüedad de los docs)
   excelUrl        String?                      // Excel de asignación en el NAS
   filas           Json                         // filas del Excel cacheadas [{ IDENTIFICACION, NOMBRE, ... }]
+  // Mapeo canónico de columnas resuelto por el MOTOR (heurística + Ollama):
+  // { IDENTIFICACION: "ID", NOMBRE: "NOMBRE_CLIENTE", ... }. Se guarda por NOMBRE
+  // de encabezado y no por índice porque Postgres (jsonb) no conserva el orden
+  // original de las claves de `filas`. Null = no se pudo mapear → alias por defecto.
+  mapeo           Json?
   totalFilas      Int        @default(0)
-  poderUrl        String?                      // Word combinado de poderes (cuando se genera)
+  poderUrl        String?                      // Word combinado de poderes EJECUTIVOS SINGULARES
   poderGeneradoAt DateTime?
+  // Una misma asignación trae clientes de VARIOS procesos, así que sus poderes de
+  // TRÁMITE DE PAGO DIRECTO (garantía mobiliaria) son un Word aparte, con otra
+  // plantilla. Se guardan en su propia columna para no pisar los singulares.
+  poderPagoDirectoUrl String?
+  poderPagoDirectoAt  DateTime?
   correoPoderUrl  String?                      // PDF del correo del banco → ANEXO 1 de la demanda
   docsEnServidor  Boolean    @default(false)   // último estado del checklist global al generar poderes
   lawyerId        String
@@ -97,16 +107,24 @@ model Poder {
   id              String     @id @default(cuid())
   asignacionId    String
   asignacion      Asignacion @relation(fields: [asignacionId], references: [id], onDelete: Cascade)
+  // Proceso del poder: "SINGULAR" (ejecutivo singular) o "PAGO_DIRECTO" (garantía
+  // mobiliaria). Una asignación tiene clientes de ambos; regenerar un tipo solo
+  // debe reemplazar los de ESE tipo.
+  tipo            String     @default("SINGULAR")
   cedula          String
   nombre          String?
   ciudadJuzgado   String?
   tipoJuzgado     String?
   numeroPagare    String?                      // el Nº que se puso en el poder (docs o OBLIGACION del Excel)
   pagareDesdeDocs Boolean    @default(false)   // true si se leyó del pagaré/DECEVAL del servidor
+  // Vehículo dado en garantía (solo PAGO_DIRECTO): es el bien a aprehender.
+  placa           String?
+  marca           String?
+  modelo          String?
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
-  @@index([asignacionId])
+  @@index([asignacionId, tipo])
   @@index([cedula])
   @@map("poderes")
 }

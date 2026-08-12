@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { asignacionApi, type AsignacionResumen, type AsignacionPersona, type GenerarPoderesResult } from '../../../infrastructure/api/asignacionApi';
+import { asignacionApi, TIPOS_PODER, type AsignacionResumen, type AsignacionPersona, type GenerarPoderesResult } from '../../../infrastructure/api/asignacionApi';
 
 interface Props {
   asignacion: AsignacionResumen;
@@ -7,9 +7,10 @@ interface Props {
   onDone: () => void;
 }
 
-// Solo el proceso ejecutivo singular genera poderes (la plantilla es de ese proceso;
-// el motor excluye los demás). Los otros tipos se muestran como referencia.
-const TIPO_GENERABLE = 'EJECUTIVO SINGULAR';
+// Procesos con plantilla de poder (ver TIPOS_PODER): ejecutivo singular y trámite
+// de pago directo. Los demás se listan como referencia, sin poder generarse.
+const TIPO_PREFERIDO = 'EJECUTIVO SINGULAR';
+const esGenerable = (t: string) => t in TIPOS_PODER;
 
 export function GenerarPoderesModal({ asignacion, onClose, onDone }: Props) {
   const [docsEnServidor, setDocsEnServidor] = useState(asignacion.docsEnServidor);
@@ -30,7 +31,11 @@ export function GenerarPoderesModal({ asignacion, onClose, onDone }: Props) {
         if (cancelado) return;
         setPersonas(p);
         const tipos = [...new Set(p.map((x) => x.tipo))];
-        setTipo(tipos.includes(TIPO_GENERABLE) ? TIPO_GENERABLE : (tipos[0] ?? ''));
+        // Preseleccionar el singular si está; si no, el primer proceso generable.
+        setTipo(
+          tipos.includes(TIPO_PREFERIDO) ? TIPO_PREFERIDO
+            : (tipos.find(esGenerable) ?? tipos[0] ?? ''),
+        );
       })
       .catch((err: unknown) => {
         if (cancelado) return;
@@ -44,13 +49,17 @@ export function GenerarPoderesModal({ asignacion, onClose, onDone }: Props) {
   const tipos = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of personas) m.set(p.tipo, (m.get(p.tipo) ?? 0) + 1);
+    // Los procesos que SÍ se pueden generar van primero.
     return [...m.entries()]
-      .map(([nombre, count]) => ({ nombre, count }))
-      .sort((a, b) => (a.nombre === TIPO_GENERABLE ? -1 : b.nombre === TIPO_GENERABLE ? 1 : a.nombre.localeCompare(b.nombre)));
+      .map(([nombre, count]) => ({ nombre, count, generable: esGenerable(nombre) }))
+      .sort((a, b) => (a.generable !== b.generable
+        ? (a.generable ? -1 : 1)
+        : a.nombre.localeCompare(b.nombre)));
   }, [personas]);
 
   const personasTipo = useMemo(() => personas.filter((p) => p.tipo === tipo), [personas, tipo]);
-  const generable = tipo === TIPO_GENERABLE;
+  const generable = esGenerable(tipo);
+  const esPagoDirecto = TIPOS_PODER[tipo] === 'pago_directo';
 
   useEffect(() => { setSeleccion(new Set()); }, [tipo]);
 
@@ -65,13 +74,19 @@ export function GenerarPoderesModal({ asignacion, onClose, onDone }: Props) {
   };
 
   const handleGenerar = async () => {
-    if (!generable) { setError('Los poderes solo se generan para "Ejecutivo singular".'); return; }
+    if (!generable) { setError('Este proceso todavía no tiene plantilla de poder.'); return; }
     if (!cedulasAEnviar.length) { setError('No hay personas de este tipo.'); return; }
     setLoading(true);
     setError(null);
     setResult(null);
     try {
-      const res = await asignacionApi.generarPoderes(asignacion.id, docsEnServidor, cedulasAEnviar);
+      // El pago directo no lee el pagaré de los documentos → se manda siempre false.
+      const res = await asignacionApi.generarPoderes(
+        asignacion.id,
+        esPagoDirecto ? false : docsEnServidor,
+        cedulasAEnviar,
+        TIPOS_PODER[tipo],
+      );
       setResult(res);
       onDone();
     } catch (err: unknown) {
@@ -116,14 +131,20 @@ export function GenerarPoderesModal({ asignacion, onClose, onDone }: Props) {
                   ) : (
                     tipos.map((t) => (
                       <option key={t.nombre} value={t.nombre}>
-                        {t.nombre} ({t.count}){t.nombre !== TIPO_GENERABLE ? ' — no soportado aún' : ''}
+                        {t.nombre} ({t.count}){t.generable ? '' : ' — no soportado aún'}
                       </option>
                     ))
                   )}
                 </select>
                 {!cargando && !generable && (
                   <p className="text-xs text-amber-600 mt-1">
-                    Los poderes solo se generan para <b>Ejecutivo singular</b>. Este tipo es solo referencia.
+                    Este proceso todavía no tiene plantilla de poder. Aparece solo como referencia.
+                  </p>
+                )}
+                {!cargando && esPagoDirecto && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Poder de <b>aprehensión y entrega</b> del vehículo dado en garantía (Ley 1676 de 2013).
+                    El juzgado es civil municipal —o promiscuo donde no haya civil— y no depende de la cuantía.
                   </p>
                 )}
               </div>
@@ -167,7 +188,9 @@ export function GenerarPoderesModal({ asignacion, onClose, onDone }: Props) {
                 )}
               </div>
 
-              {/* Checklist global: documentos en el servidor */}
+              {/* Checklist global: documentos en el servidor.
+                  No aplica al pago directo: ese poder no menciona el pagaré. */}
+              {!esPagoDirecto && (
               <label className="flex items-start gap-3 p-3 rounded-xl border border-gray-200 cursor-pointer hover:bg-gray-50">
                 <input
                   type="checkbox"
@@ -185,6 +208,7 @@ export function GenerarPoderesModal({ asignacion, onClose, onDone }: Props) {
                   </span>
                 </span>
               </label>
+              )}
             </>
           )}
 

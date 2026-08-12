@@ -96,7 +96,22 @@ function extraerNitEmpresa(row, idx, canon = {}) {
 
 // ─── Parseo principal ─────────────────────────────────────────────────────────
 
-async function parsearExcelEntrada(buffer) {
+/**
+ * Procesos que sabe filtrar el parser. `re` se prueba contra el valor crudo de la
+ * columna de proceso del Excel ("EJECUTIVO SINGU", "TRAMIT PAGO DIR", …).
+ */
+const PROCESOS = {
+  singular:     { re: /singu/i,             etiqueta: 'ejecutivo singular' },
+  pago_directo: { re: /pago\s*dir|tramit/i, etiqueta: 'trámite de pago directo' },
+};
+
+/**
+ * @param {Buffer} buffer  Excel de la asignación (Hoja1 + Hoja2)
+ * @param {{proceso?: 'singular'|'pago_directo'}} [opts]  proceso a conservar
+ *        (por defecto `singular`, que es como se comportaba antes).
+ */
+async function parsearExcelEntrada(buffer, opts = {}) {
+  const PROC = PROCESOS[opts.proceso] || PROCESOS.singular;
   const wb = XLSX.read(buffer, { type: 'buffer', raw: true, cellDates: false });
 
   if (wb.SheetNames.length < 2) throw new Error('El Excel debe tener al menos 2 hojas (Hoja1 y Hoja2)');
@@ -188,34 +203,32 @@ async function parsearExcelEntrada(buffer) {
     }
   }
 
-  // ── Filtro por tipo de proceso: solo EJECUTIVO SINGULAR ───────────────────
+  // ── Filtro por tipo de proceso ────────────────────────────────────────────
   // El encabezado varía entre envíos ("POSIBLE PROCESO", "PROCESO", "TIPO DE
-  // PROCESO"…) → se localiza la columna por contener "PROCESO". Una cédula se
-  // genera si AL MENOS una de sus filas dice singular ("EJECUTIVO SINGULAR",
-  // "EJECUTIVO SINGU", "SINGULAR"); se excluye si todas son de otro proceso
-  // (RESTITUCIÓN, etc.). Si no hay columna de proceso, no se filtra (compat).
+  // PROCESO"…) → se localiza la columna por contener "PROCESO". Una cédula pasa
+  // si AL MENOS una de sus filas es del proceso pedido; se excluye si todas son
+  // de otro. Si no hay columna de proceso, no se filtra (compat).
   const procesoIdx = (hoja1[0] || []).findIndex(h => /proceso/i.test(String(h || '')));
-  const ES_SINGULAR = /singu/i;
   const omitidosProceso = [];
   const excluidasProceso = new Set();
   if (procesoIdx >= 0) {
-    const conSingular = new Set();
+    const conProceso = new Set();
     const conOtro = new Map(); // cedula → proceso (para el reporte)
     for (let r = 1; r < hoja1.length; r++) {
       const ced = String(getCanon(hoja1[r], 'IDENTIFICACION', 'IDENTIFICACION', 'CEDULA') ?? '').trim();
       if (!/^\d{5,12}$/.test(ced)) continue;
       const proc = String(hoja1[r][procesoIdx] ?? '').trim();
       if (!proc) continue;                       // celda vacía → neutral
-      if (ES_SINGULAR.test(proc)) conSingular.add(ced);
+      if (PROC.re.test(proc)) conProceso.add(ced);
       else if (!conOtro.has(ced)) conOtro.set(ced, proc);
     }
     for (const [ced, proc] of conOtro) {
-      if (!conSingular.has(ced)) {
+      if (!conProceso.has(ced)) {
         excluidasProceso.add(ced);
-        omitidosProceso.push({ cedula: ced, nombre: '', motivo: `proceso "${proc}" (no es ejecutivo singular)` });
+        omitidosProceso.push({ cedula: ced, nombre: '', motivo: `proceso "${proc}" (no es ${PROC.etiqueta})` });
       }
     }
-    console.error(`[EXCEL] Proceso: columna "${hoja1[0][procesoIdx]}" — ${excluidasProceso.size} cédula(s) excluida(s) por no ser ejecutivo singular`);
+    console.error(`[EXCEL] Proceso: columna "${hoja1[0][procesoIdx]}" — ${excluidasProceso.size} cédula(s) excluida(s) por no ser ${PROC.etiqueta}`);
   }
 
   // ── Candidatos: filas con cédula (de proceso ejecutivo singular) ──────────
@@ -293,6 +306,11 @@ async function parsearExcelEntrada(buffer) {
         getCanon(row, 'DETALLE_VEHICULOS', 'DESCRP_VS_NO_PRENDADOS', 'DESCRP VS NO PRENDADOS', 'DESCRIPCION_VS_NO_PRENDADOS', 'DETALLE_VHS', 'DETALLE')
       ),
       placas,
+      // Vehículo dado en GARANTÍA (pago directo / garantía mobiliaria). El Excel
+      // del banco trae "CHEVROLET ONIX" en GARANTIA (marca + línea) y el AÑO en
+      // MODELO. No son campos del esquema canónico: se leen por nombre exacto.
+      garantia:      limpiarPlaceholder(getCol(row, h1, 'GARANTIA', 'GARANTIAS', 'VEHICULO')),
+      modeloVehiculo: limpiarPlaceholder(getCol(row, h1, 'MODELO', 'MODELO_VEHICULO', 'ANIO_MODELO')),
       fechaMoraRaw,
       fechaDesembolsoRaw: getCanon(row, 'FECHA_DESEMBOLSO', 'FECHA_DESEMBOLSO', 'FECHA DESEMBOLSO') ?? '',
       financieros: finCliente || null,

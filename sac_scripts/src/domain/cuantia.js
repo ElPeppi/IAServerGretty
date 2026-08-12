@@ -53,6 +53,18 @@ function tipoJuzgado(cuantia, hasSmallClaims = false, hasPromiscuo = false) {
   return 'CIVIL MUNICIPAL';
 }
 
+/**
+ * Tipo de juzgado del TRÁMITE DE PAGO DIRECTO (garantía mobiliaria, Ley 1676/2013).
+ *
+ * NO depende de la cuantía —la solicitud de aprehensión y entrega no la tiene—:
+ * es CIVIL MUNICIPAL, o PROMISCUO MUNICIPAL en los municipios que no tienen juzgado
+ * civil (regla del despacho, según lo que reporte la Rama Judicial de esa ciudad).
+ * Tampoco va a Pequeñas Causas aunque la ciudad las tenga.
+ */
+function tipoJuzgadoPagoDirecto(hasPromiscuo = false) {
+  return hasPromiscuo ? 'PROMISCUO MUNICIPAL' : 'CIVIL MUNICIPAL';
+}
+
 // Regla del despacho: la categoría municipal nunca se escribe "MUNICIPAL"
 // a secas — siempre "CIVIL MUNICIPAL". Las especialidades explícitas
 // (PROMISCUO, PEQUEÑAS CAUSAS) y el CIRCUITO se conservan tal cual.
@@ -78,5 +90,6 @@ module.exports = {
   calcularCuantia,
   tipoCuantia,
   tipoJuzgado,
+  tipoJuzgadoPagoDirecto,
   normalizarTipoJuzgado,
 };

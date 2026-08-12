@@ -31,6 +31,7 @@ app.use(require('./routes/sac.routes'));
 app.use(require('./routes/poderes.routes'));
 app.use(require('./routes/singular.routes'));
 app.use(require('./routes/ocr.routes'));
+app.use(require('./routes/mapeo.routes'));
 
 app.get('/health', (_, res) => res.json({ status: 'ok', port: config.PORT, outDir: config.OUT_DIR }));
 
