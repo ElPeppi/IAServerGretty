@@ -415,6 +415,51 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
   return result;
 }
 
+/**
+ * Correos electrónicos que trae el PDF de DataCrédito del cliente.
+ *
+ * Hacen falta porque el CSV de contactos solo tiene los que capturó el scraping
+ * del SAC; cuando el DataCrédito se sube a mano (o el SAC no los listó), sus
+ * correos se quedaban fuera de la demanda aunque estuvieran en el anexo. Se
+ * devuelven en el ORDEN del documento, sin repetidos.
+ */
+async function leerCorreosDeDatacredito(cedula, sacDocsDir) {
+  const dir = resolverCarpetaCedula(sacDocsDir, cedula);
+  if (!fs.existsSync(dir)) return [];
+  const dc = fs.readdirSync(dir).find(f => /DATACREDITO\.pdf$/i.test(f));
+  if (!dc) return [];
+  try {
+    const t = (await pdfParse(fs.readFileSync(path.join(dir, dc)), { max: 0 })).text || '';
+
+    // Solo la TABLA de correos del deudor, no todo el PDF: el informe trae más
+    // adelante otras secciones (direcciones, entidades…) y no deben colarse
+    // correos que no son del demandado.
+    //   "Correo ElectrónicoReportado Por…Fuente"
+    //   "1leoescudero@…-OCT - 2025JUN - 20261SUS"
+    //   …
+    //   "#DirecciónEstrato…"        ← aquí termina
+    const ini = t.search(/Correo\s+Electr[oó]nico/i);
+    if (ini < 0) return [];
+    const resto = t.slice(ini);
+    const fin = resto.search(/\n\s*#\s*(Direcci[oó]n|Tel[eé]fono|Entidad)/i);
+    const bloque = fin > 0 ? resto.slice(0, fin) : resto;
+
+    const vistos = new Set();
+    const out = [];
+    for (const m of bloque.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)) {
+      // Las filas vienen numeradas ("1leoescudero@…"): se quita el contador pegado.
+      const correo = m[0].replace(/^\d{1,2}(?=[a-zA-Z])/, '').toLowerCase();
+      if (vistos.has(correo)) continue;
+      vistos.add(correo);
+      out.push(correo);
+    }
+    return out;
+  } catch (e) {
+    console.error(`[DATACREDITO] ${cedula}: no se pudieron leer los correos: ${e.message}`);
+    return [];
+  }
+}
+
 // ¿El PDF de DataCrédito del cliente trae la tabla de correos electrónicos?
 // (encabezado "Correo Electrónico"). Si no, no aporta direcciones electrónicas
 // → no se anexa ni se menciona en la demanda.
@@ -432,4 +477,10 @@ async function datacreditoTieneCorreos(cedula, sacDocsDir) {
   }
 }
 
-module.exports = { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval, datacreditoTieneCorreos };
+module.exports = {
+  leerContactos,
+  leerDatosDeSACPdfs,
+  leerDatosDeDeceval,
+  datacreditoTieneCorreos,
+  leerCorreosDeDatacredito,
+};

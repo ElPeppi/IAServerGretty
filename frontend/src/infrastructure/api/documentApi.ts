@@ -25,9 +25,23 @@ export const documentApi = {
 
   sign: (id: string) => apiClient.post<Document>(`/documents/${id}/sign`).then((r) => r.data),
 
-  /** Regenera SOLO esta demanda (corre en segundo plano; responde 202). */
-  regenerar: (id: string) =>
-    apiClient.post<{ success: boolean; started: boolean; message: string }>(`/documents/${id}/regenerar`).then((r) => r.data),
+  /**
+   * Regenera SOLO esta demanda (corre en segundo plano; responde 202).
+   * `correoPoder` (PDF del banco → ANEXO 1) es opcional: si no se manda, el
+   * backend reusa el guardado en la asignación. Si no hay ninguno responde 400
+   * con `codigo: 'SIN_CORREO_PODER'` y hay que adjuntarlo.
+   */
+  regenerar: (id: string, correoPoderRel?: string) => {
+    const form = new FormData();
+    if (correoPoderRel) form.append('correoPoderRel', correoPoderRel);
+    return apiClient
+      .post<{ success: boolean; started: boolean; message: string }>(
+        `/documents/${id}/regenerar`,
+        correoPoderRel ? form : undefined,
+        correoPoderRel ? { headers: { 'Content-Type': 'multipart/form-data' } } : undefined,
+      )
+      .then((r) => r.data);
+  },
 
   /** Sobreescribe el .docx de la demanda en el NAS con la versión editada. */
   saveFile: (id: string, file: File) => {

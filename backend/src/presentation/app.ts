@@ -11,6 +11,7 @@ import userRoutes from './routes/userRoutes';
 import configRoutes from './routes/configRoutes';
 import notificationRoutes from './routes/notificationRoutes';
 import asignacionRoutes from './routes/asignacionRoutes';
+import expedienteRoutes from './routes/expedienteRoutes';
 import { DocsController } from './controllers/DocsController';
 
 const app = express();
@@ -54,6 +55,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/config', configRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/asignaciones', asignacionRoutes);
+app.use('/api/expedientes', expedienteRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

@@ -32,9 +32,14 @@ router.get('/stream', (req, res) => {
 
   notificationHub.addClient(res);
 
-  // Heartbeat: comentario SSE cada 25 s para que proxies no corten la conexión.
+  // Latido cada 25 s. Va como MENSAJE (no como comentario `: ping`) a propósito:
+  // los comentarios no disparan `onmessage` en el navegador, así que el cliente no
+  // podría distinguir "sin novedades" de "la conexión murió". Con esto el frontend
+  // vigila que sigan llegando latidos y rehace el canal si dejan de venir — hace
+  // falta porque el proxy de dev (Vite) deja el socket ABIERTO cuando el backend se
+  // reinicia, y el navegador nunca se entera. Sin `id` → el cliente no lo muestra.
   const ping = setInterval(() => {
-    try { res.write(': ping\n\n'); } catch { /* el close lo limpia */ }
+    try { res.write('data: {"type":"heartbeat"}\n\n'); } catch { /* el close lo limpia */ }
   }, 25000);
 
   req.on('close', () => {

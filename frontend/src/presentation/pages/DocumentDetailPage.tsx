@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { renderAsync } from 'docx-preview';
 import * as XLSX from 'xlsx';
 import { useDocument } from '../../application/hooks/useDocuments';
+import { expedienteApi, type CorreoPoder, type DatosManuales } from '../../infrastructure/api/expedienteApi';
 import { useRefreshOnNotification } from '../../application/context/NotificationContext';
 import { DocumentStatusBadge } from '../components/Documents/DocumentStatusBadge';
 import { SignatureModal } from '../components/Documents/SignatureModal';
@@ -151,16 +152,139 @@ function FileViewer({ url, label }: { url?: string | null; label: string }) {
   return <iframe title={label} src={url} className="w-full h-full border-0 bg-white" />;
 }
 
-function NotesPanel({ notes }: { notes?: DocumentNote[] | null }) {
+/**
+ * Captura a mano de lo que el OCR no puede sacar del pagaré escaneado:
+ *   · el número impreso del pagaré — sin esto la demanda cita el de la OBLIGACION
+ *     del Excel, que es OTRO número,
+ *   · la fecha de suscripción, manuscrita → la demanda sale con "#####".
+ * Se guarda por cédula y manda sobre el motor en la próxima generación.
+ */
+function DatosManualesForm({ cedula }: { cedula: string }) {
+  const [pagare, setPagare] = useState('');
+  const [fecha, setFecha] = useState('');
+  const [guardado, setGuardado] = useState<DatosManuales | null>(null);
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [msg, setMsg] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
+
+  useEffect(() => {
+    let cancelado = false;
+    setCargando(true);
+    expedienteApi.datosManuales(cedula)
+      .then((d) => {
+        if (cancelado) return;
+        setGuardado(d);
+        setPagare(d.numeroPagare);
+        setFecha(d.fechaSuscripcion);
+      })
+      .catch(() => { /* nunca se ha capturado nada: campos vacíos */ })
+      .finally(() => { if (!cancelado) setCargando(false); });
+    return () => { cancelado = true; };
+  }, [cedula]);
+
+  const sinCambios =
+    pagare.trim() === (guardado?.numeroPagare ?? '') &&
+    fecha.trim() === (guardado?.fechaSuscripcion ?? '');
+
+  const guardar = async () => {
+    setGuardando(true);
+    setMsg(null);
+    try {
+      const d = await expedienteApi.guardarDatosManuales(cedula, {
+        numeroPagare: pagare.trim(),
+        fechaSuscripcion: fecha.trim(),
+      });
+      setGuardado(d);
+      setPagare(d.numeroPagare);
+      setFecha(d.fechaSuscripcion);
+      setMsg({
+        tipo: 'ok',
+        texto: (d.numeroPagare || d.fechaSuscripcion)
+          ? 'Guardado. Regenera la demanda para que quede con estos datos.'
+          : 'Datos borrados: vuelve a usarse lo que lea el motor.',
+      });
+    } catch (err: unknown) {
+      const texto = (err as { response?: { data?: { message?: string } } }).response?.data?.message
+        ?? 'No se pudo guardar.';
+      setMsg({ tipo: 'error', texto });
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  return (
+    <div className="p-3 rounded-xl border border-purple-200 bg-purple-50">
+      <p className="text-sm font-semibold text-purple-900">Datos que el pagaré escaneado no deja leer</p>
+      <p className="text-xs text-purple-700/80 mt-0.5 leading-snug">
+        El OCR no saca el número impreso del pagaré ni la fecha de suscripción (va a mano).
+        Lo que escribas aquí manda sobre lo que lea el motor, en la demanda y en el poder.
+      </p>
+
+      <div className="grid grid-cols-2 gap-2 mt-3">
+        <label className="block">
+          <span className="text-xs font-medium text-purple-900">Nº de pagaré</span>
+          <input
+            value={pagare}
+            onChange={(e) => setPagare(e.target.value)}
+            disabled={cargando || guardando}
+            placeholder="187423"
+            className="mt-1 w-full px-2.5 py-1.5 rounded-lg border border-purple-200 text-sm bg-white
+                       focus:outline-none focus:ring-2 focus:ring-purple-300 disabled:opacity-60"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-purple-900">Fecha de suscripción</span>
+          <input
+            value={fecha}
+            onChange={(e) => setFecha(e.target.value)}
+            disabled={cargando || guardando}
+            placeholder="31/07/2023"
+            className="mt-1 w-full px-2.5 py-1.5 rounded-lg border border-purple-200 text-sm bg-white
+                       focus:outline-none focus:ring-2 focus:ring-purple-300 disabled:opacity-60"
+          />
+        </label>
+      </div>
+
+      <div className="flex items-center gap-2 mt-2.5">
+        <button
+          onClick={guardar}
+          disabled={cargando || guardando || sinCambios}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 text-white
+                     hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {guardando ? 'Guardando…' : 'Guardar'}
+        </button>
+        {msg && (
+          <span className={`text-xs ${msg.tipo === 'ok' ? 'text-emerald-700' : 'text-red-600'}`}>
+            {msg.texto}
+          </span>
+        )}
+        {!msg && guardado?.actualizadoAt && (
+          <span className="text-xs text-purple-700/70">
+            Capturado el {format(new Date(guardado.actualizadoAt), "d 'de' MMMM, HH:mm", { locale: es })}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NotesPanel({ notes, cedula }: { notes?: DocumentNote[] | null; cedula?: string | null }) {
+  const captura = cedula ? <DatosManualesForm cedula={cedula} /> : null;
+
   if (!notes || notes.length === 0) {
     return (
-      <div className="p-6 text-sm text-gray-400">
-        Sin notas: el motor no reportó faltantes ni avisos para esta demanda.
+      <div className="p-4 space-y-3 overflow-auto h-full">
+        {captura}
+        <p className="text-sm text-gray-400">
+          Sin notas: el motor no reportó faltantes ni avisos para esta demanda.
+        </p>
       </div>
     );
   }
   return (
     <ul className="p-4 space-y-2 overflow-auto h-full">
+      {captura && <li>{captura}</li>}
       {notes.map((n, i) => {
         const warn = n.nivel === 'warning';
         return (
@@ -204,6 +328,21 @@ export function DocumentDetailPage() {
   const { document, isLoading, error, sign, isRegenerating, regenerar, refetch } = useDocument(id!);
   const [showSignModal, setShowSignModal] = useState(false);
   const [showRegenConfirm, setShowRegenConfirm] = useState(false);
+  // Correo del banco (ANEXO 1) para la regeneración: se elige de los guardados en
+  // el servidor. Vacío = usar el que ya tiene la asignación.
+  const [correoRegen, setCorreoRegen] = useState('');
+  const [correosPoder, setCorreosPoder] = useState<CorreoPoder[]>([]);
+  const [errorRegen, setErrorRegen] = useState<string | null>(null);
+
+  // Se cargan al abrir el modal de regenerar (no al entrar a la página).
+  useEffect(() => {
+    if (!showRegenConfirm || correosPoder.length) return;
+    let cancelado = false;
+    expedienteApi.correosPoder('singular')
+      .then((cs) => { if (!cancelado) setCorreosPoder(cs); })
+      .catch(() => { /* se puede regenerar con el de la asignación */ });
+    return () => { cancelado = true; };
+  }, [showRegenConfirm, correosPoder.length]);
   const [tab, setTab] = useState<RightTab>('anexos');
   const [fullscreen, setFullscreen] = useState(false);
 
@@ -247,11 +386,19 @@ export function DocumentDetailPage() {
   const warnings = (document.notes ?? []).filter((n) => n.nivel === 'warning').length;
 
   const doRegenerar = async () => {
-    setShowRegenConfirm(false);
+    setErrorRegen(null);
     try {
-      await regenerar();
-    } catch {
-      /* el error se muestra por la notificación SSE */
+      await regenerar(correoRegen || undefined);
+      setShowRegenConfirm(false);
+      setCorreoRegen('');
+    } catch (err: unknown) {
+      const data = (err as { response?: { data?: { codigo?: string; message?: string } } }).response?.data;
+      // Falta el correo del banco (ANEXO 1): el modal se queda abierto para adjuntarlo.
+      setErrorRegen(
+        data?.codigo === 'SIN_CORREO_PODER'
+          ? 'Esta demanda no tiene el correo del poder guardado. Adjúntalo aquí para regenerarla.'
+          : data?.message ?? 'No se pudo iniciar la regeneración.',
+      );
     }
   };
 
@@ -395,7 +542,7 @@ export function DocumentDetailPage() {
           </div>
           <div className="flex-1 min-h-0 bg-white">
             {tab === 'notas' ? (
-              <NotesPanel notes={document.notes} />
+              <NotesPanel notes={document.notes} cedula={document.clientCedula} />
             ) : tab === 'asignacion' && document.asignacionUrl && /\.xlsx?(\?|$)/i.test(document.asignacionUrl) ? (
               <AsignacionEditor
                 url={document.asignacionUrl}
@@ -434,13 +581,40 @@ export function DocumentDetailPage() {
               Se volverá a correr el motor <span className="font-medium">solo para esta persona</span> con el Excel de
               asignación original y se <span className="font-medium">sobrescribirá</span> la demanda actual (y sus anexos).
             </p>
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-5">
-              Ojo: si editaste el Word a mano, esos cambios se perderán. El poder puede quedar sin el correo del banco
-              (no se guarda del lote original).
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+              Ojo: si editaste el Word a mano, esos cambios se perderán.
             </p>
+
+            {/* Correo del banco → ANEXO 1: se elige de los que ya están en el
+                servidor. Vacío = reusar el guardado en la asignación. */}
+            <label className="block mb-4">
+              <span className="block text-sm font-medium text-gray-700 mb-1">
+                Correo del poder <span className="text-gray-400 font-normal">→ ANEXO 1</span>
+              </span>
+              <select
+                value={correoRegen}
+                onChange={(e) => { setCorreoRegen(e.target.value); setErrorRegen(null); }}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="">— Usar el de la asignación —</option>
+                {correosPoder.map((c) => (
+                  <option key={c.relPath} value={c.relPath}>
+                    {c.fecha ? `${c.fecha} · ` : ''}{c.nombre.replace(/\.pdf$/i, '')}
+                  </option>
+                ))}
+              </select>
+              <span className="block text-xs text-gray-400 mt-1">
+                El correo del banco que otorga el poder.
+              </span>
+            </label>
+
+            {errorRegen && (
+              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm mb-4">{errorRegen}</div>
+            )}
+
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => setShowRegenConfirm(false)}
+                onClick={() => { setShowRegenConfirm(false); setErrorRegen(null); }}
                 className="px-4 py-2 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-100 transition-colors"
               >
                 Cancelar

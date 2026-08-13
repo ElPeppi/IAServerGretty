@@ -55,6 +55,13 @@ router.post('/generar-singular',
       try { soloCedulas = JSON.parse(req.body.soloCedulas); } catch { soloCedulas = String(req.body.soloCedulas).split(','); }
       soloCedulas = (Array.isArray(soloCedulas) ? soloCedulas : [soloCedulas]).map(s => String(s).trim()).filter(Boolean);
     }
+    // Datos capturados a mano por cédula (nº de pagaré / fecha de suscripción que
+    // el OCR no puede leer del pagaré escaneado). JSON { cedula: {...} }.
+    let correcciones = undefined;
+    if (req.body.correcciones) {
+      try { correcciones = JSON.parse(req.body.correcciones); }
+      catch (e) { console.error(`[SINGULAR] correcciones ilegibles, se ignoran: ${e.message}`); correcciones = undefined; }
+    }
 
     console.log(`[${new Date().toISOString()}] /generar-singular: procesando Excel${correoPoderBuffer ? ' (con correo poder)' : ''}...`);
 
@@ -67,6 +74,7 @@ router.post('/generar-singular',
       smmv,
       transito,
       soloCedulas,
+      correcciones,
     });
 
     if (!result.success || !result.xlsxBuffer) {

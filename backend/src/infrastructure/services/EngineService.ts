@@ -44,6 +44,8 @@ export class EngineService implements IEngineService {
     if (input.smmv)            form.append('smmv', String(input.smmv));
     if (input.transito?.length) form.append('transito', JSON.stringify(input.transito));
     if (input.soloCedulas?.length) form.append('soloCedulas', JSON.stringify(input.soloCedulas));
+    if (input.correcciones && Object.keys(input.correcciones).length)
+      form.append('correcciones', JSON.stringify(input.correcciones));
 
     const { data } = await axios.post<GenerateSingularOutput>(
       `${this.baseUrl}/generar-singular`,
@@ -86,6 +88,8 @@ export class EngineService implements IEngineService {
         nombre: input.nombre,
         smmv: input.smmv,
         soloCedulas: input.soloCedulas?.length ? input.soloCedulas : undefined,
+        correcciones: input.correcciones && Object.keys(input.correcciones).length
+          ? input.correcciones : undefined,
       },
       {
         timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,

@@ -13,9 +13,11 @@ import {
   carpetaPoderes, unir, type Proceso,
 } from '../../infrastructure/storage/rutas';
 import { hidratarCedula, limpiarLocalCedula } from '../../infrastructure/storage/sacSync';
+import { carpetasDeCedula, relEnCarpetaCedula } from '../../infrastructure/storage/carpetasCedula';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { getSettings } from '../../infrastructure/config/settings';
 import { EngineFile, EngineClientInfo, EngineDocument, TipoPoder } from '../../application/services/IEngineService';
+import { correccionesDeCedulas } from '../../application/services/datosManuales';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
 const engineService = new EngineService();
@@ -336,7 +338,23 @@ export class AsignacionController {
         return;
       }
       const filas = (asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [];
-      res.json({ personas: personasDeFilas(filas, mapeoDe(asignacion)) });
+      const personas = personasDeFilas(filas, mapeoDe(asignacion));
+
+      // ?insumos=1 → además, qué tiene YA cada persona en el servidor (SAC y
+      // pagaré). Es opcional porque cuesta una consulta por cliente: la lista
+      // normal debe seguir siendo instantánea.
+      if (String(req.query['insumos'] ?? '') === '1' && storage.enabled) {
+        const banco = detectarBanco(filas);
+        const conInsumos = [];
+        for (const p of personas) {
+          const { sac, pagare } = await this.insumosSac(p.cedula, banco);
+          conInsumos.push({ ...p, sac, pagare });
+        }
+        res.json({ personas: conInsumos });
+        return;
+      }
+
+      res.json({ personas });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al listar personas';
       res.status(500).json({ message });
@@ -498,6 +516,13 @@ export class AsignacionController {
         nombre: asignacion.nombre,
         smmv: getSettings().smmv,
         soloCedulas: soloCedulas.length ? soloCedulas : undefined,
+        // Nº de pagaré capturado a mano: manda sobre el que lea el motor.
+        correcciones: await correccionesDeCedulas(
+          soloCedulas.length
+            ? soloCedulas
+            : personasDeFilas((asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [], mapeoDe(asignacion))
+                .filter((p) => p.tipo === tipoProceso).map((p) => p.cedula)
+        ),
       });
 
       if (!result.success) {
@@ -621,6 +646,24 @@ export class AsignacionController {
       // Correo del banco (PDF) → ANEXO 1. Si llega uno nuevo se guarda en el storage y
       // queda enlazado a la asignación; si no, se reusa el que ya tenga guardado.
       let correoPoderUrl = asignacion.correoPoderUrl;
+
+      // `correoPoderRel`: uno de los que ya están en el servidor, elegido en la
+      // web (ver GET /api/expedientes/_correos-poder). Tiene prioridad sobre el
+      // guardado y evita tener que volver a subir el mismo PDF cada vez.
+      const elegido = String(req.body?.correoPoderRel ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+      if (elegido && !req.file) {
+        const basePoderes = carpetaPoderes(detectarBanco(
+          (asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [],
+        ));
+        // Solo se acepta si está DENTRO de la carpeta de poderes del banco.
+        if (!elegido.startsWith(`${basePoderes}/`)) {
+          res.status(400).json({ message: 'El correo elegido no está en la carpeta de poderes.' });
+          return;
+        }
+        correoPoderUrl = storage.urlFor(elegido);
+        await prisma.asignacion.update({ where: { id: asignacion.id }, data: { correoPoderUrl } });
+      }
+
       if (req.file) {
         if (!storage.enabled) {
           res.status(400).json({ message: 'El almacenamiento no está configurado: no se puede guardar el correo del poder.' });
@@ -630,7 +673,16 @@ export class AsignacionController {
         correoPoderUrl = (await storage.save(`_asignaciones/${asignacion.id}/${Date.now()}-${safe}`, req.file.buffer, 'application/pdf')).url;
         await prisma.asignacion.update({ where: { id: asignacion.id }, data: { correoPoderUrl } });
       }
+      // Sin el correo del poder la demanda saldría sin ANEXO 1 (el documento que
+      // acredita el poder otorgado por el banco) → no se genera.
       const correoPoder = await this.leerArchivo(correoPoderUrl);
+      if (!correoPoder) {
+        res.status(400).json({
+          codigo: 'SIN_CORREO_PODER',
+          message: 'Adjunta el correo del banco que otorga el poder (PDF): es el ANEXO 1 de la demanda.',
+        });
+        return;
+      }
 
       res.status(202).json({
         success: true,
@@ -747,6 +799,9 @@ export class AsignacionController {
           smmv: getSettings().smmv,
           transito: getSettings().transito,
           soloCedulas: [persona.cedula],
+          // Datos que el OCR no puede sacar del pagaré escaneado y se capturaron
+          // a mano en el visor (nº de pagaré, fecha de suscripción).
+          correcciones: await correccionesDeCedulas([persona.cedula]),
         });
 
         const doc = (result.documentos ?? [])[0];
@@ -813,7 +868,12 @@ export class AsignacionController {
   private async insumosSac(cedula: string, banco: string): Promise<{ sac: boolean; pagare: boolean }> {
     if (!storage.enabled) return { sac: true, pagare: true };
     try {
-      const archivos = await storage.list(unir(carpetaGarantias(banco), String(cedula)));
+      // La carpeta del cliente puede llamarse "{cedula}", "{cedula}-AGOSTO 2026",
+      // "CC {cedula}"… → se miran TODAS las que le correspondan (un cliente puede
+      // tener el pagaré en la carpeta de una asignación y el SAC en la de otra).
+      const carpetas = await carpetasDeCedula(String(cedula), banco);
+      const archivos: string[] = [];
+      for (const c of carpetas) archivos.push(...(await storage.list(c.relPath)));
       const sac = archivos.some((f) => /^SAC_.*\.pdf$/i.test(f));
       const pagare = archivos.some(
         (f) => /\.pdf$/i.test(f) && !/^SAC_/i.test(f) && !/DATACREDITO/i.test(f) && /(PAGARE|DECEVAL)/i.test(f),
@@ -841,7 +901,7 @@ export class AsignacionController {
     const subir = async (f?: EngineFile | null): Promise<{ url?: string; rel?: string }> => {
       if (!f) return {};
       if (storage.enabled && f.relPath) {
-        const rel = unir(carpetaGarantias(banco), f.relPath);
+        const rel = await relEnCarpetaCedula(f.relPath, banco);
         if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
         return { url: storage.urlFor(rel), rel };
       }

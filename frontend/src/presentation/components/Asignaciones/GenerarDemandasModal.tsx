@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
 import { asignacionApi, type AsignacionResumen, type AsignacionPersona } from '../../../infrastructure/api/asignacionApi';
+import { expedienteApi, type CorreoPoder } from '../../../infrastructure/api/expedienteApi';
 
 interface Props {
   asignacion: AsignacionResumen;
@@ -21,6 +22,20 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
   const [error, setError] = useState<string | null>(null);
   const [correoPoder, setCorreoPoder] = useState<File | null>(null);
   const correoRef = useRef<HTMLInputElement>(null);
+  // Correos de poder ya guardados en el servidor, para elegir uno en vez de subirlo.
+  const [correos, setCorreos] = useState<CorreoPoder[]>([]);
+  const [correoRel, setCorreoRel] = useState('');
+  const [cargandoCorreos, setCargandoCorreos] = useState(true);
+
+  useEffect(() => {
+    let cancelado = false;
+    expedienteApi
+      .correosPoder('singular')
+      .then((cs) => { if (!cancelado) setCorreos(cs); })
+      .catch(() => { if (!cancelado) setCorreos([]); })
+      .finally(() => { if (!cancelado) setCargandoCorreos(false); });
+    return () => { cancelado = true; };
+  }, []);
 
   useEffect(() => {
     let cancelado = false;
@@ -75,7 +90,7 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
     setEnviando(true);
     setError(null);
     try {
-      const res = await asignacionApi.generarDemandas(asignacion.id, cedulasAEnviar, correoPoder);
+      const res = await asignacionApi.generarDemandas(asignacion.id, cedulasAEnviar, correoPoder, correoRel);
       onDone(res.message);
     } catch (err: unknown) {
       const resp = (err as { response?: { status?: number; data?: { codigo?: string; message?: string } } }).response;
@@ -169,32 +184,58 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
             )}
           </div>
 
-          {/* Correo del banco (PDF) → ANEXO 1. Queda guardado en la asignación y se
-              reusa en las siguientes generaciones si no se sube uno nuevo. */}
+          {/* Correo del banco → ANEXO 1. Se ELIGE de los que ya están en el
+              servidor (carpeta PODERES, del más reciente al más viejo); subir uno
+              nuevo queda como salida de emergencia si aún no está guardado. */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Correo del poder <span className="text-gray-400 font-normal">(PDF) → ANEXO 1</span>
+              Correo del poder <span className="text-gray-400 font-normal">→ ANEXO 1</span>
             </label>
-            <div
-              onClick={() => { if (!enviando) correoRef.current?.click(); }}
-              className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors ${
-                correoPoder ? 'border-emerald-400 bg-emerald-50' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-              }`}
+            <select
+              value={correoRel}
+              onChange={(e) => { setCorreoRel(e.target.value); setCorreoPoder(null); }}
+              disabled={enviando || cargandoCorreos}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
             >
+              {cargandoCorreos ? (
+                <option value="">Cargando correos del servidor…</option>
+              ) : (
+                <>
+                  <option value="">
+                    {asignacion.correoPoderUrl
+                      ? '— Usar el ya guardado en esta asignación —'
+                      : '— Elige el correo del poder —'}
+                  </option>
+                  {correos.map((c) => (
+                    <option key={c.relPath} value={c.relPath}>
+                      {c.fecha ? `${c.fecha} · ` : ''}{c.nombre.replace(/\.pdf$/i, '')}
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
+
+            <div className="flex items-center gap-3 mt-1.5">
+              {correoRel && (
+                <a href={correos.find((c) => c.relPath === correoRel)?.url} target="_blank" rel="noreferrer"
+                  className="text-xs text-blue-600 hover:underline font-medium">Ver el PDF</a>
+              )}
+              <button type="button" disabled={enviando}
+                onClick={() => { if (!enviando) correoRef.current?.click(); }}
+                className="text-xs text-gray-500 hover:text-gray-700">
+                {correoPoder ? `Subido: ${correoPoder.name}` : '…o subir uno nuevo'}
+              </button>
+              {correoPoder && (
+                <button type="button" onClick={() => setCorreoPoder(null)} disabled={enviando}
+                  className="text-xs text-gray-500 hover:text-gray-700">Quitar</button>
+              )}
               <input ref={correoRef} type="file" accept=".pdf" className="hidden" disabled={enviando}
-                onChange={(e) => { if (e.target.files?.[0]) setCorreoPoder(e.target.files[0]); }} />
-              <p className="text-sm font-medium text-gray-600">📧 Correo del banco con el poder</p>
-              <p className={`text-xs mt-1 font-medium ${correoPoder ? 'text-emerald-600' : 'text-gray-400'}`}>
-                {correoPoder
-                  ? correoPoder.name
-                  : asignacion.correoPoderUrl
-                    ? 'Se reusará el correo ya guardado en esta asignación'
-                    : 'Sin correo — el ANEXO 1 saldrá solo con la carátula'}
-              </p>
+                onChange={(e) => { if (e.target.files?.[0]) { setCorreoPoder(e.target.files[0]); setCorreoRel(''); } }} />
             </div>
-            {correoPoder && (
-              <button type="button" onClick={() => setCorreoPoder(null)} disabled={enviando}
-                className="text-xs text-gray-500 hover:text-gray-700 mt-1">Quitar</button>
+            {!correos.length && !cargandoCorreos && !asignacion.correoPoderUrl && (
+              <p className="text-xs text-amber-600 mt-1">
+                No hay correos de poder en el servidor: sube uno.
+              </p>
             )}
           </div>
 

@@ -92,6 +92,9 @@ router.post('/generar-poderes', async (req, res) => {
     ? new Set(req.body.soloCedulas.map(c => String(c).replace(/\D/g, '')))
     : null;
   const nombreLote     = String(req.body.nombre || 'ASIGNACION').replace(/[<>:"/\\|?*]/g, ' ').trim();
+  // Nº de pagaré capturado a mano, por cédula: manda sobre docs y Excel.
+  const correcciones   = (req.body.correcciones && typeof req.body.correcciones === 'object')
+    ? req.body.correcciones : {};
   // Tipo de poder. Cualquier valor desconocido cae a 'singular' (comportamiento previo).
   const esPagoDirecto  = String(req.body.tipo || '').toLowerCase() === 'pago_directo';
 
@@ -177,6 +180,15 @@ router.post('/generar-poderes', async (req, res) => {
         } catch (e) {
           console.error(`[/generar-poderes] ${cedula}: no se pudo leer DECEVAL: ${e.message}`);
         }
+      }
+
+      // El nº capturado a mano gana a todo: en el pagaré escaneado el OCR no lee
+      // el número impreso, así que sin esto el poder llevaría el de la obligación.
+      const numManual = String(correcciones[cedula]?.numeroPagare ?? '').trim();
+      if (numManual && !esPagoDirecto) {
+        numeroPagare = numManual;
+        pagareDesdeDocs = true;
+        console.log(`[/generar-poderes] ${cedula}: nº de pagaré capturado a mano → ${numManual}`);
       }
 
       // ── Tipo/ciudad de juzgado (Rama Judicial), igual que la demanda ──────────

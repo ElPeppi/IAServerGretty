@@ -7,6 +7,7 @@ import { LoginPage } from './presentation/pages/LoginPage';
 import { DashboardPage } from './presentation/pages/DashboardPage';
 import { DocumentsPage } from './presentation/pages/DocumentsPage';
 import { AsignacionesPage } from './presentation/pages/AsignacionesPage';
+import { ExpedientesPage } from './presentation/pages/ExpedientesPage';
 import { DocumentDetailPage } from './presentation/pages/DocumentDetailPage';
 import { UsersPage } from './presentation/pages/UsersPage';
 import { ConfigPage } from './presentation/pages/ConfigPage';
@@ -32,6 +33,7 @@ function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="asignaciones" element={<AsignacionesPage />} />
+            <Route path="expedientes" element={<ExpedientesPage />} />
             <Route path="documents" element={<DocumentsPage />} />
             <Route path="documents/:id" element={<DocumentDetailPage />} />
             <Route path="users" element={<UsersPage />} />

@@ -42,6 +42,15 @@ export interface EngineClientInfo {
   notas?: EngineNote[];
 }
 
+// Datos que el motor NO puede leer del pagaré y se capturan a mano en la web
+// (pagaré escaneado: el OCR no lee el nº impreso ni la fecha manuscrita).
+// Lo que venga aquí MANDA sobre lo que lea el motor, por cédula.
+export interface DatoManualCliente {
+  numeroPagare?: string;
+  fechaSuscripcion?: string; // DD/MM/YYYY
+}
+export type CorreccionesPorCedula = Record<string, DatoManualCliente>;
+
 export interface GenerateSingularInput {
   excel: Buffer;
   excelFilename: string;
@@ -51,6 +60,7 @@ export interface GenerateSingularInput {
   smmv?: number; // salario mínimo (umbrales de cuantía)
   transito?: Array<{ ciudad: string; entidad: string; correo: string }>; // directorio de tránsito
   soloCedulas?: string[]; // si viene, el motor SOLO procesa esas cédulas (regenerar una demanda)
+  correcciones?: CorreccionesPorCedula; // datos capturados a mano (mandan sobre el OCR)
 }
 
 export interface GenerateSingularOutput {
@@ -104,6 +114,7 @@ export interface GenerarPoderesInput {
   nombre?: string;                        // nombre del lote → nombre del archivo Word
   smmv?: number;                          // salario mínimo (umbrales de cuantía → tipo de juzgado)
   soloCedulas?: string[];                 // subconjunto a generar; vacío/omitido = todas (singular)
+  correcciones?: CorreccionesPorCedula;   // nº de pagaré capturado a mano (manda sobre docs/Excel)
 }
 
 export interface PoderClienteOut {

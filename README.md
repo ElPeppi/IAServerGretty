@@ -236,6 +236,98 @@ DEMANDAS/{banco}/GARANTIA MOBILIARIAS/…      ← trámite de pago directo
   origen de datos inexistente y borra los valores.
 - Falta: la **demanda** (solicitud de aprehensión y entrega) de pago directo; hoy solo el poder.
 
+## 6.c Nombres de las carpetas de cliente (GARANTIAS)
+
+⚠️ La oficina **no** usa un solo formato. Lo que hay hoy en Drive:
+
+| Formato | EJEC. SINGULARES | GARANTIA MOBILIARIAS |
+|---|---|---|
+| `98598830` (solo cédula) | 319 | 9 |
+| `1143152167-AGOSTO 2026` ← **el nuevo** | 18 | 5 |
+| `CC 9306310` | — | 110 |
+| `92540211_2026`, `33114995_06_2026` (los crea el motor) | 13 | — |
+| erratas: `15648165- AGOSTO 2026`, `1044800457-GOSTO 2026`, `CC 45754033-`, `CC 40932033+`, `8537096 - NOVIEMBRE` | 5 | 4 |
+
+Por eso **nunca se busca la carpeta por nombre exacto**. `carpetasCedula.ts` la resuelve
+por la cédula contenida en el nombre (primera corrida de 5–12 dígitos) e interpreta el
+resto como fecha para saber cuál es la más reciente:
+
+- `carpetasDeCedula(cedula, banco, proceso)` → todas las del cliente, más reciente primero.
+- `carpetaDestino(…)` → dónde ESCRIBIR (la más reciente existente; si no hay, `{cedula}`).
+- `relEnCarpetaCedula(relPathMotor, …)` → traduce el `{carpetaLocal}/archivo` que devuelve
+  el motor a la carpeta real del cliente en Drive.
+
+Se usa en el gate de generación (`insumosSac`), en `sacSync` (subir/hidratar) y al subir
+los documentos que genera el motor. El motor hace lo mismo en disco
+(`sac_scripts/src/utils/carpetas.js`), que acepta los mismos formatos.
+
+> Sin esto, un cliente con carpeta `1143152167-AGOSTO 2026` daba **0 archivos**: el gate
+> abortaba su demanda por "falta el pagaré" aunque el pagaré estuviera ahí.
+
+## 6.d Notificaciones en vivo (SSE)
+
+`GET /api/notifications/stream?token=JWT` → el navegador escucha con `EventSource`.
+El motor avisa por `POST /api/notifications/engine` (secreto compartido) y el backend
+retransmite.
+
+⚠️ **La conexión puede quedar ZOMBI.** El proxy de desarrollo (Vite) mantiene el socket
+del navegador ABIERTO aunque el backend se caiga o reinicie: `EventSource` nunca lanza
+`onerror`, se queda en `readyState = OPEN`, la UI muestra "conectado"… y no vuelve a
+llegar nada hasta recargar a mano. Verificado: 21 s con el backend muerto y el navegador
+seguía en `OPEN(1)`, mientras el backend reportaba `clients: 0`.
+
+Dos piezas lo resuelven, y **las dos son necesarias**:
+
+1. **Backend** — el latido de 25 s va como MENSAJE (`data: {"type":"heartbeat"}`), no como
+   comentario `: ping`. Los comentarios SSE no disparan `onmessage`, así que el cliente no
+   podría distinguir "sin novedades" de "conexión muerta". No lleva `id` → el cliente no lo muestra.
+2. **Frontend** (`NotificationContext.tsx`) — vigilante que rehace el canal si pasan 70 s sin
+   recibir nada, más reconexión manual con espera creciente cuando `readyState === CLOSED`
+   (el navegador NO reintenta si el servidor contesta algo distinto de `200 text/event-stream`,
+   p. ej. el **502** del proxy de Vite mientras el backend reinicia).
+
+> Al desarrollar, cada edición de un `.ts` del backend hace respawn de `ts-node-dev` y corta
+> el canal — por eso esto aparecía tan seguido.
+
+## 6.e Índice `drive_files` y borrados manuales
+
+Drive no tiene rutas: cada archivo se ubica por `fileId`, y la tabla `drive_files`
+guarda `relPath → fileId` para no resolverlo por API en cada acceso. El precio es que
+el índice **no se entera de lo que alguien haga a mano en Drive**. Dos casos, los dos
+ya cubiertos en `DriveStorage.save`:
+
+| Lo que hace el usuario en Drive | Qué pasaba | Cómo se resuelve |
+|---|---|---|
+| Manda el archivo a la **papelera** | `files.update` escribía sobre el archivo borrado; nunca reaparecía (la UI y `list` filtran `trashed`) | el update va con `trashed: false` → lo revive |
+| Lo **saca de la carpeta** (o lo borra de una carpeta compartida) | el archivo queda huérfano en la raíz ("Mi unidad"); el update escribía ahí y en la carpeta del cliente no aparecía nada | se piden los `parents` en la misma respuesta y, si no es el correcto, se reubica con `addParents`/`removeParents` |
+| Vacía la papelera (borrado **definitivo**) | 404 | se borra la entrada del índice y se crea el archivo de nuevo |
+
+> Síntoma típico: "borré los archivos y ahora no me los vuelve a guardar". Sí los guarda
+> —con contenido nuevo y fecha nueva— pero fuera de la carpeta. Se ve mirando el `parents`
+> del `fileId` que tenga el índice.
+
+## 6.f Expedientes — visor de los documentos del cliente
+
+Página `/expedientes`: se busca por cédula y muestra TODO lo que el cliente tiene en el
+servidor (SAC, contactos, pagaré, DataCrédito, demanda, anexos), agrupado por la carpeta
+real y etiquetado por tipo. PDFs e imágenes se previsualizan en la misma página (vía
+`/docs`); lo demás se descarga.
+
+**Por qué existe el botón de borrar aquí y no se usa Drive:** los archivos que sube el
+sistema los posee `servidor@`, y la carpeta suele ser de otra persona. En "Mi unidad"
+solo el DUEÑO puede mandar algo a la papelera, así que a un editor Drive únicamente le
+ofrece *"Quitar de la vista"* — que no borra y encima deja el archivo huérfano fuera de
+su carpeta. El backend actúa COMO `servidor@`, de modo que desde aquí el borrado sí es real.
+
+La cédula va en la URL (`/expedientes?cedula=40939171`): recargar —o que Vite recargue el
+módulo en desarrollo— no borra la búsqueda, y el enlace se puede compartir.
+
+- `GET /api/expedientes/:cedula` → carpetas + archivos. Busca en los DOS procesos **en
+  paralelo** (en serie tardaba ~15 s; así responde en <2 s).
+- `DELETE /api/expedientes/:cedula/archivo` `{ relPath }` → borra.
+  El `relPath` debe caer dentro de una carpeta DE ESA cédula; si no, 403 (probado con
+  rutas de otra carpeta y con `../`).
+
 ## 7. Pendientes (TODO)
 
 - [ ] **Generar demanda e2e** con el motor (validar prefijo GARANTIAS, firma y editor en Drive).

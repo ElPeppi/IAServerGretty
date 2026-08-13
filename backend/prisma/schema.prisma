@@ -165,3 +165,20 @@ model DriveFile {
 
   @@map("drive_files")
 }
+
+// Datos que el motor NO puede leer del pagaré y se capturan a mano.
+// Caso típico: pagaré FINANDINA escaneado — el OCR no lee el número impreso
+// (sale el de la OBLIGACION del Excel, que es otro) ni la fecha de suscripción
+// manuscrita (queda "#####" en la demanda). Lo que se guarde aquí MANDA sobre
+// lo que lea el motor, para esa cédula, en demandas y poderes.
+model DatoManual {
+  cedula           String   @id
+  numeroPagare     String?                 // nº impreso en el pagaré escaneado
+  fechaSuscripcion String?                 // DD/MM/YYYY — la manuscrita del pagaré
+  nota             String?                 // por qué se corrigió (queda en la traza)
+  autorId          String?                 // usuario que lo capturó
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("datos_manuales")
+}

@@ -9,8 +9,11 @@ import { EngineService } from '../../infrastructure/services/EngineService';
 import { FileStorage } from '../../infrastructure/services/FileStorage';
 import { storage } from '../../infrastructure/storage';
 import { detectarBanco, carpetaGarantias, unir } from '../../infrastructure/storage/rutas';
+import { relEnCarpetaCedula } from '../../infrastructure/storage/carpetasCedula';
+import { hidratarCedula, limpiarLocalCedula } from '../../infrastructure/storage/sacSync';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { EngineFile } from '../../application/services/IEngineService';
+import { correccionesDeCedulas } from '../../application/services/datosManuales';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
 const documentRepository = new PrismaDocumentRepository();
@@ -283,6 +286,51 @@ export class GenerateController {
         return;
       }
 
+      // ── Correo del poder (ANEXO 1) ───────────────────────────────────────────
+      // Obligatorio: sin él la demanda sale sin el anexo que acredita el poder.
+      // Se acepta uno nuevo en la petición; si no viene, se reusa el guardado en
+      // la asignación. Si no hay ninguno, no se regenera.
+      const subido = (req.file as Express.Multer.File | undefined)?.buffer ?? null;
+      let correoPoder: Buffer | null = subido;
+      let correoPoderFilename = (req.file as Express.Multer.File | undefined)?.originalname;
+
+      // `correoPoderRel`: uno de los que ya están en el servidor (elegido en la web).
+      const elegido = String(req.body?.correoPoderRel ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!correoPoder && elegido) {
+        try {
+          correoPoder = await storage.read(elegido);
+          correoPoderFilename = elegido.split('/').pop() ?? 'correo.pdf';
+        } catch {
+          res.status(400).json({ message: 'No se pudo leer el correo elegido del servidor.' });
+          return;
+        }
+      }
+
+      if (!correoPoder) {
+        // El tipo del repositorio no expone `asignacionId` → se consulta directo.
+        const fila = await prisma.document.findUnique({
+          where: { id: document.id },
+          select: { asignacion: { select: { correoPoderUrl: true } } },
+        });
+        const guardado = fila?.asignacion?.correoPoderUrl ?? null;
+        const relCorreo = guardado ? storage.relPathFromUrl(guardado) : null;
+        if (relCorreo) {
+          try {
+            correoPoder = await storage.read(relCorreo);
+            correoPoderFilename = relCorreo.split('/').pop() ?? 'correo.pdf';
+          } catch {
+            correoPoder = null;
+          }
+        }
+      }
+      if (!correoPoder) {
+        res.status(400).json({
+          codigo: 'SIN_CORREO_PODER',
+          message: 'Adjunta el correo del banco que otorga el poder (PDF): es el ANEXO 1 de la demanda.',
+        });
+        return;
+      }
+
       res.status(202).json({
         success: true,
         started: true,
@@ -306,6 +354,8 @@ export class GenerateController {
         fechaAsignacion: meta.fechaAsignacion ?? undefined,
         smmv: getSettings().smmv,
         transito: getSettings().transito,
+        correoPoder,
+        correoPoderFilename,
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al regenerar';
@@ -318,16 +368,35 @@ export class GenerateController {
     documentId: string; cedula: string; clientName: string;
     excel: Buffer; fechaAsignacion?: string; smmv?: number;
     transito?: Array<{ ciudad: string; entidad: string; correo: string }>;
+    correoPoder?: Buffer | null; correoPoderFilename?: string;
   }): Promise<void> {
     const t0 = Date.now();
+    // Drive es la fuente de verdad: el motor lee del DISCO, así que hay que bajarle
+    // la carpeta del cliente antes de correrlo (y borrarla al final). Sin esto la
+    // regeneración fallaba con "sin pagaré en la carpeta del cliente" aunque el
+    // pagaré estuviera en Drive — la generación por lote sí hidrataba, ésta no.
+    const bancoCliente = bancoDeExcel(input.excel);
+    try {
+      await hidratarCedula(input.cedula, bancoCliente);
+    } catch (e) {
+      console.error(`[regenerar] ${input.cedula}: no se pudo hidratar de Drive:`, e instanceof Error ? e.message : e);
+    }
     try {
       const result = await engineService.generateSingular({
         excel: input.excel,
         excelFilename: 'regeneracion.xlsx',
+        // Sin esto la demanda regenerada salía SIN el ANEXO 1 (correo del banco
+        // que otorga el poder): la generación original sí lo mandaba y la
+        // regeneración no, así que el documento quedaba peor que el primero.
+        correoPoder: input.correoPoder ?? null,
+        correoPoderFilename: input.correoPoderFilename,
         fechaAsignacion: input.fechaAsignacion,
         smmv: input.smmv,
         transito: input.transito,
         soloCedulas: [input.cedula],
+        // Nº de pagaré / fecha de suscripción capturados a mano en el visor: el
+        // OCR no puede leerlos del pagaré escaneado, así que mandan sobre él.
+        correcciones: await correccionesDeCedulas([input.cedula]),
       });
 
       const doc = (result.documentos ?? []).find((d) => d.cedula === input.cedula);
@@ -349,10 +418,10 @@ export class GenerateController {
       const fileRef = async (f?: EngineFile | null): Promise<string | undefined> => {
         if (!f) return undefined;
         if (storage.enabled && f.relPath) {
-          // El motor escribe en SU disco y devuelve base64+relPath ({cedula}/...). Se
-          // prefija con la carpeta GARANTIAS del banco (la raíz del storage es el top de
-          // la oficina) y se sube ahí. En NAS re-subir el base64 es idempotente.
-          const rel = unir(carpetaGarantias(banco), f.relPath);
+          // El motor escribe en SU disco y devuelve base64+relPath ({cedula}/...).
+          // `relEnCarpetaCedula` lo lleva a la carpeta que el cliente ya tenga en
+          // Drive (que puede llamarse "1143152167-AGOSTO 2026" o "CC 9306310").
+          const rel = await relEnCarpetaCedula(f.relPath, banco);
           if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
           return storage.urlFor(rel);
         }
@@ -389,6 +458,9 @@ export class GenerateController {
         message: `${input.clientName}: ${String(msg)}`,
         meta: { documentId: input.documentId, cedula: input.cedula },
       });
+    } finally {
+      // La copia local era solo para que el motor leyera: Drive es la fuente.
+      limpiarLocalCedula(input.cedula);
     }
   }
 
@@ -454,7 +526,7 @@ export class GenerateController {
       const subir = async (f?: EngineFile | null): Promise<{ url?: string; rel?: string }> => {
         if (!f) return {};
         if (storage.enabled && f.relPath) {
-          const rel = unir(carpetaGarantias(banco), f.relPath);
+          const rel = await relEnCarpetaCedula(f.relPath, banco);
           if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
           return { url: storage.urlFor(rel), rel };
         }

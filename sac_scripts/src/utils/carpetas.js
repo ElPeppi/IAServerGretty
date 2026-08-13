@@ -73,6 +73,8 @@ function listarNombres(outBase) {
 const MESES_ES = {
   enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7,
   agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
+  // Vistos en carpetas reales del servidor (abreviatura y errata de tipeo):
+  nov: 11, gosto: 8,
 };
 
 // Extrae {anio, mes} de un sufijo de carpeta. Tolerante: cualquier separador
@@ -95,8 +97,12 @@ function parseSufijoFecha(sufijo) {
 
 function carpetasDeCedula(outBase, cedula) {
   const ced = String(cedula);
-  // La carpeta es EXACTAMENTE la cédula, o la cédula seguida de "_<sufijo>".
-  const re  = new RegExp(`^${ced}(?:_(.+))?$`);
+  // La carpeta es la cédula, con cualquier prefijo/sufijo que use la oficina:
+  //   12345678            12345678_2026        12345678_06_2026
+  //   12345678-AGOSTO 2026    12345678 - 2025      CC 12345678
+  // Antes solo se aceptaba "_" como separador, así que las carpetas nuevas
+  // ({cedula}-{MES} {AÑO}) y las de "CC {cedula}" no se encontraban.
+  const re = new RegExp(`^(?:CC\\s*)?${ced}(?![0-9])(.*)$`, 'i');
   const out = [];
   for (const name of listarNombres(outBase)) {
     const m = name.match(re);

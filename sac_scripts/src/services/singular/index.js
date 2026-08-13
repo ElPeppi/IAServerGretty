@@ -18,6 +18,10 @@
  *   correoPoderBuffer?: Buffer // correo PDF del banco (mismo para todo el lote)
  *                              // sobre el que se sobrepone el poder → ANEXO 1
  *   soloCedulas?:     string[] // si viene, SOLO se procesan esas cédulas (regenerar una demanda)
+ *   correcciones?:    { [cedula]: { numeroPagare?, fechaSuscripcion? } }
+ *                              // datos capturados a mano que MANDAN sobre lo leído
+ *                              // (pagaré escaneado: el OCR no lee el nº impreso ni
+ *                              //  la fecha manuscrita)
  * }
  */
 
@@ -37,7 +41,8 @@ const { parsearVehiculos }             = require('../../domain/vehiculos');
 const { parsearExcelEntrada }          = require('./excelEntrada');
 const { construirFilas, fillTemplate } = require('./plantillaXlsx');
 const { loadRamaCache, buscarCorreoJuzgado } = require('./ramaJudicial');
-const { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval, datacreditoTieneCorreos } = require('./carpetaCliente');
+const { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval, datacreditoTieneCorreos,
+        leerCorreosDeDatacredito } = require('./carpetaCliente');
 const { generarDemandasWord }          = require('./demandas');
 const { generarAntecedentes }          = require('./antecedentes');
 const { generarAnexos }                = require('./anexos');
@@ -46,6 +51,24 @@ const { determinarLocalidad }          = require('./localidadBarranquilla');
 const { consultarPlacaRunt, cerrarWorker } = require('../runt');
 const { cerrarOcr }                        = require('../ocr');
 const { consultarCamaraRues }          = require('../rues');
+
+/**
+ * Normaliza el mapa de datos manuales a { [cedula]: { numeroPagare, fechaSuscripcion } },
+ * con las cédulas como string sin espacios y los valores recortados. Acepta que
+ * venga vacío/indefinido (el caso normal: no hay nada capturado a mano).
+ */
+function normalizarCorrecciones(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [ced, val] of Object.entries(raw)) {
+    if (!val || typeof val !== 'object') continue;
+    const numeroPagare     = String(val.numeroPagare     ?? '').trim();
+    const fechaSuscripcion = String(val.fechaSuscripcion ?? '').trim();
+    if (!numeroPagare && !fechaSuscripcion) continue;
+    out[String(ced).trim()] = { numeroPagare, fechaSuscripcion };
+  }
+  return out;
+}
 
 async function procesarSingular(excelBuffer, options = {}) {
   const sacDocsDir      = options.sacDocsDir      || config.OUT_DIR;
@@ -58,6 +81,8 @@ async function procesarSingular(excelBuffer, options = {}) {
   // Convertir fecha de asignación al formato texto "12 de Mayo del 2026"
   const fechaAsig       = parseAnyDate(options.fechaAsignacion) || todayString();
   const cacheFile       = path.join(sacDocsDir, 'rama_judicial_cache.json');
+  // Datos capturados a mano, por cédula. Ganan a lo que lea el motor.
+  const correcciones    = normalizarCorrecciones(options.correcciones);
 
   loadRamaCache(cacheFile);
 
@@ -124,6 +149,9 @@ async function procesarSingular(excelBuffer, options = {}) {
     for (const cliente of clientes) {
       try {
         const { cedula } = cliente;
+        // Datos capturados a mano para esta cédula (nº de pagaré, fecha de
+        // suscripción): mandan sobre lo que lea el motor.
+        const manual = correcciones[String(cedula).trim()] || {};
         // Notas de procedencia/avisos por cliente → se adjuntan a la demanda
         // (de dónde salió cada dato, qué faltó). { campo, nivel, mensaje }
         const notas = [];
@@ -171,8 +199,9 @@ async function procesarSingular(excelBuffer, options = {}) {
             omitidos.push({ cedula, nombre: cliente.nombre || '', motivo });
             continue;
           }
-          console.error(`[SINGULAR] ▣ ${cedula}: pagaré escaneado → demanda tipo FINANDINA (pagaré = OBLIGACION del Excel)`);
-          notas.push({ campo: 'pagare', nivel: 'info', mensaje: 'Pagaré escaneado (FINANDINA) diligenciado: datos por OCR; nº de pagaré tomado de la OBLIGACION del Excel' });
+          const fuenteNum = manual.numeroPagare ? `capturado a mano: ${manual.numeroPagare}` : 'OBLIGACION del Excel';
+          console.error(`[SINGULAR] ▣ ${cedula}: pagaré escaneado → demanda tipo FINANDINA (pagaré = ${fuenteNum})`);
+          notas.push({ campo: 'pagare', nivel: 'info', mensaje: `Pagaré escaneado (FINANDINA) diligenciado: datos por OCR; nº de pagaré ${manual.numeroPagare ? 'capturado a mano' : 'tomado de la OBLIGACION del Excel'}` });
         }
 
         // ── Enriquecer nombre desde SAC PDF ────────────────────────────
@@ -188,8 +217,12 @@ async function procesarSingular(excelBuffer, options = {}) {
         // Sin fecha mora del SAC (cliente sin mora aún) → dejar la del Excel
 
         // ── FECHA SUSCRIPCION: del PDF DECEVAL/PAGARÉ (cuando firmó el cliente).
-        //    Prioridad: DECEVAL PDF > Excel FECHA_DESEMBOLSO
-        if (decevalPdf.fechaSuscripcion) {
+        //    Prioridad: capturada a mano > DECEVAL PDF > Excel FECHA_DESEMBOLSO
+        //    (en el pagaré escaneado la fecha va manuscrita: el OCR no la lee y
+        //     la demanda salía con "#####").
+        if (manual.fechaSuscripcion) {
+          cliente.fechaDesembolsoRaw = manual.fechaSuscripcion;
+        } else if (decevalPdf.fechaSuscripcion) {
           cliente.fechaDesembolsoRaw = decevalPdf.fechaSuscripcion;
         }
 
@@ -258,6 +291,28 @@ async function procesarSingular(excelBuffer, options = {}) {
         // 2e. Leer CONTACTOS CSV
         const contactos = leerContactos(cedula, sacDocsDir);
 
+        // Correos del PDF de DataCrédito. El CSV solo trae los que capturó el
+        // scraping del SAC; si el DataCrédito se subió a mano (o el SAC no los
+        // listó), sus correos no llegaban a la demanda aunque estén en el anexo.
+        try {
+          const correosDc = await leerCorreosDeDatacredito(cedula, sacDocsDir);
+          const nuevos = correosDc.filter(
+            (c) => !contactos.emails.some((e) => e.toLowerCase() === c),
+          );
+          if (nuevos.length) {
+            contactos.emails = [...contactos.emails, ...nuevos];
+            contactos.email = contactos.emails.join(' - ');
+            console.error(`[DATACREDITO] ${cedula}: ${nuevos.length} correo(s) añadido(s) desde el PDF`);
+            notas.push({
+              campo: 'correo',
+              nivel: 'info',
+              mensaje: `${nuevos.length} correo(s) tomados del PDF de DataCrédito: ${nuevos.join(', ')}`,
+            });
+          }
+        } catch (e) {
+          console.error(`[DATACREDITO] ${cedula}: no se pudieron añadir correos: ${e.message}`);
+        }
+
         // DIRECCION DE RESIDENCIA — prioridad:
         //   1. Excel de entrada (columna "direccion" de Hoja1)
         //   2. Pagaré DECEVAL (campo "Dirección:" del otorgante)
@@ -313,10 +368,12 @@ async function procesarSingular(excelBuffer, options = {}) {
         }
 
         // 2g. Construir fila principal + extras (vehículos adicionales → Hoja2)
-        // Número de pagaré: DECEVAL → del certificado; FINANDINA → OBLIGACION del Excel.
-        const numeroPagareFinal = decevalPdf.certificadoValido
-          ? decevalPdf.numeroPagare
-          : (f.obligacion || '');
+        // Número de pagaré: capturado a mano → manda; DECEVAL → del certificado;
+        // FINANDINA → OBLIGACION del Excel (que NO es el nº impreso en el pagaré,
+        // solo el más cercano que tenemos cuando el OCR no lo lee).
+        const numeroPagareFinal = manual.numeroPagare
+          ? manual.numeroPagare
+          : (decevalPdf.certificadoValido ? decevalPdf.numeroPagare : (f.obligacion || ''));
         const clienteConsolidado = { ...cliente, ciudad: ciudadJuzgado, financieros: f };
         const { main, extras } = construirFilas(
           clienteConsolidado, vehiculos, contactos, correoJuzgado,
@@ -385,12 +442,31 @@ async function procesarSingular(excelBuffer, options = {}) {
         const cop = (n) => '$' + Number(n || 0).toLocaleString('es-CO');
         notas.push({ campo: 'demandado',       nivel: 'info', mensaje: `Demandado: ${clienteConsolidado.nombre || '-'} · CC ${cedula}` });
         notas.push({ campo: 'tipoPagare',      nivel: 'info', mensaje: `Tipo de pagaré: ${decevalPdf.tipoPagare || 'DECEVAL'}${decevalPdf.tipoPagare === 'FINANDINA' ? ' (escaneado, datos por OCR)' : ' (certificado con texto)'}` });
-        notas.push({ campo: 'numeroPagare',    nivel: 'info', mensaje: `Nº de pagaré: ${numeroPagareFinal || '-'} (${decevalPdf.certificadoValido ? 'del certificado DECEVAL' : 'de la OBLIGACION del Excel'})` });
+        const origenPagare = manual.numeroPagare
+          ? 'capturado a mano'
+          : (decevalPdf.certificadoValido ? 'del certificado DECEVAL' : 'de la OBLIGACION del Excel');
+        notas.push({
+          campo: 'numeroPagare',
+          // Sin captura manual y con pagaré escaneado, el número que sale es el de
+          // la obligación, NO el impreso en el pagaré: eso es un aviso, no un dato.
+          nivel: (!manual.numeroPagare && !decevalPdf.certificadoValido) ? 'warning' : 'info',
+          mensaje: `Nº de pagaré: ${numeroPagareFinal || '-'} (${origenPagare})`
+            + ((!manual.numeroPagare && !decevalPdf.certificadoValido)
+              ? ' — el OCR no lee el número impreso del pagaré escaneado: verificarlo y capturarlo a mano si no coincide'
+              : ''),
+        });
         notas.push({ campo: 'cuantia',         nivel: 'info', mensaje: `Cuantía: ${cuantiaLbl} — total ${cop(totalCuant)} (umbrales con SMMV ${cop(smmv || 1750905)})` });
         notas.push({ campo: 'juzgado',         nivel: 'info', mensaje: `Juzgado: ${main['TIPO DE JUZGADO']} de ${ciudadJuzgado}` });
         notas.push({ campo: 'financieros',     nivel: 'info', mensaje: `Capital ${cop(f.capital)} · interés ${cop(f.interes)}` });
         notas.push({ campo: 'fechaAsignacion', nivel: 'info', mensaje: `Fecha de asignación: ${fechaAsig}` });
-        notas.push({ campo: 'fechaSuscripcion',nivel: 'info', mensaje: `Fecha de suscripción: ${decevalPdf.fechaSuscripcion || '(no determinada)'} (del pagaré)` });
+        const fechaSuscrFinal = manual.fechaSuscripcion || decevalPdf.fechaSuscripcion;
+        notas.push({
+          campo: 'fechaSuscripcion',
+          nivel: fechaSuscrFinal ? 'info' : 'warning',
+          mensaje: fechaSuscrFinal
+            ? `Fecha de suscripción: ${main['FECHA DE SUSCRIPCION']} (${manual.fechaSuscripcion ? 'capturada a mano' : 'del pagaré'})`
+            : 'Fecha de suscripción: no se pudo leer del pagaré (va manuscrita) — la demanda lleva "#####": capturarla a mano',
+        });
         notas.push({ campo: 'fechaMora',       nivel: 'info', mensaje: `Fecha de mora: ${main['FECHA MORA'] || '-'} (${sacPdf.fechaMora ? 'del SAC' : 'del Excel'})` });
 
         clientesSalida.push({
@@ -424,11 +500,20 @@ async function procesarSingular(excelBuffer, options = {}) {
   }
 
   if (filasTodas.length === 0) {
+    // El motivo REAL de cada omisión (falta pagaré, proceso ≠ singular, pagaré sin
+    // diligenciar…) ya viene en `omitidos`. Antes se decía siempre "ningún cliente
+    // tiene certificado DECEVAL válido", que casi nunca era la causa y mandaba a
+    // buscar el problema al sitio equivocado.
+    const detalle = omitidos.length
+      ? omitidos.map((o) => `${o.cedula}${o.nombre ? ` (${o.nombre})` : ''}: ${o.motivo}`).join(' · ')
+      : '';
     return {
       success: false,
       error:   omitidos.length
-        ? `Ningún cliente tiene certificado DECEVAL válido (${omitidos.length} omitido(s))`
-        : 'No se generaron filas de salida (revise los datos de entrada)',
+        ? `No se generó ninguna demanda — ${omitidos.length} cliente(s) omitido(s). ${detalle}`
+        : errores.length
+          ? `No se generó ninguna demanda. ${errores.map((e) => `${e.cedula}: ${e.error}`).join(' · ')}`
+          : 'No se generaron filas de salida (revise los datos de entrada)',
       clientes: clientesSalida,
       omitidos,
       errores,

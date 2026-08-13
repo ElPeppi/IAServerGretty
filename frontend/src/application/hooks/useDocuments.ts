@@ -72,10 +72,12 @@ export function useDocument(id: string) {
 
   // Dispara la regeneración (segundo plano). El documento se refresca solo al
   // llegar la notificación SSE de "generación terminada" (ver DocumentDetailPage).
-  const regenerar = async () => {
+  // `correoPoderRel` opcional: ruta de uno de los correos guardados en el servidor.
+  // Si no se manda, se usa el de la asignación (400 SIN_CORREO_PODER si no hay).
+  const regenerar = async (correoPoderRel?: string) => {
     setIsRegenerating(true);
     try {
-      return await documentApi.regenerar(id);
+      return await documentApi.regenerar(id, correoPoderRel);
     } finally {
       setIsRegenerating(false);
     }

@@ -93,10 +93,13 @@ export const asignacionApi = {
   // motor acepte (solo ejecutivo singular). `correoPoder` (opcional) = PDF del correo
   // del banco para el ANEXO 1; si no se manda, se reusa el guardado en la asignación.
   // Lanza 409 { codigo: 'SIN_PODER' } si no hay poder enlazado.
-  generarDemandas: (id: string, cedulas?: string[], correoPoder?: File | null) => {
+  // `correoPoderRel` = uno de los correos que YA están en el servidor (lo normal);
+  // `correoPoder` = subir un PDF nuevo, si aún no está guardado.
+  generarDemandas: (id: string, cedulas?: string[], correoPoder?: File | null, correoPoderRel?: string) => {
     const form = new FormData();
     if (cedulas && cedulas.length) form.append('cedulas', JSON.stringify(cedulas));
     if (correoPoder) form.append('correoPoder', correoPoder);
+    else if (correoPoderRel) form.append('correoPoderRel', correoPoderRel);
     return apiClient
       .post<{ success: boolean; started: boolean; message: string }>(
         `/asignaciones/${id}/generar-demandas`,

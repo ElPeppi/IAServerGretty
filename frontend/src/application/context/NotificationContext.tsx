@@ -42,6 +42,11 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     setToasts((t) => t.filter((x) => x.id !== id));
   }, []);
 
+  // Si pasa este tiempo sin recibir NADA (ni latido), la conexión se da por muerta
+  // y se rehace. El backend late cada 25 s.
+  const SIN_SENAL_MS = 70000;
+  const REVISION_MS = 15000;
+
   useEffect(() => {
     if (!token) {
       esRef.current?.close();
@@ -49,26 +54,73 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       setConnected(false);
       return;
     }
-    // EventSource no permite headers → el token va por query (lo valida el backend).
-    const es = new EventSource(`/api/notifications/stream?token=${encodeURIComponent(token)}`);
-    esRef.current = es;
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false); // EventSource reintenta solo
-    es.onmessage = (ev) => {
-      try {
-        const n = JSON.parse(ev.data) as AppNotification;
-        if (!n?.id || seen.current.has(n.id)) return; // de-dup (incluye reenvíos al reconectar)
-        seen.current.add(n.id);
-        setItems((prev) => [{ ...n, read: false }, ...prev].slice(0, 100));
-        setToasts((prev) => [n, ...prev].slice(0, 4));
-        window.setTimeout(() => dismissToast(n.id), 6000);
-      } catch {
-        /* mensaje no-JSON (heartbeat): ignorar */
-      }
+
+    let cerrado = false;               // el efecto se desmontó → no reconectar más
+    let es: EventSource | null = null;
+    let ultimaSenal = Date.now();
+    let reintentos = 0;
+
+    const conectar = () => {
+      if (cerrado) return;
+      es?.close();
+      // EventSource no permite headers → el token va por query (lo valida el backend).
+      es = new EventSource(`/api/notifications/stream?token=${encodeURIComponent(token)}`);
+      esRef.current = es;
+      ultimaSenal = Date.now();
+
+      es.onopen = () => { reintentos = 0; ultimaSenal = Date.now(); setConnected(true); };
+
+      es.onerror = () => {
+        setConnected(false);
+        // EventSource solo reintenta ante errores de RED. Si el servidor CONTESTA
+        // con algo que no sea 200 text/event-stream (p. ej. el 502 que devuelve el
+        // proxy de Vite mientras el backend reinicia), el navegador cierra el canal
+        // para siempre → hay que reconectar a mano.
+        if (es && es.readyState === EventSource.CLOSED) reconectarConEspera();
+      };
+
+      es.onmessage = (ev) => {
+        ultimaSenal = Date.now();       // cualquier mensaje, incluido el latido
+        setConnected(true);
+        try {
+          const n = JSON.parse(ev.data) as AppNotification;
+          if (!n?.id || seen.current.has(n.id)) return; // de-dup (incluye reenvíos al reconectar)
+          seen.current.add(n.id);
+          setItems((prev) => [{ ...n, read: false }, ...prev].slice(0, 100));
+          setToasts((prev) => [n, ...prev].slice(0, 4));
+          window.setTimeout(() => dismissToast(n.id), 6000);
+        } catch {
+          /* mensaje no-JSON: ignorar */
+        }
+      };
     };
 
+    let tempReconexion: number | undefined;
+    const reconectarConEspera = () => {
+      if (cerrado || tempReconexion) return;
+      const espera = Math.min(30000, 1000 * 2 ** reintentos++); // 1s, 2s, 4s… máx 30s
+      tempReconexion = window.setTimeout(() => { tempReconexion = undefined; conectar(); }, espera);
+    };
+
+    // Vigilante: el proxy de Vite puede dejar el socket ABIERTO aunque el backend
+    // se haya caído. Ahí el navegador nunca lanza `onerror` y la pestaña se queda
+    // en silencio creyendo que está conectada. Se detecta por falta de latidos.
+    const vigilante = window.setInterval(() => {
+      if (cerrado) return;
+      if (Date.now() - ultimaSenal > SIN_SENAL_MS) {
+        setConnected(false);
+        reintentos = 0;
+        conectar();                     // reconexión inmediata: la anterior está muerta
+      }
+    }, REVISION_MS);
+
+    conectar();
+
     return () => {
-      es.close();
+      cerrado = true;
+      window.clearInterval(vigilante);
+      if (tempReconexion) window.clearTimeout(tempReconexion);
+      es?.close();
       esRef.current = null;
     };
   }, [token, dismissToast]);

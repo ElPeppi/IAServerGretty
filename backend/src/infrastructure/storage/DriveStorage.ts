@@ -237,12 +237,32 @@ export class DriveStorage implements IStorage {
         // puede venir del índice, que no sabe si alguien lo borró a mano en Drive:
         // sin esto el update escribe sobre el archivo borrado y el usuario nunca
         // lo ve reaparecer (ni en la UI ni en `list`, que filtran trashed).
-        await this.drive.files.update({
+        // Se piden los `parents` en la MISMA respuesta para comprobar de paso que
+        // el archivo siga colgando de la carpeta correcta.
+        const res = await this.drive.files.update({
           fileId,
           media,
           requestBody: { trashed: false },
+          fields: 'id,parents',
           supportsAllDrives: true,
         });
+
+        // Quitar un archivo de una carpeta en Drive NO lo borra: lo deja huérfano
+        // en la raíz ("Mi unidad"). Como el índice conserva su fileId, el update
+        // de arriba escribiría el contenido nuevo en ese archivo suelto y en la
+        // carpeta del cliente no aparecería nada. Si el padre no es el que toca,
+        // se devuelve a su sitio.
+        const padres = res.data.parents ?? [];
+        if (padres.length && !padres.includes(parentId)) {
+          await this.drive.files.update({
+            fileId,
+            addParents: parentId,
+            removeParents: padres.join(','),
+            fields: 'id',
+            supportsAllDrives: true,
+          });
+          console.error(`[DriveStorage] "${clean}" estaba fuera de su carpeta → devuelto a su sitio`);
+        }
       } catch (e) {
         // Borrado DEFINITIVO (vaciaron la papelera) → el fileId ya no existe:
         // se descarta del índice y se crea de nuevo.

@@ -15,7 +15,8 @@
 import fs from 'fs';
 import path from 'path';
 import { storage } from './index';
-import { carpetaGarantias, BANCO_DEFAULT, unir } from './rutas';
+import { BANCO_DEFAULT, unir, type Proceso } from './rutas';
+import { carpetasDeCedula, carpetaDestino } from './carpetasCedula';
 
 // Artefactos que produce la descarga del SAC (no toca lo demás de la carpeta).
 const SAC_FILE = /^(SAC_.*\.pdf|CONTACTOS_.*\.csv)$/i;
@@ -33,7 +34,7 @@ function docsRoot(): string {
 }
 
 // Carpetas del disco cuyo nombre es la cédula o empieza por "{cedula}_".
-function carpetasDeCedula(root: string, cedula: string): string[] {
+function carpetasLocalesDeCedula(root: string, cedula: string): string[] {
   const ced = String(cedula);
   try {
     return fs.readdirSync(root).filter((n) => n === ced || n.startsWith(`${ced}_`));
@@ -48,12 +49,19 @@ function carpetasDeCedula(root: string, cedula: string): string[] {
  * `{carpetaGarantias(banco)}/{carpeta}/{archivo}`. Idempotente (overwrite). Devuelve
  * cuántos subió. `banco` = FINANDINA por defecto (en la descarga no se conoce el banco).
  */
-export async function subirSacDeCedula(cedula: string, banco: string = BANCO_DEFAULT): Promise<number> {
+export async function subirSacDeCedula(
+  cedula: string,
+  banco: string = BANCO_DEFAULT,
+  proceso: Proceso = 'singular',
+): Promise<number> {
   const root = docsRoot();
   if (!storage.enabled || !root || !fs.existsSync(root)) return 0;
   let subidos = 0;
-  const base = carpetaGarantias(banco);
-  for (const carpeta of carpetasDeCedula(root, cedula)) {
+  // Destino: la carpeta que YA tenga el cliente en Drive (aunque se llame
+  // "1143152167-AGOSTO 2026" o "CC 9306310"), no una nueva con el nombre local.
+  // Así el SAC cae junto al pagaré en vez de crear un expediente paralelo.
+  const destino = await carpetaDestino(cedula, banco, proceso);
+  for (const carpeta of carpetasLocalesDeCedula(root, cedula)) {
     const absDir = path.join(root, carpeta);
     let archivos: string[];
     try {
@@ -65,7 +73,7 @@ export async function subirSacDeCedula(cedula: string, banco: string = BANCO_DEF
     for (const f of archivos) {
       try {
         const buf = fs.readFileSync(path.join(absDir, f));
-        await storage.save(unir(base, carpeta, f), buf, mimeDe(f));
+        await storage.save(unir(destino, f), buf, mimeDe(f));
         fs.rmSync(path.join(absDir, f), { force: true }); // Drive = fuente → borra local
         subidos++;
       } catch (e) {
@@ -84,30 +92,48 @@ export async function subirSacDeCedula(cedula: string, banco: string = BANCO_DEF
 }
 
 /**
- * Descarga de Drive a `DOCS_DIR/{cedula}/` los archivos de la cédula (GARANTIAS/{cedula})
- * ANTES de generar, para que el motor los lea del disco. Devuelve cuántos bajó.
+ * Descarga de Drive a `DOCS_DIR/{cedula}/` los archivos de la cédula ANTES de
+ * generar, para que el motor los lea del disco. Devuelve cuántos bajó.
+ *
+ * La carpeta del cliente en Drive NO se llama siempre igual que la cédula
+ * ("1143152167-AGOSTO 2026", "CC 9306310"…), así que se resuelve por contenido
+ * del nombre. Si el mismo cliente tiene VARIAS carpetas (asignaciones de meses
+ * distintos), se juntan todas en la carpeta local: al motor le da igual de qué
+ * carpeta salió cada archivo, y así no se queda sin el pagaré por estar en otra.
+ * Si un nombre se repite entre carpetas, gana el de la más reciente (van primero).
  */
-export async function hidratarCedula(cedula: string, banco: string = BANCO_DEFAULT): Promise<number> {
+export async function hidratarCedula(
+  cedula: string,
+  banco: string = BANCO_DEFAULT,
+  proceso: Proceso = 'singular',
+): Promise<number> {
   const root = docsRoot();
   if (!storage.enabled || !root) return 0;
-  const ced = String(cedula);
-  const relDir = unir(carpetaGarantias(banco), ced);
+  const ced = String(cedula).replace(/\D/g, '');
   let bajados = 0;
   try {
-    const archivos = await storage.list(relDir);
-    if (!archivos.length) return 0;
+    const carpetas = await carpetasDeCedula(ced, banco, proceso);
+    if (!carpetas.length) return 0;
     const absDir = path.join(root, ced);
     fs.mkdirSync(absDir, { recursive: true });
-    for (const f of archivos) {
-      try {
-        const buf = await storage.read(unir(relDir, f));
-        fs.writeFileSync(path.join(absDir, f), buf);
-        bajados++;
-      } catch (e) {
-        console.error('[sacSync] no se pudo hidratar', ced, f, e instanceof Error ? e.message : e);
+    const yaBajado = new Set<string>();
+    for (const carpeta of carpetas) {
+      for (const f of await storage.list(carpeta.relPath)) {
+        if (yaBajado.has(f)) continue;   // la carpeta más reciente manda
+        try {
+          const buf = await storage.read(unir(carpeta.relPath, f));
+          fs.writeFileSync(path.join(absDir, f), buf);
+          yaBajado.add(f);
+          bajados++;
+        } catch (e) {
+          console.error('[sacSync] no se pudo hidratar', ced, f, e instanceof Error ? e.message : e);
+        }
       }
     }
-    if (bajados) console.error(`[sacSync] ${cedula}: ${bajados} archivo(s) hidratado(s) de Drive a local`);
+    if (bajados) {
+      const de = carpetas.map((c) => `"${c.nombre}"`).join(', ');
+      console.error(`[sacSync] ${cedula}: ${bajados} archivo(s) hidratado(s) de Drive (${de}) a local`);
+    }
   } catch (e) {
     console.error('[sacSync] error hidratando', cedula, e instanceof Error ? e.message : e);
   }
@@ -118,7 +144,7 @@ export async function hidratarCedula(cedula: string, banco: string = BANCO_DEFAU
 export function limpiarLocalCedula(cedula: string): void {
   const root = docsRoot();
   if (!root || !fs.existsSync(root)) return;
-  for (const carpeta of carpetasDeCedula(root, cedula)) {
+  for (const carpeta of carpetasLocalesDeCedula(root, cedula)) {
     try {
       fs.rmSync(path.join(root, carpeta), { recursive: true, force: true });
     } catch (e) {

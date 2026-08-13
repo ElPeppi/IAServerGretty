@@ -16,7 +16,11 @@ router.use(authenticate);
 router.get('/', (req, res) => controller.getAll(req, res));
 router.get('/:id', (req, res) => controller.getById(req, res));
 router.post('/:id/sign', (req, res) => controller.sign(req, res));
-router.post('/:id/regenerar', (req, res) => generateController.regenerarUno(req, res));
+// multipart opcional: `correoPoder` (PDF del banco → ANEXO 1). Si no viene, se
+// reusa el guardado en la asignación; sin ninguno de los dos no se regenera.
+router.post('/:id/regenerar', upload.single('correoPoder'), (req, res) =>
+  generateController.regenerarUno(req, res),
+);
 router.put('/:id/file', upload.single('file'), (req, res) => controller.saveFile(req, res));
 router.put('/:id/asignacion', upload.single('file'), (req, res) => controller.saveAsignacion(req, res));
 
