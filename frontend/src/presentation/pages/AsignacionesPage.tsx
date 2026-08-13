@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAsignaciones } from '../../application/hooks/useAsignaciones';
 import { asignacionApi, type AsignacionResumen } from '../../infrastructure/api/asignacionApi';
 import { SubirAsignacionModal } from '../components/Asignaciones/SubirAsignacionModal';
@@ -20,6 +20,28 @@ export function AsignacionesPage() {
   const [faltanteTarget, setFaltanteTarget] = useState<AsignacionResumen | null>(null); // popup poder faltante
   const [actualizando, setActualizando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [fechaAsc, setFechaAsc] = useState(false); // false = más recientes primero
+
+  // El backend ordena por `createdAt`, pero todas las asignaciones entran en el mismo
+  // escaneo de Drive: el timestamp empata y queda el orden alfabético del scan. Se
+  // ordena aquí por `fechaAsignacion`, que es la fecha que le importa al usuario.
+  const ordenadas = useMemo(() => {
+    const ts = (a: AsignacionResumen): number | null => {
+      if (!a.fechaAsignacion) return null;
+      const t = new Date(a.fechaAsignacion).getTime();
+      return isNaN(t) ? null : t;
+    };
+    return [...asignaciones].sort((a, b) => {
+      const ta = ts(a);
+      const tb = ts(b);
+      // Las que no tienen fecha legible van al final en AMBOS sentidos: si no,
+      // al invertir el orden aparecerían de primeras y taparían lo reciente.
+      if (ta === null && tb === null) return a.nombre.localeCompare(b.nombre, 'es');
+      if (ta === null) return 1;
+      if (tb === null) return -1;
+      return fechaAsc ? ta - tb : tb - ta;
+    });
+  }, [asignaciones, fechaAsc]);
 
   const handleActualizar = async () => {
     setActualizando(true);
@@ -91,7 +113,17 @@ export function AsignacionesPage() {
             <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
               <tr>
                 <th className="text-left font-medium px-4 py-3">Asignación</th>
-                <th className="text-left font-medium px-4 py-3">Fecha</th>
+                <th className="text-left font-medium px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => setFechaAsc((v) => !v)}
+                    title={fechaAsc ? 'Más antiguas primero — clic para invertir' : 'Más recientes primero — clic para invertir'}
+                    className="inline-flex items-center gap-1 uppercase hover:text-gray-700 transition-colors"
+                  >
+                    Fecha
+                    <span aria-hidden="true" className="text-[0.65rem]">{fechaAsc ? '▲' : '▼'}</span>
+                  </button>
+                </th>
                 <th className="text-center font-medium px-4 py-3">Clientes</th>
                 <th className="text-center font-medium px-4 py-3">Poder</th>
                 <th className="text-center font-medium px-4 py-3">Demandas</th>
@@ -99,7 +131,7 @@ export function AsignacionesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {asignaciones.map((a) => (
+              {ordenadas.map((a) => (
                 <tr key={a.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900">{a.nombre}</td>
                   <td className="px-4 py-3 text-gray-600">{fmtFecha(a.fechaAsignacion)}</td>

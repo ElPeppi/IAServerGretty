@@ -14,7 +14,8 @@
     "db:clear": "ts-node-dev src/infrastructure/database/clearDemoDocuments.ts",
     "db:import-docs": "ts-node-dev src/infrastructure/database/importExistingDocuments.ts",
     "db:cleanup-users": "ts-node-dev src/infrastructure/database/reassignAndCleanup.ts",
-    "db:passwordenc": "ts-node-dev src/infrastructure/database/backfillPasswordEnc.ts"
+    "db:passwordenc": "ts-node-dev src/infrastructure/database/backfillPasswordEnc.ts",
+    "db:fechas": "ts-node-dev src/infrastructure/database/backfillFechaAsignacion.ts"
   },
   "keywords": [],
   "author": "",

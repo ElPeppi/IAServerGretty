@@ -1,0 +1,56 @@
+# Infraestructura local de desarrollo: PostgreSQL (base de la app) + n8n.
+# El backend, el frontend y el motor siguen corriendo con `npm run dev` en el host;
+# esto solo levanta los servicios que antes vivían en Docker.
+#
+#   docker compose up -d          levantar
+#   docker compose ps             estado
+#   docker compose logs -f db     logs de postgres
+#   docker compose down           parar (los datos sobreviven en los volúmenes)
+#   docker compose down -v        parar y BORRAR los datos
+#
+# Credenciales alineadas con el fallback de `backend/prisma.config.ts`
+# (postgres:password@localhost:5432/legaldb) para que ambos coincidan.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: gretty-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: legaldb
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      # `prisma migrate` falla si arranca antes de que postgres acepte conexiones.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d legaldb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: gretty-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      GENERIC_TIMEZONE: America/Bogota
+      TZ: America/Bogota
+      # n8n rechaza las cookies de sesión sobre http salvo que se desactive.
+      N8N_SECURE_COOKIE: "false"
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      # n8n guarda sus workflows y credenciales en SQLite dentro de este volumen;
+      # no comparte base con la app.
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:
+  n8n_data:

@@ -6,6 +6,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../infrastructure/database/prisma/client';
 import { EngineService } from '../../infrastructure/services/EngineService';
 import { FileStorage } from '../../infrastructure/services/FileStorage';
+import { fechaDesdeNombre } from '../../infrastructure/services/fechaAsignacion';
 import { storage } from '../../infrastructure/storage';
 import {
   RAIZ_DEMANDAS, detectarBanco, detectarAnio, carpetaAsignaciones, carpetaGarantias,
@@ -22,25 +23,6 @@ const fileStorage = new FileStorage();
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
-const MESES: Record<string, number> = {
-  enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
-  julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
-};
-
-// "11 DE JUNIO DE 2026", "31 MARZO 2026", "(30 ENERO 2026)", "10 julio 2026" →
-// Date. El "de" es opcional (los Excel de la oficina lo omiten). null si no matchea.
-function fechaDesdeNombre(nombre: string): Date | null {
-  const m = nombre
-    .toLowerCase()
-    .match(/(\d{1,2})\s+(?:de\s+)?([a-záéíóúñ]+)\s+(?:de\s+)?(\d{4})/i);
-  if (!m) return null;
-  const dia = parseInt(m[1], 10);
-  const mes = MESES[m[2].normalize('NFD').replace(/[̀-ͯ]/g, '')];
-  const anio = parseInt(m[3], 10);
-  if (!mes || dia < 1 || dia > 31) return null;
-  return new Date(anio, mes - 1, dia);
-}
 
 function fechaDMY(d: Date): string {
   return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
