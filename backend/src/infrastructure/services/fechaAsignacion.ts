@@ -26,5 +26,18 @@ export function fechaDesdeNombre(nombre: string): Date | null {
   const mes = MESES[m[2].normalize('NFD').replace(/[̀-ͯ]/g, '')];
   const anio = parseInt(m[3], 10);
   if (!mes || dia < 1 || dia > 31) return null;
-  return new Date(anio, mes - 1, dia);
+  return fechaCalendario(anio, mes, dia);
+}
+
+/**
+ * Construye la fecha a MEDIODÍA UTC, no a medianoche local.
+ *
+ * `new Date(a, m, d)` crea medianoche en la zona del proceso: en el EC2 (UTC) eso
+ * son las 00:00Z, que un navegador en Colombia (UTC-5) pinta como las 19:00 del
+ * DÍA ANTERIOR. El mediodía UTC deja el mismo día calendario en cualquier zona
+ * entre UTC-11 y UTC+11, así que se ve igual en el servidor y en un portátil.
+ * También lo lee bien `fechaDMY`, que formatea con getDate() en hora local.
+ */
+export function fechaCalendario(anio: number, mes: number, dia: number): Date {
+  return new Date(Date.UTC(anio, mes - 1, dia, 12, 0, 0));
 }

@@ -6,7 +6,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../infrastructure/database/prisma/client';
 import { EngineService } from '../../infrastructure/services/EngineService';
 import { FileStorage } from '../../infrastructure/services/FileStorage';
-import { fechaDesdeNombre } from '../../infrastructure/services/fechaAsignacion';
+import { fechaDesdeNombre, fechaCalendario } from '../../infrastructure/services/fechaAsignacion';
 import { storage } from '../../infrastructure/storage';
 import {
   RAIZ_DEMANDAS, detectarBanco, detectarAnio, carpetaAsignaciones, carpetaGarantias,
@@ -22,6 +22,13 @@ import { AuthRequest } from '../middlewares/authMiddleware';
 
 const engineService = new EngineService();
 const fileStorage = new FileStorage();
+
+// Un escaneo de asignaciones tarda minutos (una lectura de Drive y un mapeo del
+// motor por Excel) y nginx corta la respuesta antes, así que el usuario tiende a
+// volver a pulsar el botón. Sin candado, cada clic lanza un escaneo paralelo que
+// repite TODO el trabajo y choca al insertar (unique en `nombre`). Basta una
+// bandera en memoria: solo hay un proceso del backend.
+let escaneoEnCurso = false;
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -363,11 +370,20 @@ export class AsignacionController {
 
   // POST /api/asignaciones/actualizar → escanea ASIGNACIONES_DIR y agrega las que falten.
   async actualizar(req: AuthRequest, res: Response): Promise<void> {
+    // Solo libera el candado quien lo tomó: si no, la petición que se va con 409
+    // apagaría la bandera del escaneo que sigue corriendo.
+    let candadoPropio = false;
     try {
       if (!storage.enabled) {
         res.status(400).json({ message: 'El almacenamiento no está configurado (revisa STORAGE_DRIVER y las credenciales).' });
         return;
       }
+      if (escaneoEnCurso) {
+        res.status(409).json({ message: 'Ya hay un escaneo en curso. Espera a que termine.' });
+        return;
+      }
+      escaneoEnCurso = true;
+      candadoPropio = true;
       // Recorre el árbol de la oficina: DEMANDAS/{banco}/ASIGNACION/{año}/*.xlsx
       // (o *.xlsx sueltos dentro de ASIGNACION). El BANCO y el AÑO salen de la RUTA
       // misma —no del contenido—: la carpeta donde alguien dejó el Excel dice a qué
@@ -384,7 +400,7 @@ export class AsignacionController {
           const filas = parseFilas(buffer);
           if (!filas.length) continue;
           // Año: del nombre; si no, de la carpeta {año} donde está el archivo.
-          const fecha = fechaDesdeNombre(it.nombre) || (it.anio ? new Date(Number(it.anio), 0, 1) : null);
+          const fecha = fechaDesdeNombre(it.nombre) || (it.anio ? fechaCalendario(Number(it.anio), 1, 1) : null);
           // Mismo mapeo del motor que en "subir": el drop manual trae los mismos
           // formatos cambiantes. El motor cachea por firma de encabezados, así que
           // un lote de Excel del mismo formato solo paga el mapeo una vez.
@@ -405,6 +421,12 @@ export class AsignacionController {
           nuevas.push(it.nombre);
           existentes.add(it.nombre);
         } catch (e) {
+          // P2002 = ya existe una asignación con ese nombre. Con el candado no
+          // debería pasar, pero si pasa NO es un error: ya está cacheada.
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+            existentes.add(it.nombre);
+            continue;
+          }
           console.error('[asignaciones/actualizar]', it.relPath, e instanceof Error ? e.message : e);
         }
       }
@@ -412,6 +434,8 @@ export class AsignacionController {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al actualizar asignaciones';
       res.status(500).json({ message });
+    } finally {
+      if (candadoPropio) escaneoEnCurso = false;
     }
   }
 

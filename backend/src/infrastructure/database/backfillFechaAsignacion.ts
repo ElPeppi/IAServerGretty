@@ -14,7 +14,9 @@ import 'dotenv/config';
 import { prisma } from './prisma/client';
 import { fechaDesdeNombre } from '../services/fechaAsignacion';
 
-const fmt = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : '—');
+// Incluye la HORA a propósito: al normalizar a mediodía UTC, muchas filas cambian
+// solo en la hora y un formato de solo fecha haría parecer que no cambia nada.
+const fmt = (d: Date | null) => (d ? d.toISOString().slice(0, 16).replace('T', ' ') + 'Z' : '—');
 
 async function main() {
   const aplicar = process.argv.includes('--apply');
