@@ -33,6 +33,11 @@ let escaneoEnCurso = false;
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
+/** Cédula reducida a dígitos, para comparar el Excel contra lo que guardó el motor. */
+function soloDigitos(v: string | null | undefined): string {
+  return (v ?? '').replace(/\D/g, '');
+}
+
 function fechaDMY(d: Date): string {
   return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 }
@@ -345,7 +350,17 @@ export class AsignacionController {
         return;
       }
       const filas = (asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [];
-      const personas = personasDeFilas(filas, mapeoDe(asignacion));
+      const base = personasDeFilas(filas, mapeoDe(asignacion));
+
+      // Quién tiene YA su demanda: una consulta, no una por persona. Se compara por
+      // dígitos porque la cédula del Excel y la que devuelve el motor pueden venir
+      // con puntos o ceros a la izquierda.
+      const docs = await prisma.document.findMany({
+        where: { asignacionId: id },
+        select: { clientCedula: true },
+      });
+      const yaGeneradas = new Set(docs.map((d) => soloDigitos(d.clientCedula)).filter(Boolean));
+      const personas = base.map((p) => ({ ...p, generada: yaGeneradas.has(soloDigitos(p.cedula)) }));
 
       // ?insumos=1 → además, qué tiene YA cada persona en el servidor (SAC y
       // pagaré). Es opcional porque cuesta una consulta por cliente: la lista
@@ -1073,6 +1088,11 @@ export class AsignacionController {
       correoPoderUrl: a.correoPoderUrl ?? null,
       poderesCacheados: a._count?.poderes ?? 0,
       demandas: a._count?.documentos ?? 0,
+      // Pendientes = clientes del Excel que aún NO tienen demanda. Se DERIVA de los
+      // Document existentes en vez de llevar un contador: `persistirDemanda` solo
+      // corre cuando la generación salió bien (y deduplica por cédula), así que un
+      // fallo no descuenta nada y el número no se puede desincronizar.
+      demandasPendientes: Math.max(0, a.totalFilas - (a._count?.documentos ?? 0)),
       createdAt: a.createdAt,
     };
   }

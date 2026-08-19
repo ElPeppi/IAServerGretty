@@ -127,6 +127,7 @@ export function AsignacionesPage() {
                 <th className="text-center font-medium px-4 py-3">Clientes</th>
                 <th className="text-center font-medium px-4 py-3">Poder</th>
                 <th className="text-center font-medium px-4 py-3">Demandas</th>
+                <th className="text-center font-medium px-4 py-3">Pendientes</th>
                 <th className="text-right font-medium px-4 py-3">Acciones</th>
               </tr>
             </thead>
@@ -148,6 +149,15 @@ export function AsignacionesPage() {
                     ) : <span className="text-gray-400">—</span>}
                   </td>
                   <td className="px-4 py-3 text-center text-gray-600">{a.demandas}</td>
+                  <td className="px-4 py-3 text-center">
+                    {a.demandasPendientes === 0 ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">✓ Completa</span>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium">
+                        {a.demandasPendientes}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       <button onClick={() => setPoderTarget(a)}

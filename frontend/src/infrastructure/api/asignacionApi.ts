@@ -12,6 +12,7 @@ export interface AsignacionResumen {
   correoPoderUrl: string | null; // PDF del correo del banco guardado para el ANEXO 1
   poderesCacheados: number;
   demandas: number;
+  demandasPendientes: number; // clientes del Excel que aún no tienen demanda
   createdAt: string;
 }
 
@@ -37,6 +38,7 @@ export interface AsignacionPersona {
   cedula: string;
   nombre: string;
   tipo: string; // etiqueta normalizada: EJECUTIVO SINGULAR / RESTITUCIÓN / TRÁMITE PAGO DIRECTO / SIN PROCESO
+  generada: boolean; // ya tiene demanda en esta asignación
 }
 
 export const asignacionApi = {

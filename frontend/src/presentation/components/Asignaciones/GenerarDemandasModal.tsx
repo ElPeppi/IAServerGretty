@@ -68,12 +68,16 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
   }, [personas]);
 
   const personasTipo = useMemo(() => personas.filter((p) => p.tipo === tipo), [personas, tipo]);
+  // Las que ya tienen demanda quedan fuera de todo: ni se marcan ni se envían.
+  const pendientesTipo = useMemo(() => personasTipo.filter((p) => !p.generada), [personasTipo]);
   const generable = tipo === TIPO_GENERABLE;
 
   // Al cambiar de tipo, limpiar la selección (son personas distintas).
   useEffect(() => { setSeleccion(new Set()); }, [tipo]);
 
-  const cedulasAEnviar = seleccion.size ? [...seleccion] : personasTipo.map((p) => p.cedula);
+  // Sin marcar = todas las PENDIENTES, no todas. Antes esto reprocesaba las ya
+  // generadas, que es trabajo caro y de riesgo (cada una llama al motor).
+  const cedulasAEnviar = seleccion.size ? [...seleccion] : pendientesTipo.map((p) => p.cedula);
 
   const togglePersona = (cedula: string) => {
     setSeleccion((prev) => {
@@ -86,7 +90,12 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!generable) { setError('El motor solo genera "Ejecutivo singular" por ahora.'); return; }
-    if (!cedulasAEnviar.length) { setError('No hay personas de este tipo.'); return; }
+    if (!cedulasAEnviar.length) {
+      setError(personasTipo.length
+        ? 'No queda ninguna demanda pendiente de este tipo.'
+        : 'No hay personas de este tipo.');
+      return;
+    }
     setEnviando(true);
     setError(null);
     try {
@@ -163,23 +172,40 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
                 <p className="p-3 text-sm text-gray-400">No hay personas de este tipo.</p>
               ) : (
                 personasTipo.map((p) => (
-                  <label key={p.cedula} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50">
-                    <input type="checkbox" checked={seleccion.has(p.cedula)} onChange={() => togglePersona(p.cedula)}
-                      disabled={enviando}
-                      className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500" />
-                    <span className="text-sm text-gray-700 truncate">
+                  <label key={p.cedula}
+                    className={`flex items-center gap-3 px-3 py-2 ${p.generada ? 'cursor-default bg-gray-50/60' : 'cursor-pointer hover:bg-gray-50'}`}>
+                    <input type="checkbox" checked={!p.generada && seleccion.has(p.cedula)}
+                      onChange={() => togglePersona(p.cedula)}
+                      disabled={enviando || p.generada}
+                      className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-50" />
+                    <span className={`text-sm truncate flex-1 ${p.generada ? 'text-gray-400' : 'text-gray-700'}`}>
                       {p.nombre || <span className="text-gray-400">(sin nombre)</span>}
                       <span className="text-gray-400"> — {p.cedula}</span>
                     </span>
+                    {p.generada ? (
+                      <span className="shrink-0 text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                        Generada
+                      </span>
+                    ) : (
+                      <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                        Pendiente
+                      </span>
+                    )}
                   </label>
                 ))
               )}
             </div>
             {!cargando && personasTipo.length > 0 && (
-              <p className="text-xs text-gray-400 mt-1">
-                {seleccion.size
-                  ? `${seleccion.size} de ${personasTipo.length} seleccionada${seleccion.size !== 1 ? 's' : ''}`
-                  : `Se generarán las ${personasTipo.length} demandas de este tipo`}
+              <p className="text-xs mt-1 text-gray-400">
+                {pendientesTipo.length === 0 ? (
+                  <span className="text-emerald-600 font-medium">
+                    Todas las demandas de este tipo ya están generadas.
+                  </span>
+                ) : seleccion.size ? (
+                  `${seleccion.size} de ${pendientesTipo.length} pendiente${pendientesTipo.length !== 1 ? 's' : ''} seleccionada${seleccion.size !== 1 ? 's' : ''}`
+                ) : (
+                  `Se generarán las ${pendientesTipo.length} demanda${pendientesTipo.length !== 1 ? 's' : ''} pendiente${pendientesTipo.length !== 1 ? 's' : ''} de este tipo`
+                )}
               </p>
             )}
           </div>
