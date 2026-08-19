@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useAsignaciones } from '../../application/hooks/useAsignaciones';
+import { useRefreshOnNotification } from '../../application/context/NotificationContext';
 import { asignacionApi, type AsignacionResumen } from '../../infrastructure/api/asignacionApi';
 import { SubirAsignacionModal } from '../components/Asignaciones/SubirAsignacionModal';
 import { GenerarPoderesModal } from '../components/Asignaciones/GenerarPoderesModal';
@@ -14,6 +15,12 @@ function fmtFecha(s: string | null): string {
 
 export function AsignacionesPage() {
   const { asignaciones, isLoading, error, refetch } = useAsignaciones();
+
+  // La generación corre en segundo plano y responde 202 al instante, así que la
+  // tabla se quedaría congelada mostrando pendientes que ya se generaron. El
+  // backend emite una notificación por demanda lista: cada una recarga la lista,
+  // y el contador baja solo mientras el lote avanza.
+  useRefreshOnNotification(refetch);
   const [showSubir, setShowSubir] = useState(false);
   const [poderTarget, setPoderTarget] = useState<AsignacionResumen | null>(null);   // Generar poderes
   const [demandasTarget, setDemandasTarget] = useState<AsignacionResumen | null>(null); // modal generar demandas

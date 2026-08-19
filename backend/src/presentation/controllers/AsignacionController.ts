@@ -30,6 +30,12 @@ const fileStorage = new FileStorage();
 // bandera en memoria: solo hay un proceso del backend.
 let escaneoEnCurso = false;
 
+// Generar un lote tarda minutos y el endpoint responde 202 de inmediato, así que
+// nada impide que el usuario vuelva a pulsar y arranque un segundo lote sobre las
+// MISMAS personas: trabajo duplicado, sesiones del SAC compitiendo y dos escrituras
+// sobre el mismo Document. Se guarda por asignación.
+const generacionEnCurso = new Set<string>();
+
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -670,6 +676,13 @@ export class AsignacionController {
         res.status(409).json({ codigo: 'SIN_PODER', message: 'No hay poder enlazado a esta asignación.' });
         return;
       }
+      if (generacionEnCurso.has(id)) {
+        res.status(409).json({
+          codigo: 'YA_EN_CURSO',
+          message: 'Ya se están generando las demandas de esta asignación. Espera a que termine.',
+        });
+        return;
+      }
       // Excel ORIGINAL (2 hojas) — el caché solo guarda Hoja1 y el motor necesita Hoja2.
       const excel = await this.leerExcelOriginal(asignacion.excelUrl);
       if (!excel) {
@@ -739,6 +752,10 @@ export class AsignacionController {
         meta: { asignacionId: asignacion.id },
       });
 
+      generacionEnCurso.add(asignacion.id);
+      // Un void sin catch deja una promesa rechazada sin manejar, y eso MATA el
+      // proceso en Node moderno: un error fuera del bucle (leer la asignación,
+      // detectar el banco) se llevaría por delante el backend entero.
       void this.generarDemandasBg({
         asignacionId: asignacion.id,
         nombre: asignacion.nombre,
@@ -748,7 +765,17 @@ export class AsignacionController {
         fechaAsignacion: asignacion.fechaAsignacion,
         lawyerId: req.user!.userId,
         soloCedulas: soloCedulas.length ? soloCedulas : undefined,
-      });
+      })
+        .catch((e: unknown) => {
+          const msg = e instanceof Error ? e.message : 'error desconocido';
+          console.error('[asignaciones/demandas] el lote se interrumpió:', msg);
+          notificationHub.broadcast({
+            type: 'generacion', level: 'error', title: 'La generación se interrumpió',
+            message: `"${asignacion.nombre}": ${msg}`,
+            meta: { asignacionId: asignacion.id },
+          });
+        })
+        .finally(() => { generacionEnCurso.delete(asignacion.id); });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al generar demandas';
       res.status(500).json({ message });
