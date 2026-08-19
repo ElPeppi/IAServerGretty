@@ -33,6 +33,26 @@ function docsRoot(): string {
   return process.env.DOCS_DIR || '';
 }
 
+// Un DOCS_DIR vacío deshabilita EN SILENCIO la sincronización con Drive, y el
+// síntoma aparece muy lejos de la causa: el motor no encuentra el pagaré en la
+// carpeta del cliente y la demanda se rechaza como si faltara un documento del
+// expediente. Se avisa UNA vez por causa (no por cédula) para no inundar el log.
+const yaAvisado = new Set<string>();
+function raizUtilizable(operacion: string, exigirQueExista: boolean): string | null {
+  const root = docsRoot();
+  let problema: string | null = null;
+  if (!storage.enabled) problema = 'el storage no está configurado (revisa STORAGE_DRIVER y las credenciales)';
+  else if (!root) problema = 'DOCS_DIR está vacío';
+  else if (exigirQueExista && !fs.existsSync(root)) problema = `DOCS_DIR apunta a "${root}", que no existe`;
+  if (!problema) return root;
+  const clave = `${operacion}:${problema}`;
+  if (!yaAvisado.has(clave)) {
+    yaAvisado.add(clave);
+    console.error(`[sacSync] ${operacion} DESHABILITADA: ${problema}.`);
+  }
+  return null;
+}
+
 // Carpetas del disco cuyo nombre es la cédula o empieza por "{cedula}_".
 function carpetasLocalesDeCedula(root: string, cedula: string): string[] {
   const ced = String(cedula);
@@ -54,8 +74,8 @@ export async function subirSacDeCedula(
   banco: string = BANCO_DEFAULT,
   proceso: Proceso = 'singular',
 ): Promise<number> {
-  const root = docsRoot();
-  if (!storage.enabled || !root || !fs.existsSync(root)) return 0;
+  const root = raizUtilizable('subida del SAC a Drive', true);
+  if (!root) return 0;
   let subidos = 0;
   // Destino: la carpeta que YA tenga el cliente en Drive (aunque se llame
   // "1143152167-AGOSTO 2026" o "CC 9306310"), no una nueva con el nombre local.
@@ -107,8 +127,8 @@ export async function hidratarCedula(
   banco: string = BANCO_DEFAULT,
   proceso: Proceso = 'singular',
 ): Promise<number> {
-  const root = docsRoot();
-  if (!storage.enabled || !root) return 0;
+  const root = raizUtilizable('hidratación desde Drive', false);
+  if (!root) return 0;
   const ced = String(cedula).replace(/\D/g, '');
   let bajados = 0;
   try {

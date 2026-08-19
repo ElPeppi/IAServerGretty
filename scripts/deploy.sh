@@ -16,13 +16,32 @@ echo "────────────────────────�
 echo "▸ git pull"
 git pull --ff-only
 
-# ── Respaldo de la DB antes de migrar (por si acaso) ────────────────────────
+# ── Respaldo de la DB antes de migrar ───────────────────────────────────────
+# DATABASE_URL no está en el entorno cuando esto lo lanza el runner de GitHub
+# Actions (ni en una shell recién abierta): se saca del .env del backend. Sin
+# ella, pg_dump caía a una URL sin contraseña, se quedaba esperando input y el
+# respaldo se perdía JUSTO antes de aplicar migraciones. Se extrae solo esa
+# variable en vez de hacer `source` del .env entero: ahí hay secretos y valores
+# con espacios que la shell interpretaría.
+if [ -z "${DATABASE_URL:-}" ] && [ -f "$ROOT/backend/.env" ]; then
+  DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ROOT/backend/.env" | head -1 | cut -d= -f2- | tr -d '"')"
+  export DATABASE_URL
+fi
+
 if command -v pg_dump >/dev/null 2>&1; then
   BK="/var/backups/gretty"
-  mkdir -p "$BK"
-  echo "▸ backup DB → $BK"
-  pg_dump "${DATABASE_URL:-postgresql://postgres@localhost:5432/legaldb}" \
-    > "$BK/legaldb-$(date +%Y%m%d-%H%M%S).sql" || echo "  (backup omitido)"
+  # `mkdir` sin guarda + `set -e` abortaba el deploy entero si faltaban permisos.
+  if mkdir -p "$BK" 2>/dev/null; then
+    echo "▸ backup DB → $BK"
+    if pg_dump "${DATABASE_URL:-postgresql://postgres@localhost:5432/legaldb}" \
+        > "$BK/legaldb-$(date +%Y%m%d-%H%M%S).sql"; then
+      echo "  backup OK"
+    else
+      echo "  ⚠ BACKUP FALLIDO — se sigue, pero las migraciones se aplicarán sin red"
+    fi
+  else
+    echo "  ⚠ sin permisos de escritura en $BK — backup omitido"
+  fi
 fi
 
 # ── Backend ─────────────────────────────────────────────────────────────────
