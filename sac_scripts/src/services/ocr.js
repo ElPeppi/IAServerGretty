@@ -1,14 +1,22 @@
 /**
- * services/ocr.js — OCR de PDFs escaneados (sin texto) con tesseract.js.
+ * services/ocr.js — OCR de PDFs escaneados (sin texto).
  *
  * Rasteriza cada página con pdf-to-img (pdfjs + canvas, puro Node) y la pasa por
- * tesseract.js en español. Devuelve el texto por página + un extractor de campos
- * típicos de pagaré / carta de instrucciones.
+ * el motor de OCR configurado. Devuelve el texto por página + un extractor de
+ * campos típicos de pagaré / carta de instrucciones.
+ *
+ * DOS MOTORES, misma salida (ver OCR_MOTOR en src/config.js):
+ *   tesseract → local y gratis, pero SOLO lee tipografía, no caligrafía.
+ *   vision    → Google Cloud Vision; sí lee manuscrito, se paga por página.
+ * Vision cae a Tesseract si falla, para no tumbar la generación por un
+ * problema de red o de facturación. El rasterizado es común a los dos.
  *
  * Nota: tesseract.js descarga el idioma 'spa' la primera vez (cachea). Para
  * producción offline se puede fijar langPath a una copia local de spa.traineddata.
  */
 'use strict';
+
+const config = require('../config');
 
 let Tesseract = null;
 let _worker = null;
@@ -39,13 +47,33 @@ async function rasterizar(buffer, scale) {
 async function ocrPdf(buffer, opts = {}) {
   const { lang = 'spa', scale = 3, maxPages = 12 } = opts;
   const imgs = await rasterizar(buffer, scale);
+  const aLeer = imgs.slice(0, maxPages);
+
+  if (config.OCR_MOTOR === 'vision') {
+    try {
+      // require aquí dentro: con OCR_MOTOR=tesseract el motor arranca aunque
+      // no esté instalada google-auth-library.
+      const pages = await require('./visionOcr').ocrImagenes(aLeer);
+      return armar(imgs.length, pages, 'vision');
+    } catch (e) {
+      // Se sigue con Tesseract A PROPÓSITO: una demanda con el número leído
+      // regular es recuperable; una generación caída a mitad, no. El aviso
+      // queda en el log del motor para que no pase inadvertido.
+      console.warn(`[OCR] Vision falló, se usa Tesseract: ${e.message}`);
+    }
+  }
+
   const worker = await getWorker(lang);
   const pages = [];
-  for (let i = 0; i < imgs.length && i < maxPages; i++) {
-    const { data } = await worker.recognize(imgs[i]);
+  for (let i = 0; i < aLeer.length; i++) {
+    const { data } = await worker.recognize(aLeer[i]);
     pages.push({ page: i + 1, confidence: Math.round(data.confidence || 0), text: (data.text || '').trim() });
   }
-  return { numPages: imgs.length, pages, text: pages.map((p) => p.text).join('\n\n') };
+  return armar(imgs.length, pages, 'tesseract');
+}
+
+function armar(numPages, pages, motor) {
+  return { numPages, pages, motor, text: pages.map((p) => p.text).join('\n\n') };
 }
 
 // ─── Fechas ─────────────────────────────────────────────────────────────────

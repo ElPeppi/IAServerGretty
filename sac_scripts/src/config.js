@@ -95,6 +95,17 @@ const SAC_ZIP_PASS = process.env.SAC_ZIP_PASS || null;
 const NOTIFY_URL    = process.env.SAC_NOTIFY_URL    || null; // p.ej. http://localhost:3001/api/notifications/engine
 const NOTIFY_SECRET = process.env.SAC_NOTIFY_SECRET || null; // = ENGINE_NOTIFY_SECRET del backend
 
+// ─── OCR del pagaré escaneado ───────────────────────────────────────
+
+// Motor de OCR: 'tesseract' (local, gratis, NO lee caligrafía) o 'vision'
+// (Google Cloud, de pago por página, sí lee manuscrito). Vision cae a Tesseract
+// si falla, para que un problema de red o de facturación no pare la generación.
+const OCR_MOTOR = (process.env.OCR_MOTOR || 'tesseract').toLowerCase();
+
+// Clave JSON de la cuenta de servicio de Vision. Es OTRA cuenta, distinta de la
+// de Drive del backend: sin delegación de dominio y sin acceso a los documentos.
+const VISION_SA_KEY = process.env.VISION_SA_KEY || '';
+
 // ─── Worker Puppeteer (proceso hijo) ─────────────────────────────────────────
 
 const SCRIPT_PUPPETEER = path.join(RAIZ, 'sac_puppeteer.js');
@@ -124,5 +135,7 @@ module.exports = {
   SAC_ZIP_PASS,
   NOTIFY_URL,
   NOTIFY_SECRET,
+  OCR_MOTOR,
+  VISION_SA_KEY,
   SCRIPT_PUPPETEER,
 };
