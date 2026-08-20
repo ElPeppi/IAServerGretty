@@ -262,6 +262,9 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
     fechaCertificacion: '', certificadoValido: false, tienePdf: false,
     // tipoPagare: 'DECEVAL' (con texto) | 'FINANDINA' (escaneado) | '' (sin pagaré usable)
     tipoPagare: '', nombre: '',
+    // true si `numeroPagare` lo leyó el OCR de una imagen (no de una capa de
+    // texto): es fiable pero no infalible, así que la demanda lo avisa.
+    numeroPagareOcr: false,
     // ¿El pagaré está diligenciado? Los certificados DECEVAL siempre lo están;
     // para los escaneados (FINANDINA) lo decide el OCR (un formato en blanco → false).
     diligenciado: true,
@@ -380,7 +383,13 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
     result.tipoPagare = 'DECEVAL';
   } else if (escaneadoPath) {
     // Pagaré escaneado (solo BANCO FINANDINA): se extraen por OCR los MISMOS datos
-    // que del DECEVAL menos el número de pagaré (ese vendrá de la OBLIGACION del Excel).
+    // que del DECEVAL, INCLUIDO el número impreso en la línea "PAGARÉ No.".
+    //
+    // Ese número es el del TÍTULO VALOR, que es lo que debe citar la demanda; la
+    // OBLIGACION del Excel identifica la deuda que el pagaré respalda, no el
+    // pagaré. Antes se descartaba y la demanda citaba la obligación como si fuera
+    // el pagaré. Se marca `numeroPagareOcr` para que quien revise sepa que salió
+    // de una lectura de imagen y pueda corregirlo a mano.
     result.tipoPagare = 'FINANDINA';
     try {
       const { ocrPdf, extraerCamposPagare } = require('../ocr');
@@ -389,6 +398,7 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
       if (!result.direccion && c.direccion)            result.direccion = c.direccion;
       if (!result.fechaSuscripcion && c.fechaCorta)    result.fechaSuscripcion = c.fechaCorta;
       if (c.nombre)                                    result.nombre = c.nombre;
+      if (c.numeroPagare) { result.numeroPagare = c.numeroPagare; result.numeroPagareOcr = true; }
 
       // Señal ADICIONAL de "diligenciado" desde la CAPA DE TEXTO del PDF.
       // Muchos pagarés Finandina son híbridos: imagen escaneada (acuse de recibo,

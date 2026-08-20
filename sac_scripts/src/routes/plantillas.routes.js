@@ -331,12 +331,18 @@ router.post('/insumos/:destino', upload.single('archivo'), (req, res) => {
     }
     const buf = leerYValidar(temp, tipo);
 
-    // Si el archivo pertenece al catálogo de plantillas, se respalda antes de
-    // pisarlo: una plantilla que llega mal desde Drive se puede deshacer.
+    // Si el archivo pertenece al catálogo de plantillas se respalda antes de
+    // pisarlo (una plantilla que llegue mal desde Drive se puede deshacer) y se
+    // escribe en SU ruta exacta de config, no en la carpeta genérica del destino:
+    // nada obliga a que todas las plantillas vivan en la misma carpeta.
     const clave = Object.keys(CATALOGO).find((c) => path.basename(CATALOGO[c].ruta()) === nombre);
-    if (destino === 'plantillas' && clave) respaldar(clave);
+    let rutaFinal = path.join(d.dir(), nombre);
+    if (destino === 'plantillas' && clave) {
+      respaldar(clave);
+      rutaFinal = CATALOGO[clave].ruta();
+    }
 
-    escribirAtomico(path.join(d.dir(), nombre), buf);
+    escribirAtomico(rutaFinal, buf);
     // Sin esto, el certificado recién repuesto no se usaría: anexos.js cachea qué
     // PDF es el "más reciente" de cada carpeta.
     invalidarCompartidos();

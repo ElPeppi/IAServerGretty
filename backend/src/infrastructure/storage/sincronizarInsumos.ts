@@ -29,20 +29,27 @@ import { InsumoDestino } from '../../application/services/IEngineService';
 const engine = new EngineService();
 
 /**
- * Destino declarado por el motor → carpeta de Drive de donde se surte.
- * Las rutas replican el árbol de la oficina (ver rutas.ts).
+ * Destino declarado por el motor → carpetas de Drive de donde se surte, EN ORDEN
+ * de preferencia. Las rutas replican el árbol de la oficina (ver rutas.ts).
+ *
+ * Las plantillas salen de DOS sitios: cada proceso tiene su propio árbol y la
+ * oficina guarda ahí sus plantillas. El poder del trámite de pago directo vive
+ * en GARANTIA MOBILIARIAS/PLANTILLAS, no junto a las del ejecutivo singular.
  */
-function origenEnDrive(destino: string): string | null {
+function origenesEnDrive(destino: string): string[] {
   const banco = BANCO_DEFAULT;
   switch (destino) {
     case 'plantillas':
-      return unir(RAIZ_DEMANDAS, banco, CARPETA_PROCESO.singular, 'PLANTILLAS');
+      return [
+        unir(RAIZ_DEMANDAS, banco, CARPETA_PROCESO.singular, 'PLANTILLAS'),
+        unir(RAIZ_DEMANDAS, banco, CARPETA_PROCESO.pago_directo, 'PLANTILLAS'),
+      ];
     case 'anexos_demandas':
-      return RAIZ_DEMANDAS;
+      return [RAIZ_DEMANDAS];
     case 'anexos_finandina':
-      return unir(RAIZ_DEMANDAS, banco);
+      return [unir(RAIZ_DEMANDAS, banco)];
     default:
-      return null; // destino nuevo en el motor que este backend aún no sabe surtir
+      return []; // destino nuevo en el motor que este backend aún no sabe surtir
   }
 }
 
@@ -112,20 +119,29 @@ async function recolectar(res: ResultadoSync): Promise<void> {
   }
 
   for (const d of destinos) {
-    const origen = origenEnDrive(d.destino);
-    if (!origen) continue;
-    try {
-      await sincronizarDestino(d, origen, res);
-    } catch (e) {
-      res.errores.push(`${d.destino}: ${mensaje(e)}`);
+    // Hash de lo que YA tiene el servidor, por nombre de archivo.
+    const local = new Map(d.archivos.map((a) => [a.archivo, a.hash]));
+    // Un mismo nombre puede existir en varias carpetas de origen; gana la primera.
+    const yaVisto = new Set<string>();
+
+    for (const origen of origenesEnDrive(d.destino)) {
+      try {
+        await sincronizarDestino(d, origen, local, yaVisto, res);
+      } catch (e) {
+        res.errores.push(`${d.destino} ← ${origen}: ${mensaje(e)}`);
+      }
     }
   }
 }
 
-async function sincronizarDestino(d: InsumoDestino, origen: string, res: ResultadoSync): Promise<void> {
+async function sincronizarDestino(
+  d: InsumoDestino,
+  origen: string,
+  local: Map<string, string>,
+  yaVisto: Set<string>,
+  res: ResultadoSync,
+): Promise<void> {
   const remotos = await storage.listDetallado(origen);
-  // Hash de lo que YA tiene el servidor, por nombre de archivo.
-  const local = new Map(d.archivos.map((a) => [a.archivo, a.hash]));
 
   for (const r of remotos) {
     // `requeridos` no nulo = carpeta de nombres fijos (plantillas): todo lo demás
@@ -134,6 +150,9 @@ async function sincronizarDestino(d: InsumoDestino, origen: string, res: Resulta
     // Sin md5 es un formato nativo de Google (Doc/Sheet), no un archivo real: no
     // se puede comparar ni sirve como insumo.
     if (!r.md5) continue;
+    if (yaVisto.has(r.nombre)) continue;
+    yaVisto.add(r.nombre);
+
     res.revisados++;
     if (local.get(r.nombre) === r.md5) { res.omitidos++; continue; }
 

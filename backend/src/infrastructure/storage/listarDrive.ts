@@ -33,10 +33,43 @@ async function listar(rel: string): Promise<number> {
   return archivos.length + carpetas.length;
 }
 
+/**
+ * Dice QUÉ falta, sin imprimir valores (hay una clave de servicio de por medio).
+ *
+ * El caso típico en el servidor: el backend funciona porque pm2 le pasó las
+ * variables al arrancar, pero no están en el .env — así que un script suelto
+ * como éste arranca sin ellas. Ver también DOCS_DIR y BASE_URL, que ya dieron
+ * este mismo susto.
+ */
+function porQueNoEstaConfigurado(): string[] {
+  const driver = (process.env.STORAGE_DRIVER || 'nas').toLowerCase();
+  const falta = (k: string) => !process.env[k];
+  if (driver === 'drive') {
+    if ((process.env.DRIVE_AUTH || 'delegation').toLowerCase() === 'oauth') {
+      return ['DRIVE_OAUTH_CRED', 'DRIVE_OAUTH_TOKEN'].filter(falta);
+    }
+    const req = ['DRIVE_SA_KEY', 'DRIVE_IMPERSONATE_USER'].filter(falta);
+    if (!process.env.DRIVE_SHARED_DRIVE_ID && !process.env.DRIVE_ROOT_FOLDER_ID) {
+      req.push('DRIVE_SHARED_DRIVE_ID o DRIVE_ROOT_FOLDER_ID');
+    }
+    return req;
+  }
+  return falta('DOCS_DIR') ? ['DOCS_DIR'] : [];
+}
+
 async function main() {
   const rel = (process.argv[2] ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   if (!storage.enabled) {
-    console.error('El almacenamiento no está configurado (revisa STORAGE_DRIVER y sus variables).');
+    const driver = (process.env.STORAGE_DRIVER || 'nas').toLowerCase();
+    console.error(`El almacenamiento no está configurado. STORAGE_DRIVER=${driver}`);
+    const faltan = porQueNoEstaConfigurado();
+    console.error(faltan.length
+      ? `Faltan estas variables: ${faltan.join(', ')}`
+      : 'Las variables parecen estar; revisa que apunten a algo válido.');
+    console.error('\nSi el backend SÍ funciona, es que pm2 las tiene y el .env no.');
+    console.error('Para heredar el entorno del proceso vivo:');
+    console.error('  export $(tr \'\\0\' \'\\n\' < /proc/$(pgrep -f gretty-backend | head -1)/environ \\');
+    console.error('    | grep -E \'^(STORAGE_DRIVER|DRIVE_|DOCS_DIR)=\' | xargs -d \'\\n\')');
     process.exit(1);
   }
 

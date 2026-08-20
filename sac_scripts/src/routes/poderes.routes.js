@@ -173,7 +173,11 @@ router.post('/generar-poderes', async (req, res) => {
         }
         try {
           const deceval = await leerDatosDeDeceval(cedula, outBase);
-          if (deceval.certificadoValido && deceval.numeroPagare) {
+          // Sirve tanto el nº del certificado DECEVAL como el impreso que lee el
+          // OCR del pagaré escaneado: en ambos casos es el número del TÍTULO, que
+          // es lo que cita el poder. La OBLIGACION queda solo como último recurso,
+          // igual que en la demanda (ver services/singular/index.js).
+          if (deceval.numeroPagare) {
             numeroPagare = String(deceval.numeroPagare).trim();
             pagareDesdeDocs = true;
           }
@@ -182,8 +186,8 @@ router.post('/generar-poderes', async (req, res) => {
         }
       }
 
-      // El nº capturado a mano gana a todo: en el pagaré escaneado el OCR no lee
-      // el número impreso, así que sin esto el poder llevaría el de la obligación.
+      // El nº capturado a mano gana a todo: el OCR del pagaré escaneado acierta
+      // casi siempre, pero es una lectura de imagen y hay que poder corregirla.
       const numManual = String(correcciones[cedula]?.numeroPagare ?? '').trim();
       if (numManual && !esPagoDirecto) {
         numeroPagare = numManual;

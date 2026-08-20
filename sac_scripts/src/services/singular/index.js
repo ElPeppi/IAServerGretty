@@ -199,9 +199,11 @@ async function procesarSingular(excelBuffer, options = {}) {
             omitidos.push({ cedula, nombre: cliente.nombre || '', motivo });
             continue;
           }
-          const fuenteNum = manual.numeroPagare ? `capturado a mano: ${manual.numeroPagare}` : 'OBLIGACION del Excel';
+          const fuenteNum = manual.numeroPagare ? `capturado a mano: ${manual.numeroPagare}`
+            : decevalPdf.numeroPagare ? `leído por OCR: ${decevalPdf.numeroPagare}`
+            : 'OBLIGACION del Excel (sin nº legible en el documento)';
           console.error(`[SINGULAR] ▣ ${cedula}: pagaré escaneado → demanda tipo FINANDINA (pagaré = ${fuenteNum})`);
-          notas.push({ campo: 'pagare', nivel: 'info', mensaje: `Pagaré escaneado (FINANDINA) diligenciado: datos por OCR; nº de pagaré ${manual.numeroPagare ? 'capturado a mano' : 'tomado de la OBLIGACION del Excel'}` });
+          notas.push({ campo: 'pagare', nivel: 'info', mensaje: `Pagaré escaneado (FINANDINA) diligenciado: datos por OCR; nº de pagaré ${fuenteNum}` });
         }
 
         // ── Enriquecer nombre desde SAC PDF ────────────────────────────
@@ -368,12 +370,16 @@ async function procesarSingular(excelBuffer, options = {}) {
         }
 
         // 2g. Construir fila principal + extras (vehículos adicionales → Hoja2)
-        // Número de pagaré: capturado a mano → manda; DECEVAL → del certificado;
-        // FINANDINA → OBLIGACION del Excel (que NO es el nº impreso en el pagaré,
-        // solo el más cercano que tenemos cuando el OCR no lo lee).
+        // Número de pagaré, por orden de confianza:
+        //   1. capturado a mano en la web  → manda siempre
+        //   2. el del DOCUMENTO: del certificado DECEVAL, o el impreso en la línea
+        //      "PAGARÉ No." que lee el OCR del escaneado
+        //   3. la OBLIGACION del Excel, solo si no hay número en el documento
+        // La obligación identifica la DEUDA que el pagaré respalda, no el pagaré:
+        // es un último recurso, no un equivalente.
         const numeroPagareFinal = manual.numeroPagare
-          ? manual.numeroPagare
-          : (decevalPdf.certificadoValido ? decevalPdf.numeroPagare : (f.obligacion || ''));
+          || decevalPdf.numeroPagare
+          || (f.obligacion || '');
         const clienteConsolidado = { ...cliente, ciudad: ciudadJuzgado, financieros: f };
         const { main, extras } = construirFilas(
           clienteConsolidado, vehiculos, contactos, correoJuzgado,
@@ -442,18 +448,23 @@ async function procesarSingular(excelBuffer, options = {}) {
         const cop = (n) => '$' + Number(n || 0).toLocaleString('es-CO');
         notas.push({ campo: 'demandado',       nivel: 'info', mensaje: `Demandado: ${clienteConsolidado.nombre || '-'} · CC ${cedula}` });
         notas.push({ campo: 'tipoPagare',      nivel: 'info', mensaje: `Tipo de pagaré: ${decevalPdf.tipoPagare || 'DECEVAL'}${decevalPdf.tipoPagare === 'FINANDINA' ? ' (escaneado, datos por OCR)' : ' (certificado con texto)'}` });
+        // De dónde salió el número, y cuánto hay que fiarse. El caso delicado es
+        // el OCR: es el nº correcto (el impreso en el título) pero leído de una
+        // imagen, así que se avisa para que quien revise lo contraste. Y si ni
+        // eso hay, lo que va es la OBLIGACION, que NO es el número del pagaré.
+        const desdeOcr = !manual.numeroPagare && !decevalPdf.certificadoValido && !!decevalPdf.numeroPagare;
+        const sinNumeroReal = !manual.numeroPagare && !decevalPdf.numeroPagare;
         const origenPagare = manual.numeroPagare
           ? 'capturado a mano'
-          : (decevalPdf.certificadoValido ? 'del certificado DECEVAL' : 'de la OBLIGACION del Excel');
+          : decevalPdf.certificadoValido ? 'del certificado DECEVAL'
+          : desdeOcr ? 'leído por OCR del pagaré escaneado'
+          : 'de la OBLIGACION del Excel';
         notas.push({
           campo: 'numeroPagare',
-          // Sin captura manual y con pagaré escaneado, el número que sale es el de
-          // la obligación, NO el impreso en el pagaré: eso es un aviso, no un dato.
-          nivel: (!manual.numeroPagare && !decevalPdf.certificadoValido) ? 'warning' : 'info',
+          nivel: sinNumeroReal ? 'warning' : desdeOcr ? 'info' : 'info',
           mensaje: `Nº de pagaré: ${numeroPagareFinal || '-'} (${origenPagare})`
-            + ((!manual.numeroPagare && !decevalPdf.certificadoValido)
-              ? ' — el OCR no lee el número impreso del pagaré escaneado: verificarlo y capturarlo a mano si no coincide'
-              : ''),
+            + (desdeOcr ? ' — verificarlo contra el documento; si no coincide, capturarlo a mano' : '')
+            + (sinNumeroReal ? ' — el pagaré escaneado no trae número legible: la OBLIGACION NO es el nº del pagaré, captúralo a mano' : ''),
         });
         notas.push({ campo: 'cuantia',         nivel: 'info', mensaje: `Cuantía: ${cuantiaLbl} — total ${cop(totalCuant)} (umbrales con SMMV ${cop(smmv || 1750905)})` });
         notas.push({ campo: 'juzgado',         nivel: 'info', mensaje: `Juzgado: ${main['TIPO DE JUZGADO']} de ${ciudadJuzgado}` });
@@ -475,9 +486,11 @@ async function procesarSingular(excelBuffer, options = {}) {
           ciudad,
           cuantia:        cuantiaLbl,
           valorCuantia:   totalCuant,
-          // OBLIGACION = número del pagaré (certificado DECEVAL)
-          obligacion:     decevalPdf.numeroPagare || f.obligacion,
-          numeroPagare:   decevalPdf.numeroPagare,
+          // Son DOS cosas distintas y no deben mezclarse: la OBLIGACION es la deuda
+          // que el pagaré respalda (viene del Excel del banco), y el nº de pagaré
+          // identifica el título valor. Antes aquí se pisaba una con la otra.
+          obligacion:     f.obligacion || '',
+          numeroPagare:   numeroPagareFinal,
           tipoJuzgadoFinal: main['TIPO DE JUZGADO'],
           vehiculos:      vehiculos.length,
           tieneContactos: !!(contactos.direccion || contactos.email),
