@@ -226,6 +226,14 @@ async function procesarSingular(excelBuffer, options = {}) {
           cliente.fechaDesembolsoRaw = manual.fechaSuscripcion;
         } else if (decevalPdf.fechaSuscripcion) {
           cliente.fechaDesembolsoRaw = decevalPdf.fechaSuscripcion;
+        } else {
+          // SIN respaldo del Excel a propósito. FECHA_DESEMBOLSO es cuándo el banco
+          // giró el dinero, no cuándo se firmó el título — pueden distar meses (en
+          // el caso que lo destapó: firma 31/10/2022, desembolso 17/04/2023). Ponerla
+          // ahí daba una fecha creíble y FALSA que nadie cuestionaba. En el pagaré
+          // escaneado la fecha va manuscrita y el OCR no la lee nunca, así que se
+          // deja vacía: la demanda sale con "#####" y obliga a capturarla a mano.
+          cliente.fechaDesembolsoRaw = '';
         }
 
         // ── Financieros (fallback desde SAC PDF si Excel no los tiene) ──
@@ -476,7 +484,9 @@ async function procesarSingular(excelBuffer, options = {}) {
           nivel: fechaSuscrFinal ? 'info' : 'warning',
           mensaje: fechaSuscrFinal
             ? `Fecha de suscripción: ${main['FECHA DE SUSCRIPCION']} (${manual.fechaSuscripcion ? 'capturada a mano' : 'del pagaré'})`
-            : 'Fecha de suscripción: no se pudo leer del pagaré (va manuscrita) — la demanda lleva "#####": capturarla a mano',
+            : 'Fecha de suscripción: no se pudo leer del pagaré (va manuscrita y el OCR no reconoce escritura a mano) '
+              + '— la demanda lleva "#####": capturarla a mano. NO se rellena con la fecha de desembolso del Excel: '
+              + 'es cuándo se giró el dinero, no cuándo se firmó el título.',
         });
         notas.push({ campo: 'fechaMora',       nivel: 'info', mensaje: `Fecha de mora: ${main['FECHA MORA'] || '-'} (${sacPdf.fechaMora ? 'del SAC' : 'del Excel'})` });
 
