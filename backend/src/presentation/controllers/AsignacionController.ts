@@ -974,9 +974,15 @@ export class AsignacionController {
       return { url: fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url };
     };
 
+    // La demanda va primero y SOLA: `subir` usa storage.save, que crea la carpeta
+    // del cliente si falta, y ese "buscar → crear" no tiene candado. Con la carpeta
+    // ya creada, los otros dos se solapan sin riesgo de duplicarla. Son esperas de
+    // red, no cómputo: en serie solo se suman latencias.
     const demanda = await subir(doc.archivos?.demanda);
-    const anexos = await subir(doc.archivos?.anexos);
-    const antecedentes = await subir(doc.archivos?.antecedentes);
+    const [anexos, antecedentes] = await Promise.all([
+      subir(doc.archivos?.anexos),
+      subir(doc.archivos?.antecedentes),
+    ]);
     const datos = {
       title: `Demanda Ejecutiva Singular — ${doc.nombre || doc.cedula}`,
       type: 'DEMANDA_SINGULAR',

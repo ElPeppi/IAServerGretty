@@ -63,6 +63,21 @@ function carpetasLocalesDeCedula(root: string, cedula: string): string[] {
   }
 }
 
+// Cada llamada a Drive es una espera de red, no cómputo: medido en producción, el
+// proceso pasa el 88% del tiempo por debajo del 20% de CPU. Hacerlas en serie es
+// sumar latencias. Este helper las solapa con un tope, que evita que un cliente con
+// muchos archivos dispare cientos de peticiones a la API de Google a la vez.
+const CONCURRENCIA_DRIVE = 5;
+
+async function enParalelo<T>(items: T[], tarea: (item: T) => Promise<void>): Promise<void> {
+  let siguiente = 0;
+  const obrero = async (): Promise<void> => {
+    for (let i = siguiente++; i < items.length; i = siguiente++) await tarea(items[i]!);
+  };
+  const obreros = Math.min(CONCURRENCIA_DRIVE, items.length);
+  await Promise.all(Array.from({ length: obreros }, obrero));
+}
+
 /**
  * Sube a Drive los SAC_*.pdf / CONTACTOS_*.csv de una cédula desde el disco del motor
  * y BORRA la copia local (Drive queda como única fuente). Destino en Drive:
@@ -90,7 +105,7 @@ export async function subirSacDeCedula(
     } catch {
       continue;
     }
-    for (const f of archivos) {
+    const subirUno = async (f: string): Promise<void> => {
       try {
         const buf = fs.readFileSync(path.join(absDir, f));
         await storage.save(unir(destino, f), buf, mimeDe(f));
@@ -99,7 +114,14 @@ export async function subirSacDeCedula(
       } catch (e) {
         console.error('[sacSync] no se pudo subir/borrar', carpeta, f, e instanceof Error ? e.message : e);
       }
-    }
+    };
+    // La PRIMERA va sola a propósito: `storage.save` crea las carpetas que falten,
+    // y `ensureFolder` es un "buscar → crear" sin candado. Varias subidas simultáneas
+    // a una carpeta inexistente buscarían a la vez, ninguna la encontraría y cada una
+    // crearía la suya → carpetas duplicadas en Drive. Con la primera hecha, el resto
+    // ya solo encuentra.
+    if (archivos.length) await subirUno(archivos[0]!);
+    await enParalelo(archivos.slice(1), subirUno);
     // Si la carpeta quedó vacía (solo tenía SAC), quítala.
     try {
       if (fs.readdirSync(absDir).length === 0) fs.rmdirSync(absDir);
@@ -130,29 +152,52 @@ export async function hidratarCedula(
   const root = raizUtilizable('hidratación desde Drive', false);
   if (!root) return 0;
   const ced = String(cedula).replace(/\D/g, '');
+  const t0 = Date.now();
   let bajados = 0;
   try {
     const carpetas = await carpetasDeCedula(ced, banco, proceso);
     if (!carpetas.length) return 0;
     const absDir = path.join(root, ced);
     fs.mkdirSync(absDir, { recursive: true });
+    // Se listan todas las carpetas del cliente a la vez y DESPUÉS se decide qué
+    // bajar, respetando el orden: la carpeta más reciente manda sobre las viejas.
+    // Ese desempate exige recorrer en orden, así que la dedupe va en serie aunque
+    // las descargas vayan en paralelo.
+    // Si una carpeta no se puede listar se sigue con las demás, pero SIN callarlo:
+    // un fallo mudo aquí reaparecería como "sin pagaré" al generar.
+    const listados = await Promise.all(
+      carpetas.map((c) =>
+        storage.list(c.relPath).catch((e: unknown) => {
+          console.error('[sacSync] no se pudo listar', c.relPath, e instanceof Error ? e.message : e);
+          return [] as string[];
+        }),
+      ),
+    );
     const yaBajado = new Set<string>();
-    for (const carpeta of carpetas) {
-      for (const f of await storage.list(carpeta.relPath)) {
-        if (yaBajado.has(f)) continue;   // la carpeta más reciente manda
-        try {
-          const buf = await storage.read(unir(carpeta.relPath, f));
-          fs.writeFileSync(path.join(absDir, f), buf);
-          yaBajado.add(f);
-          bajados++;
-        } catch (e) {
-          console.error('[sacSync] no se pudo hidratar', ced, f, e instanceof Error ? e.message : e);
-        }
+    const pendientes: Array<{ rel: string; nombre: string }> = [];
+    carpetas.forEach((carpeta, i) => {
+      for (const f of listados[i] ?? []) {
+        if (yaBajado.has(f)) continue;
+        yaBajado.add(f);
+        pendientes.push({ rel: unir(carpeta.relPath, f), nombre: f });
       }
-    }
+    });
+    // Solo lecturas: no crean carpetas, así que no hay carrera posible.
+    await enParalelo(pendientes, async ({ rel, nombre }) => {
+      try {
+        const buf = await storage.read(rel);
+        fs.writeFileSync(path.join(absDir, nombre), buf);
+        bajados++;
+      } catch (e) {
+        console.error('[sacSync] no se pudo hidratar', ced, nombre, e instanceof Error ? e.message : e);
+      }
+    });
     if (bajados) {
       const de = carpetas.map((c) => `"${c.nombre}"`).join(', ');
-      console.error(`[sacSync] ${cedula}: ${bajados} archivo(s) hidratado(s) de Drive (${de}) a local`);
+      // El tiempo va en el log a propósito: es la única forma de comparar el antes
+      // y el después de paralelizar, y la latencia real solo se mide desde el servidor.
+      const segs = ((Date.now() - t0) / 1000).toFixed(1);
+      console.error(`[sacSync] ${cedula}: ${bajados} archivo(s) hidratado(s) de Drive (${de}) a local en ${segs}s`);
     }
   } catch (e) {
     console.error('[sacSync] error hidratando', cedula, e instanceof Error ? e.message : e);
