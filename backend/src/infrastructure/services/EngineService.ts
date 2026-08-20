@@ -15,6 +15,10 @@ import {
   GenerarPoderesOutput,
   MapearColumnasInput,
   MapearColumnasOutput,
+  PlantillaInfo,
+  PlantillaResult,
+  InsumoDestino,
+  SubirInsumoInput,
 } from '../../application/services/IEngineService';
 
 const XLSX_MIME =
@@ -112,5 +116,47 @@ export class EngineService implements IEngineService {
       }
     );
     return data;
+  }
+
+  // ─── Plantillas ──────────────────────────────────────────────────────────────
+  // Son operaciones de disco local del motor: responden al instante, timeout corto.
+
+  async listarPlantillas(): Promise<PlantillaInfo[]> {
+    const { data } = await axios.get<{ success: boolean; plantillas: PlantillaInfo[] }>(
+      `${this.baseUrl}/plantillas`,
+      { timeout: 15000 },
+    );
+    return data.plantillas ?? [];
+  }
+
+  async restaurarPlantilla(clave: string, archivo: string): Promise<PlantillaResult> {
+    const { data } = await axios.post<PlantillaResult>(
+      `${this.baseUrl}/plantillas/${encodeURIComponent(clave)}/restaurar`,
+      { archivo },
+      { timeout: 30000 },
+    );
+    return data;
+  }
+
+  async listarInsumos(): Promise<InsumoDestino[]> {
+    const { data } = await axios.get<{ success: boolean; destinos: InsumoDestino[] }>(
+      `${this.baseUrl}/insumos`,
+      { timeout: 30000 },
+    );
+    return data.destinos ?? [];
+  }
+
+  async subirInsumo(input: SubirInsumoInput): Promise<void> {
+    const form = new FormData();
+    // El nombre va también como campo: el filename de multipart se puede mutilar
+    // con acentos/espacios según el cliente, y aquí el nombre EXACTO importa
+    // (el motor elige el certificado por patrón sobre el nombre del archivo).
+    form.append('nombre', input.nombre);
+    form.append('archivo', input.archivo, { filename: input.nombre });
+    await axios.post(`${this.baseUrl}/insumos/${encodeURIComponent(input.destino)}`, form, {
+      headers: form.getHeaders(),
+      timeout: 120000,
+      maxBodyLength: Infinity,
+    });
   }
 }

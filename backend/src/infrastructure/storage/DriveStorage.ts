@@ -34,7 +34,7 @@ import fs from 'fs';
 import { google, drive_v3 } from 'googleapis';
 import type { OAuth2Client } from 'google-auth-library';
 import { Readable } from 'stream';
-import { IStorage, StorageObject } from './IStorage';
+import { IStorage, StorageObject, ArchivoRemoto } from './IStorage';
 import { prisma } from '../database/prisma/client';
 
 // Modo de autenticación:
@@ -336,6 +336,60 @@ export class DriveStorage implements IStorage {
       pageToken = res.data.nextPageToken ?? undefined;
     } while (pageToken);
     return names;
+  }
+
+  async listDetallado(relDir: string): Promise<ArchivoRemoto[]> {
+    const folderId = await this.resolveFolder(relDir, false);
+    if (!folderId) return [];
+    const out: ArchivoRemoto[] = [];
+    const atajos: Array<{ nombre: string; targetId: string }> = [];
+    let pageToken: string | undefined;
+
+    do {
+      const res = await this.drive.files.list({
+        // Se excluyen las carpetas aquí y no después: así el pageSize cuenta
+        // archivos de verdad en directorios con muchas subcarpetas (GARANTIAS).
+        q: `'${folderId}' in parents and trashed = false and mimeType != '${FOLDER_MIME}'`,
+        fields: 'nextPageToken, files(id,name,mimeType,md5Checksum,size,shortcutDetails(targetId,targetMimeType))',
+        spaces: 'drive',
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+        pageSize: 1000,
+        pageToken,
+        ...DRIVE_SCOPE,
+      });
+      for (const f of res.data.files ?? []) {
+        if (!f.name) continue;
+        const sc = f.shortcutDetails;
+        if (sc?.targetId) {
+          // Un ACCESO DIRECTO no trae el md5 del destino (ni siquiera dice si el
+          // destino es carpeta en el filtro de arriba). Se resuelve aparte.
+          if (sc.targetMimeType !== FOLDER_MIME) atajos.push({ nombre: f.name, targetId: sc.targetId });
+          continue;
+        }
+        // md5Checksum no viene en los formatos nativos de Google (Docs, Sheets):
+        // esos no son insumos válidos y el sincronizador los descarta por eso.
+        out.push({ nombre: f.name, md5: f.md5Checksum ?? null, tamano: Number(f.size ?? 0) });
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+
+    // Normalmente `atajos` viene vacío y esto no cuesta nada.
+    for (const a of atajos) {
+      try {
+        const { data } = await this.drive.files.get({
+          fileId: a.targetId,
+          fields: 'name,md5Checksum,size',
+          supportsAllDrives: true,
+        });
+        // Se conserva el nombre del ACCESO DIRECTO: es el que ve la oficina en
+        // esa carpeta, y con el que se guardará en el servidor.
+        out.push({ nombre: a.nombre, md5: data.md5Checksum ?? null, tamano: Number(data.size ?? 0) });
+      } catch {
+        // Destino borrado o sin permiso: se ignora, como si no estuviera.
+      }
+    }
+    return out;
   }
 
   async delete(relPath: string): Promise<void> {

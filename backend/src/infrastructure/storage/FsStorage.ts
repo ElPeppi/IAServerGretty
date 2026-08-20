@@ -9,7 +9,8 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { IStorage, StorageObject } from './IStorage';
+import crypto from 'crypto';
+import { IStorage, StorageObject, ArchivoRemoto } from './IStorage';
 
 const DOCS_DIR = process.env.DOCS_DIR || '';
 
@@ -77,6 +78,28 @@ export class FsStorage implements IStorage {
       const abs = this.abs(relDir);
       if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) return [];
       return fs.readdirSync(abs);
+    } catch {
+      return [];
+    }
+  }
+
+  async listDetallado(relDir: string): Promise<ArchivoRemoto[]> {
+    try {
+      const abs = this.abs(relDir);
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) return [];
+      const out: ArchivoRemoto[] = [];
+      for (const nombre of fs.readdirSync(abs)) {
+        const p = path.join(abs, nombre);
+        try {
+          const st = fs.statSync(p);
+          if (!st.isFile()) continue;
+          // Se hashea el archivo entero. Son carpetas de insumos (unos pocos PDF),
+          // no árboles grandes; si algún día lo fueran, habría que cachear por mtime.
+          const md5 = crypto.createHash('md5').update(fs.readFileSync(p)).digest('hex');
+          out.push({ nombre, md5, tamano: st.size });
+        } catch { /* archivo que desapareció o sin permiso: se omite */ }
+      }
+      return out;
     } catch {
       return [];
     }

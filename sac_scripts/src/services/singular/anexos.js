@@ -84,9 +84,26 @@ function archivoMasRecienteRec(dir, predicado) {
   return best;
 }
 
+// Los certificados compartidos se resuelven una vez y se reusan durante el lote:
+// `archivoMasRecienteRec` recorre PODERES entero y se llama UNA VEZ POR CLIENTE.
+//
+// Pero el caché NO puede ser eterno: el motor corre bajo pm2 sin reiniciarse, y
+// antes esto significaba que un certificado nuevo puesto en la carpeta se ignoraba
+// hasta el siguiente reinicio — las demandas salían con el del mes pasado, sin
+// error ni aviso. Ahora caduca solo, y el sincronizador de insumos lo invalida en
+// cuanto escribe un archivo (ver routes/plantillas.routes.js).
+const COMPARTIDOS_TTL_MS = 10 * 60 * 1000;
 let _compartidos = null;
+let _compartidosAt = 0;
+
+/** Fuerza que el próximo lote vuelva a mirar el disco. */
+function invalidarCompartidos() {
+  _compartidos = null;
+}
+
 function resolverCompartidos() {
-  if (_compartidos) return _compartidos;
+  if (_compartidos && Date.now() - _compartidosAt < COMPARTIDOS_TTL_MS) return _compartidos;
+  _compartidosAt = Date.now();
   const D = config.ANEXOS_DIR_DEMANDAS;
   const F = config.ANEXOS_DIR_FINANDINA;
   _compartidos = {
@@ -362,4 +379,4 @@ async function generarAnexos(cedula, sacDocsDir, numeroPagare = '', correoPoderB
   }
 }
 
-module.exports = { generarAnexos };
+module.exports = { generarAnexos, invalidarCompartidos };

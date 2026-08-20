@@ -158,9 +158,60 @@ export interface MapearColumnasOutput {
   error?: string;
 }
 
+// ─── Plantillas ────────────────────────────────────────────────────────────────
+// Las plantillas (.docx/.xlsx) y la firma NO viven en Drive: el motor las lee del
+// disco, de las rutas de su propio config. Por eso reemplazarlas es cosa suya y el
+// backend solo hace de puerta autenticada.
+export interface PlantillaRespaldo {
+  archivo: string;
+  tamano: number;
+  fecha: string;
+}
+
+export interface PlantillaInfo {
+  clave: string;
+  etiqueta: string;
+  tipo: 'docx' | 'xlsx' | 'png';
+  ruta: string;
+  archivo: string;
+  existe: boolean;
+  tamano?: number;
+  modificado?: string;
+  hash?: string;
+  respaldos: PlantillaRespaldo[];
+}
+
+export interface PlantillaResult {
+  success: boolean;
+  respaldo?: string | null;
+  plantilla?: PlantillaInfo;
+  error?: string;
+}
+
+// Carpetas de insumos que el MOTOR declara necesitar, con lo que ya tiene dentro.
+// El backend las surte desde Drive (ver storage/sincronizarInsumos.ts).
+export interface InsumoDestino {
+  destino: string;   // 'plantillas' | 'anexos_demandas' | 'anexos_finandina'
+  etiqueta: string;
+  dir: string;       // carpeta en el disco del servidor (informativo)
+  /** Nombres admitidos, o `null` si vale cualquier PDF de la carpeta. */
+  requeridos: string[] | null;
+  archivos: Array<{ archivo: string; tamano: number; hash: string }>;
+}
+
+export interface SubirInsumoInput {
+  destino: string;
+  nombre: string;
+  archivo: Buffer;
+}
+
 export interface IEngineService {
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
   descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
   generarPoderes(input: GenerarPoderesInput): Promise<GenerarPoderesOutput>;
   mapearColumnas(input: MapearColumnasInput): Promise<MapearColumnasOutput>;
+  listarPlantillas(): Promise<PlantillaInfo[]>;
+  restaurarPlantilla(clave: string, archivo: string): Promise<PlantillaResult>;
+  listarInsumos(): Promise<InsumoDestino[]>;
+  subirInsumo(input: SubirInsumoInput): Promise<void>;
 }

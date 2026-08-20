@@ -16,6 +16,14 @@ export interface StorageObject {
   url: string;
 }
 
+/** Entrada de archivo con metadatos (ver `listDetallado`). */
+export interface ArchivoRemoto {
+  nombre: string;
+  /** MD5 del contenido. `null` si el backend no lo puede saber (p. ej. Google Docs). */
+  md5: string | null;
+  tamano: number;
+}
+
 export interface IStorage {
   /** ¿Está configurado y listo para usarse? */
   readonly enabled: boolean;
@@ -42,6 +50,14 @@ export interface IStorage {
    * gate SAC que busca `SAC_*.pdf`), que en Drive no se pueden hacer por ruta.
    */
   list(relDir: string): Promise<string[]>;
+
+  /**
+   * Como `list`, pero con metadatos — sobre todo el MD5. Sirve para sincronizar
+   * insumos (plantillas, certificados) sin descargarlos: se compara el hash de
+   * Drive con el que ya tiene el servidor y solo se baja lo que cambió.
+   * Solo entradas de archivo; las carpetas se omiten.
+   */
+  listDetallado(relDir: string): Promise<ArchivoRemoto[]>;
 
   /** URL pública (/docs/{relPath}) para guardar en la BD y mostrar en la web. */
   urlFor(relPath: string): string;

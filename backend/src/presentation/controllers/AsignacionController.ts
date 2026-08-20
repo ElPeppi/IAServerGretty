@@ -14,6 +14,7 @@ import {
 } from '../../infrastructure/storage/rutas';
 import { hidratarCedula, limpiarLocalCedula, enParalelo } from '../../infrastructure/storage/sacSync';
 import { carpetasDeCedula, relEnCarpetaCedula } from '../../infrastructure/storage/carpetasCedula';
+import { sincronizarInsumos } from '../../infrastructure/storage/sincronizarInsumos';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { getSettings } from '../../infrastructure/config/settings';
 import { EngineFile, EngineClientInfo, EngineDocument, TipoPoder } from '../../application/services/IEngineService';
@@ -543,6 +544,8 @@ export class AsignacionController {
         res.status(400).json({ message: 'No se pudo leer el Excel original de la asignación. Vuelve a subir la asignación.' });
         return;
       }
+      // El poder usa su propia plantilla: se repone desde Drive igual que la demanda.
+      await sincronizarInsumos();
       // Subconjunto de personas (vacío/omitido = todas las de proceso singular).
       const soloCedulas = parseCedulas(req.body.cedulas);
 
@@ -800,6 +803,11 @@ export class AsignacionController {
   }): Promise<void> {
     const t0 = Date.now();
     const fechaDMYStr = input.fechaAsignacion ? fechaDMY(input.fechaAsignacion) : undefined;
+
+    // Antes de generar, repone desde Drive las plantillas y los certificados del
+    // mes: son archivos de disco que el motor NO lee de Drive, y hasta ahora había
+    // que copiarlos a mano. No lanza — si Drive falla, se genera con lo que haya.
+    await sincronizarInsumos();
 
     // Lista objetivo: solo proceso ejecutivo singular (lo único que genera el
     // motor), intersectada con las cédulas elegidas en el modal (si las hay).
