@@ -341,4 +341,9 @@ async function buscarCorreoJuzgado(browser, ciudad, cuantia, cacheFile) {
   };
 }
 
-module.exports = { loadRamaCache, buscarCorreoJuzgado, necesitaConsultaRama };
+// consultarCiudadPBI / analizarCuentas / PBI_URL se exportan para la sonda de
+// diagnóstico (probe_rama.js); la generación solo usa buscarCorreoJuzgado.
+module.exports = {
+  loadRamaCache, buscarCorreoJuzgado, necesitaConsultaRama,
+  consultarCiudadPBI, analizarCuentas, PBI_URL,
+};
