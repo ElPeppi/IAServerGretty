@@ -67,8 +67,9 @@ router.post('/descargar-sac', async (req, res) => {
   void descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass });
 });
 
-// Corre las cédulas en serie (correrPuppeteerCedula ya encola una sesión SAC a la
-// vez) y notifica al backend por cada una. Nunca lanza: un fallo de una cédula no
+// Despacha TODAS las cédulas a la cola del SAC y deja que sea ella quien limite
+// cuántas sesiones corren a la vez (SAC_CONCURRENCIA, por defecto 1). Notifica al
+// backend por cada una en cuanto termina. Nunca lanza: un fallo de una cédula no
 // puede tumbar el lote ni el proceso del motor.
 async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass }) {
   const t0 = Date.now();
@@ -82,7 +83,14 @@ async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacP
     meta: { fase: 'inicio', total: cedulas.length, cedulas },
   });
 
-  for (const cedula of cedulas) {
+  // Se lanzan TODAS a la vez y es la cola del SAC (colaSac) la que decide cuántas
+  // corren de verdad, según SAC_CONCURRENCIA. Antes este bucle iba en serie "porque
+  // la cola ya serializaba": eran dos frenos para lo mismo, y éste volvía inútil
+  // cualquier ajuste de concurrencia. Con SAC_CONCURRENCIA=1 el resultado es
+  // exactamente el de siempre, una detrás de otra.
+  let hechas = 0;
+
+  const procesar = async (cedula, i) => {
     let item;
     try {
       // Escribe en la carpeta MÁS RECIENTE de la cédula (o crea {cedula}), para que
@@ -106,7 +114,10 @@ async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacP
       item = { cedula, success: false, error: e.message };
     }
 
-    resultados.push(item);
+    // Índice fijo: aunque terminen desordenadas, el resumen final conserva el
+    // orden en que se pidieron.
+    resultados[i] = item;
+    hechas++;
 
     // Aviso por PERSONA: es lo que permite ir generando su demanda de una.
     await notificarBackend({
@@ -121,11 +132,17 @@ async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacP
         cedula,
         success: item.success,
         pdfs: (item.pdfsSAC || []).length,
-        hechas: resultados.length,
+        hechas,
         total: cedulas.length,
       },
     });
-  }
+  };
+
+  // El .catch mantiene la promesa de la cabecera: un fallo de una cédula no puede
+  // tumbar el lote ni impedir el resumen final.
+  await Promise.all(cedulas.map((cedula, i) => procesar(cedula, i).catch((e) => {
+    console.error(`[${new Date().toISOString()}] /descargar-sac ${cedula} (aviso): ${e.message}`);
+  })));
 
   const ok = resultados.filter(r => r.success).length;
   const segs = Math.round((Date.now() - t0) / 1000);
