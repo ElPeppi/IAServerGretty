@@ -69,7 +69,7 @@ function carpetasLocalesDeCedula(root: string, cedula: string): string[] {
 // muchos archivos dispare cientos de peticiones a la API de Google a la vez.
 const CONCURRENCIA_DRIVE = 5;
 
-async function enParalelo<T>(items: T[], tarea: (item: T) => Promise<void>): Promise<void> {
+export async function enParalelo<T>(items: T[], tarea: (item: T) => Promise<void>): Promise<void> {
   let siguiente = 0;
   const obrero = async (): Promise<void> => {
     for (let i = siguiente++; i < items.length; i = siguiente++) await tarea(items[i]!);

@@ -12,7 +12,7 @@ import {
   RAIZ_DEMANDAS, detectarBanco, detectarAnio, carpetaAsignaciones, carpetaGarantias,
   carpetaPoderes, unir, type Proceso,
 } from '../../infrastructure/storage/rutas';
-import { hidratarCedula, limpiarLocalCedula } from '../../infrastructure/storage/sacSync';
+import { hidratarCedula, limpiarLocalCedula, enParalelo } from '../../infrastructure/storage/sacSync';
 import { carpetasDeCedula, relEnCarpetaCedula } from '../../infrastructure/storage/carpetasCedula';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { getSettings } from '../../infrastructure/config/settings';
@@ -373,11 +373,17 @@ export class AsignacionController {
       // normal debe seguir siendo instantánea.
       if (String(req.query['insumos'] ?? '') === '1' && storage.enabled) {
         const banco = detectarBanco(filas);
-        const conInsumos = [];
-        for (const p of personas) {
-          const { sac, pagare } = await this.insumosSac(p.cedula, banco);
-          conInsumos.push({ ...p, sac, pagare });
-        }
+        // En serie esto era una consulta a Drive tras otra: con 44 personas, quince
+        // segundos antes de que el modal mostrara nada. Es pura espera de red, así
+        // que se solapan con el mismo pool acotado que usa la hidratación.
+        const conInsumos: Array<PersonaAsignacion & { generada: boolean; sac: boolean; pagare: boolean }> = [];
+        await enParalelo(
+          personas.map((p, i) => ({ p, i })),
+          async ({ p, i }) => {
+            const { sac, pagare } = await this.insumosSac(p.cedula, banco);
+            conInsumos[i] = { ...p, sac, pagare };   // índice fijo: conserva el orden del Excel
+          },
+        );
         res.json({ personas: conInsumos });
         return;
       }

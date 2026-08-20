@@ -39,7 +39,7 @@ export function DescargarSacModal({ onClose }: Props) {
     setCargandoPersonas(true);
     setError(null);
     asignacionApi
-      .personas(asignacionId)
+      .personas(asignacionId, true)   // con insumos: quién tiene ya el SAC
       .then((p) => { if (!cancelado) setPersonas(p); })
       .catch((err: unknown) => {
         if (cancelado) return;
@@ -50,13 +50,17 @@ export function DescargarSacModal({ onClose }: Props) {
     return () => { cancelado = true; };
   }, [asignacionId]);
 
+  // Quien ya tiene su SAC en Drive no necesita volver a bajarse: cada descarga
+  // es una sesión contra el portal del banco de ~2 minutos.
+  const pendientes = personas.filter((p) => !p.sac);
+
   const nPegadas = contarCedulas(cedulas);
   // Filas totales del Excel (incluye repetidas) vs personas únicas del checklist.
   const asigSel = asignaciones.find((a) => a.id === asignacionId);
   const repetidas = asigSel ? Math.max(0, asigSel.totalFilas - personas.length) : 0;
   // Nada marcado en una asignación elegida = TODAS sus personas.
   const cedulasAsig = asignacionId
-    ? (seleccion.size ? [...seleccion] : personas.map((p) => p.cedula))
+    ? (seleccion.size ? [...seleccion] : pendientes.map((p) => p.cedula))
     : [];
   const totalAsig = cedulasAsig.length;
   const puedeEnviar = nPegadas > 0 || totalAsig > 0;
@@ -184,23 +188,33 @@ export function DescargarSacModal({ onClose }: Props) {
                   <p className="p-3 text-sm text-gray-400">Esta asignación no tiene personas con cédula.</p>
                 ) : (
                   personas.map((p) => {
-                    const marcada = seleccion.has(p.cedula);
+                    const yaTiene = !!p.sac;
+                    const marcada = !yaTiene && seleccion.has(p.cedula);
                     return (
                       <label
                         key={p.cedula}
-                        className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50"
+                        className={`flex items-center gap-3 px-3 py-2 ${yaTiene ? 'cursor-default bg-gray-50/60' : 'cursor-pointer hover:bg-gray-50'}`}
                       >
                         <input
                           type="checkbox"
                           checked={marcada}
                           onChange={() => togglePersona(p.cedula)}
-                          disabled={isLoading}
-                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          disabled={isLoading || yaTiene}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                         />
-                        <span className="text-sm text-gray-700 truncate">
+                        <span className={`text-sm truncate flex-1 ${yaTiene ? 'text-gray-400' : 'text-gray-700'}`}>
                           {p.nombre || <span className="text-gray-400">(sin nombre)</span>}
                           <span className="text-gray-400"> — {p.cedula}</span>
                         </span>
+                        {yaTiene ? (
+                          <span className="shrink-0 text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                            SAC listo
+                          </span>
+                        ) : (
+                          <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                            Pendiente
+                          </span>
+                        )}
                       </label>
                     );
                   })
@@ -208,9 +222,11 @@ export function DescargarSacModal({ onClose }: Props) {
               </div>
               {personas.length > 0 && (
                 <p className="text-xs text-gray-400 mt-1">
-                  {seleccion.size
-                    ? `${seleccion.size} de ${personas.length} seleccionada${seleccion.size !== 1 ? 's' : ''}`
-                    : `Se descargarán las ${personas.length} personas`}
+                  {pendientes.length === 0
+                    ? <span className="text-emerald-600 font-medium">Todas ya tienen su SAC descargado.</span>
+                    : seleccion.size
+                      ? `${seleccion.size} de ${pendientes.length} pendiente${pendientes.length !== 1 ? 's' : ''} seleccionada${seleccion.size !== 1 ? 's' : ''}`
+                      : `Se descargarán las ${pendientes.length} persona${pendientes.length !== 1 ? 's' : ''} pendiente${pendientes.length !== 1 ? 's' : ''}`}
                   {repetidas > 0 && (
                     <span className="text-amber-600">
                       {' '}· {asigSel!.totalFilas} filas, {repetidas} cédula{repetidas !== 1 ? 's' : ''} repetida{repetidas !== 1 ? 's' : ''}

@@ -39,6 +39,10 @@ export interface AsignacionPersona {
   nombre: string;
   tipo: string; // etiqueta normalizada: EJECUTIVO SINGULAR / RESTITUCIÓN / TRÁMITE PAGO DIRECTO / SIN PROCESO
   generada: boolean; // ya tiene demanda en esta asignación
+  // Solo llegan con ?insumos=1: qué tiene YA la persona en Drive. Cuesta una
+  // consulta por cliente, por eso la lista normal no los trae.
+  sac?: boolean;
+  pagare?: boolean;
 }
 
 export const asignacionApi = {
@@ -46,8 +50,11 @@ export const asignacionApi = {
     apiClient.get<{ asignaciones: AsignacionResumen[] }>('/asignaciones').then((r) => r.data.asignaciones),
 
   // Personas (cédula + nombre) de una asignación, para elegir a quién bajar del SAC.
-  personas: (id: string) =>
-    apiClient.get<{ personas: AsignacionPersona[] }>(`/asignaciones/${id}/personas`).then((r) => r.data.personas),
+  // `insumos` añade sac/pagare por persona (una consulta a Drive por cliente).
+  personas: (id: string, insumos = false) =>
+    apiClient
+      .get<{ personas: AsignacionPersona[] }>(`/asignaciones/${id}/personas${insumos ? '?insumos=1' : ''}`)
+      .then((r) => r.data.personas),
 
   // Sube el Excel de asignación → lo CACHEA (ya no genera demandas).
   subir: (excel: File, fechaAsignacion?: string) => {
