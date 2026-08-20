@@ -544,11 +544,7 @@ export function DocumentDetailPage() {
             {tab === 'notas' ? (
               <NotesPanel notes={document.notes} cedula={document.clientCedula} />
             ) : tab === 'asignacion' && document.asignacionUrl && /\.xlsx?(\?|$)/i.test(document.asignacionUrl) ? (
-              <AsignacionEditor
-                url={document.asignacionUrl}
-                documentId={document.id}
-                canEdit={document.status !== 'SIGNED'}
-              />
+              <AsignacionEditor url={document.asignacionUrl} />
             ) : (
               <FileViewer url={rightUrl(document, tab)} label={tab} />
             )}

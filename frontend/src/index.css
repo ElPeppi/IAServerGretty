@@ -74,3 +74,11 @@ html.dark .hover\:bg-gray-100:hover { background-color: #334155 !important; }
 html.dark .xlsx-view table { background: #1e293b; }
 html.dark .xlsx-view td, html.dark .xlsx-view th { border-color: #334155; color: #e2e8f0; }
 html.dark .xlsx-view tr:first-child td { background: #334155; }
+
+/* Fila resaltada en el visor de la asignación: sirve para no perder el renglón
+   del cliente al leer una tabla ancha. La tabla es de solo lectura. */
+.xlsx-view tr.fila-activa td { background: #fef3c7; }
+.xlsx-view tr.fila-activa td:first-child { box-shadow: inset 3px 0 0 #d97706; }
+html.dark .xlsx-view tr.fila-activa td { background: #4a3a12; }
+
+.xlsx-view.filas-seleccionables td { cursor: pointer; }

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { configApi, type AppConfig, type TransitoEntry } from '../../infrastructure/api/configApi';
+import { PlantillasCard } from '../components/Config/PlantillasCard';
 
 const cop = (n: number) => '$' + (n || 0).toLocaleString('es-CO');
 
@@ -161,6 +162,8 @@ export function ConfigPage() {
           </button>
         </div>
       </div>
+
+      <PlantillasCard />
     </div>
   );
 }
