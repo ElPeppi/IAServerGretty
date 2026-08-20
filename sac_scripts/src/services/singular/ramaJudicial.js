@@ -95,12 +95,20 @@ async function tieneSlicerCiudad(page) {
   } catch (_) { return false; }
 }
 
-// Devuelve el input "Buscar" del slicer CIUDAD
+// Devuelve el buscador del slicer CIUDAD.
+//
+// OJO con el IDIOMA: Power BI se renderiza en el idioma del navegador, y el
+// servidor (locale en_US) lo pinta en INGLÉS — el input dice "Search", no
+// "Buscar". Buscarlo por ese texto funcionaba en un equipo en español y fallaba
+// en producción con "slicer CIUDAD no disponible": la ciudad no se consultaba y
+// TODAS las demandas caían al juzgado CIVIL MUNICIPAL por defecto, sin error
+// visible. Por eso ahora no se filtra por texto: el slicer solo tiene un input
+// y es su buscador.
 async function inputSlicerCiudad(page) {
   const handle = await page.evaluateHandle(() => {
     const s = [...document.querySelectorAll('div.slicer-container')]
       .find(s => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD'));
-    return s ? s.querySelector('input[placeholder="Buscar"], input[aria-label="Buscar"]') : null;
+    return s ? s.querySelector('input') : null;
   });
   return (await page.evaluate(el => !!el, handle)) ? handle.asElement() : null;
 }

@@ -35,9 +35,22 @@ if (!arg) {
 function resolverPdf(entrada) {
   if (fs.existsSync(entrada) && fs.statSync(entrada).isFile()) return entrada;
 
-  const dir = resolverCarpetaCedula(entrada);
+  // La carpeta se busca bajo OUT_DIR, con la convención del motor
+  // ({cedula} / {cedula}_{año} / {cedula}_{MM}_{año}).
+  const dir = resolverCarpetaCedula(config.OUT_DIR, entrada);
   if (!dir || !fs.existsSync(dir)) {
     console.error(`No hay carpeta para la cédula ${entrada}.`);
+    console.error(`Se buscó en: ${config.OUT_DIR}`);
+    // Listar lo que empiece por la cédula ayuda cuando el nombre lleva sufijo.
+    try {
+      const cerca = fs.readdirSync(config.OUT_DIR).filter((f) => f.startsWith(String(entrada)));
+      console.error(cerca.length
+        ? `Carpetas que empiezan por esa cédula: ${cerca.join(', ')}`
+        : 'No hay ninguna carpeta que empiece por esa cédula.');
+    } catch (e) {
+      console.error(`No se pudo listar OUT_DIR: ${e.message}`);
+    }
+    console.error('También puedes pasar la ruta del PDF directamente.');
     process.exit(1);
   }
   const pdfs = fs.readdirSync(dir)

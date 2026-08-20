@@ -90,6 +90,20 @@ const seg = (t0) => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
     process.exit(2);
   }
   console.log(`✓ ${slicers.length} slicer(s): ${JSON.stringify(slicers)}`);
+
+  // El idioma en que Power BI pinta el reporte depende del navegador. Se muestra
+  // porque ya rompió una vez: el buscador se localizaba por el texto "Buscar" y
+  // el servidor lo renderiza en inglés ("Search").
+  const buscador = await page.evaluate(() => {
+    const s = [...document.querySelectorAll('div.slicer-container')]
+      .find((s) => (s.textContent || '').trim().toUpperCase().startsWith('CIUDAD'));
+    const i = s && s.querySelector('input');
+    return i
+      ? { encontrado: true, placeholder: i.placeholder || '', aria: i.getAttribute('aria-label') || '' }
+      : { encontrado: false };
+  });
+  console.log(`  idioma del navegador: ${await page.evaluate(() => navigator.language)}`);
+  console.log(`  buscador del slicer CIUDAD: ${JSON.stringify(buscador)}`);
   await page.close();
 
   // ── 2. La consulta REAL, la misma que corre al generar ──────────────────────
