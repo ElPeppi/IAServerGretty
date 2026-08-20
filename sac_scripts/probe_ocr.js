@@ -7,8 +7,14 @@
  * y lo que falla es el patrón que busca el número.
  *
  * Uso (en la carpeta sac_scripts del servidor):
+ *   node probe_ocr.js "/docs/DEMANDAS/.../PAGARE.pdf"   ← lo normal en producción
+ *   node probe_ocr.js https://jramosabogados.com/docs/...
  *   node probe_ocr.js /ruta/al/PAGARE.pdf
- *   node probe_ocr.js 1045231446          ← busca el pagaré del cliente
+ *   node probe_ocr.js 1045231446    ← solo si el cliente está en disco
+ *
+ * En producción los documentos del cliente viven en DRIVE, no en el disco del
+ * servidor: se bajan para generar y se limpian después. Por eso la vía buena es
+ * la URL /docs/… (que el backend sirve leyendo de Drive), no la cédula.
  *
  * Deja el texto crudo del OCR en la carpeta temporal para poder leerlo entero.
  */
@@ -31,8 +37,37 @@ if (!arg) {
   process.exit(1);
 }
 
-/** Ruta del pagaré: la que den, o el PDF de pagaré del cliente. */
-function resolverPdf(entrada) {
+// El backend sirve /docs/… leyendo de Drive. Se le pide a él en vez de hablar
+// con Drive desde aquí: el motor no tiene credenciales de Drive a propósito.
+const BACKEND = process.env.PROBE_BACKEND_URL || 'http://localhost:3001';
+
+/** Descarga la URL (o el relPath /docs/…) a la carpeta temporal. */
+async function descargar(entrada) {
+  const url = /^https?:\/\//i.test(entrada) ? entrada : BACKEND + entrada;
+  console.log(`Descargando ${url}`);
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    console.error(`✗ No se pudo conectar: ${e.message}`);
+    console.error(`  ¿Está arriba el backend en ${BACKEND}? (pm2 list)`);
+    console.error('  Si corre en otro puerto: PROBE_BACKEND_URL=http://localhost:PUERTO node probe_ocr.js …');
+    process.exit(1);
+  }
+  if (!res.ok) {
+    console.error(`✗ HTTP ${res.status} al bajar el PDF.`);
+    if (res.status === 404) console.error('  Revisa la ruta; debe ser la misma que usa la web.');
+    process.exit(1);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  const destino = path.join(config.TEMP_DIR, `ocr-probe-${path.basename(decodeURIComponent(url.split('?')[0]))}`);
+  fs.writeFileSync(destino, buf);
+  return destino;
+}
+
+/** Ruta del pagaré: URL, ruta local, o el PDF de pagaré del cliente en disco. */
+async function resolverPdf(entrada) {
+  if (/^https?:\/\//i.test(entrada) || entrada.startsWith('/docs/')) return descargar(entrada);
   if (fs.existsSync(entrada) && fs.statSync(entrada).isFile()) return entrada;
 
   // La carpeta se busca bajo OUT_DIR, con la convención del motor
@@ -41,6 +76,9 @@ function resolverPdf(entrada) {
   if (!dir || !fs.existsSync(dir)) {
     console.error(`No hay carpeta para la cédula ${entrada}.`);
     console.error(`Se buscó en: ${config.OUT_DIR}`);
+    console.error('En producción esto es NORMAL: los documentos están en Drive y el');
+    console.error('disco solo se usa durante la generación. Pasa la URL /docs/… del');
+    console.error('pagaré, que es lo que ve la web.');
     // Listar lo que empiece por la cédula ayuda cuando el nombre lleva sufijo.
     try {
       const cerca = fs.readdirSync(config.OUT_DIR).filter((f) => f.startsWith(String(entrada)));
@@ -65,7 +103,7 @@ function resolverPdf(entrada) {
 }
 
 (async () => {
-  const pdf = resolverPdf(arg);
+  const pdf = await resolverPdf(arg);
   const buf = fs.readFileSync(pdf);
   console.log(`— Sonda OCR —  ${pdf}  (${Math.round(buf.length / 1024)} KB)`);
 
