@@ -30,6 +30,7 @@ app.use(require('./routes/zips.routes'));
 app.use(require('./routes/sac.routes'));
 app.use(require('./routes/poderes.routes'));
 app.use(require('./routes/singular.routes'));
+app.use(require('./routes/garantias.routes'));
 app.use(require('./routes/ocr.routes'));
 app.use(require('./routes/mapeo.routes'));
 app.use(require('./routes/plantillas.routes'));

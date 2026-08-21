@@ -6,6 +6,7 @@ import type { DocumentFilters, DocumentsPage } from '../../infrastructure/api/do
 export function useDocuments(filters?: DocumentFilters) {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
+  const [demandantes, setDemandantes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,6 +21,10 @@ export function useDocuments(filters?: DocumentFilters) {
       const totalCount = Array.isArray(data) ? data.length : data?.total ?? items.length;
       setDocuments(items);
       setTotal(totalCount);
+      // Solo se pisa si vienen: al filtrar por un demandante el backend sigue
+      // devolviendo la lista completa, pero un backend viejo no manda nada y
+      // conservar las últimas evita que el selector se vacíe.
+      if (!Array.isArray(data) && data?.demandantes) setDemandantes(data.demandantes);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Error al cargar documentos');
     } finally {
@@ -31,7 +36,7 @@ export function useDocuments(filters?: DocumentFilters) {
     fetch();
   }, [fetch]);
 
-  return { documents, total, isLoading, error, refetch: fetch };
+  return { documents, total, demandantes, isLoading, error, refetch: fetch };
 }
 
 export function useDocument(id: string) {

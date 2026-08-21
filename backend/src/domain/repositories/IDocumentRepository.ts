@@ -37,6 +37,8 @@ export interface DocumentFilters {
   from?: Date;
   to?: Date;
   search?: string;     // busca en nombre, cédula, título y RFC
+  banco?: string;      // DEMANDANTE (FINANDINA, LIBERTADOR…)
+  tipo?: string;       // proceso: DEMANDA_SINGULAR | DEMANDA_PAGO_DIRECTO
   page?: number;       // 1-based
   pageSize?: number;
 }

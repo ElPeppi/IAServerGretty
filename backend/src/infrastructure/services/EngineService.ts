@@ -19,6 +19,8 @@ import {
   PlantillaResult,
   InsumoDestino,
   SubirInsumoInput,
+  GenerateGarantiasInput,
+  GenerateGarantiasOutput,
 } from '../../application/services/IEngineService';
 
 const XLSX_MIME =
@@ -59,6 +61,29 @@ export class EngineService implements IEngineService {
         // Corre en segundo plano (sin navegador esperando): lotes grandes tardan
         // varios minutos por el scraping. Timeout alto y configurable por env.
         timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000, // 60 min por defecto
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+    return data;
+  }
+
+  async generateGarantias(input: GenerateGarantiasInput): Promise<GenerateGarantiasOutput> {
+    const form = new FormData();
+    form.append('excelFile', input.excel, {
+      filename: input.excelFilename || 'entrada.xlsx',
+      contentType: XLSX_MIME,
+    });
+    if (input.soloCedulas?.length) form.append('soloCedulas', JSON.stringify(input.soloCedulas));
+
+    const { data } = await axios.post<GenerateGarantiasOutput>(
+      `${this.baseUrl}/generar-garantias`,
+      form,
+      {
+        headers: form.getHeaders(),
+        // Mismo timeout largo que el singular: aquí lo lento es el OCR del
+        // contrato de prenda de cada cliente, no el scraping.
+        timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
       }

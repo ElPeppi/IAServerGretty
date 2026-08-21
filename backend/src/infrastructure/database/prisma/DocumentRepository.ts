@@ -27,6 +27,8 @@ export class PrismaDocumentRepository implements IDocumentRepository {
     const where: Prisma.DocumentWhereInput = {
       ...(filters?.lawyerId && { lawyerId: filters.lawyerId }),
       ...(filters?.status && { status: filters.status }),
+      ...(filters?.banco && { banco: filters.banco }),
+      ...(filters?.tipo && { type: filters.tipo }),
       ...((filters?.from || filters?.to) && {
         createdAt: {
           ...(filters?.from && { gte: filters.from }),

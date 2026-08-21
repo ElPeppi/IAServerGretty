@@ -48,6 +48,10 @@ function origenesEnDrive(destino: string): string[] {
       return [RAIZ_DEMANDAS];
     case 'anexos_finandina':
       return [unir(RAIZ_DEMANDAS, banco)];
+    // El directorio SIJIN es común a todos los bancos: cuelga de DEMANDAS/, no
+    // de la carpeta de ninguno.
+    case 'directorios':
+      return [RAIZ_DEMANDAS];
     default:
       return []; // destino nuevo en el motor que este backend aún no sabe surtir
   }

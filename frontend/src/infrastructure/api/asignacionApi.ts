@@ -3,6 +3,9 @@ import { apiClient } from './client';
 export interface AsignacionResumen {
   id: string;
   nombre: string;
+  // DEMANDANTE del lote (FINANDINA, LIBERTADOR…). Lo deriva el backend del
+  // contenido del Excel al subirlo, o de la carpeta al importarlo del árbol.
+  banco: string;
   fechaAsignacion: string | null;
   totalFilas: number;
   tienePoder: boolean;

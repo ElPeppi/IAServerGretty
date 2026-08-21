@@ -49,6 +49,11 @@ const CATALOGO = {
     ruta: () => config.PLANTILLA_PODER,
     tipo: 'docx',
   },
+  demanda_pago_directo: {
+    etiqueta: 'Demanda — trámite de pago directo',
+    ruta: () => config.PLANTILLA_DEMANDA_PAGO_DIRECTO,
+    tipo: 'docx',
+  },
   poder_pago_directo: {
     etiqueta: 'Poder — trámite de pago directo',
     ruta: () => config.PLANTILLA_PODER_PAGO_DIRECTO,
@@ -220,6 +225,16 @@ const DESTINOS = {
     dir: () => config.ANEXOS_DIR_FINANDINA,
     requeridos: () => null,
     tipoDe: () => 'pdf',
+  },
+  // No es un anexo: es una TABLA que se consulta al armar la demanda de pago
+  // directo (a qué SIJIN debe oficiar el juzgado). Va por el mismo canal que los
+  // certificados para que la oficina la mantenga donde mantiene todo lo demás:
+  // en el Drive, sin entrar al servidor.
+  directorios: {
+    etiqueta: 'Directorios (SIJIN por departamento)',
+    dir: () => path.dirname(config.DIRECTORIO_SIJIN),
+    requeridos: () => [path.basename(config.DIRECTORIO_SIJIN)],
+    tipoDe: () => 'xlsx',
   },
 };
 

@@ -14,10 +14,20 @@ const STATUS_OPTIONS: { value: DocumentStatus | ''; label: string }[] = [
   { value: 'REJECTED', label: 'Rechazada' },
 ];
 
+// Proceso del que salió el documento. Los valores son los que guarda
+// Document.type; la etiqueta es como lo llama la oficina.
+const TIPO_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: 'Todos los procesos' },
+  { value: 'DEMANDA_SINGULAR', label: 'Ejecutivo singular' },
+  { value: 'DEMANDA_PAGO_DIRECTO', label: 'Garantía mobiliaria' },
+];
+
 const PAGE_SIZE = 24;
 
 export function DocumentsPage() {
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | ''>('');
+  const [bancoFilter, setBancoFilter] = useState('');
+  const [tipoFilter, setTipoFilter] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');       // valor "debounced" que va al servidor
   const [page, setPage] = useState(1);
@@ -31,11 +41,13 @@ export function DocumentsPage() {
   }, [searchInput]);
 
   // Al cambiar filtro o búsqueda, volver a la página 1.
-  useEffect(() => { setPage(1); }, [statusFilter, search]);
+  useEffect(() => { setPage(1); }, [statusFilter, search, bancoFilter, tipoFilter]);
 
-  const { documents, total, isLoading, error, refetch } = useDocuments({
+  const { documents, total, demandantes, isLoading, error, refetch } = useDocuments({
     status: statusFilter || undefined,
     search: search || undefined,
+    banco: bancoFilter || undefined,
+    tipo: tipoFilter || undefined,
     page,
     pageSize: PAGE_SIZE,
   });
@@ -104,6 +116,21 @@ export function DocumentsPage() {
             className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
           />
         </div>
+        <select
+          value={bancoFilter}
+          onChange={(e) => setBancoFilter(e.target.value)}
+          className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 bg-white text-gray-700"
+        >
+          <option value="">Todos los demandantes</option>
+          {demandantes.map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select
+          value={tipoFilter}
+          onChange={(e) => setTipoFilter(e.target.value)}
+          className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 bg-white text-gray-700"
+        >
+          {TIPO_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+        </select>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as DocumentStatus | '')}

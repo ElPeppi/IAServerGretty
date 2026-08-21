@@ -945,6 +945,229 @@ export class AsignacionController {
     });
   }
 
+  // ── Trámite de PAGO DIRECTO (garantía mobiliaria) ──────────────────────────
+  // Gemelo de generarDemandas, con dos diferencias de fondo: exige el poder de
+  // PAGO DIRECTO (no el del singular, que es otro documento con otra plantilla)
+  // y no necesita el correo de otorgamiento, porque esta demanda no lo lleva.
+  async generarGarantias(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params['id'] as string;
+      const asignacion = await prisma.asignacion.findUnique({ where: { id } });
+      if (!asignacion) {
+        res.status(404).json({ message: 'Asignación no encontrada' });
+        return;
+      }
+      if (!asignacion.poderPagoDirectoUrl) {
+        res.status(409).json({
+          codigo: 'SIN_PODER',
+          message: 'No hay poder de pago directo enlazado a esta asignación.',
+        });
+        return;
+      }
+      if (generacionEnCurso.has(id)) {
+        res.status(409).json({
+          codigo: 'YA_EN_CURSO',
+          message: 'Ya se está generando esta asignación. Espera a que termine.',
+        });
+        return;
+      }
+
+      // Excel ORIGINAL (2 hojas): el caché solo guarda Hoja1 y el motor la necesita
+      // entera, igual que en el ejecutivo singular.
+      const excel = await this.leerExcelOriginal(asignacion.excelUrl);
+      if (!excel) {
+        res.status(400).json({
+          message: 'No se pudo leer el Excel original de la asignación. Vuelve a subir la asignación.',
+        });
+        return;
+      }
+
+      // Mismo formato que en el singular: JSON (array) o multipart (string JSON).
+      const soloCedulas = parseCedulas(req.body.cedulas);
+
+      res.json({
+        started: true,
+        message: 'Generación de solicitudes de aprehensión iniciada en segundo plano.',
+      });
+
+      generacionEnCurso.add(asignacion.id);
+      // void sin catch = promesa rechazada sin manejar = proceso muerto en Node
+      // moderno. Mismo motivo que en generarDemandas.
+      void this.generarGarantiasBg({
+        asignacionId: asignacion.id,
+        nombre: asignacion.nombre,
+        excel,
+        excelUrl: asignacion.excelUrl,
+        lawyerId: req.user!.userId,
+        soloCedulas: soloCedulas.length ? soloCedulas : undefined,
+      })
+        .catch((e: unknown) => {
+          const msg = e instanceof Error ? e.message : 'error desconocido';
+          console.error('[asignaciones/garantias] el lote se interrumpió:', msg);
+          notificationHub.broadcast({
+            type: 'generacion', level: 'error', title: 'La generación se interrumpió',
+            message: `"${asignacion.nombre}": ${msg}`,
+            meta: { asignacionId: asignacion.id },
+          });
+        })
+        .finally(() => { generacionEnCurso.delete(asignacion.id); });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error al generar garantías';
+      res.status(500).json({ message });
+    }
+  }
+
+  /**
+   * Genera UNA A UNA, igual que el singular: cada solicitud aparece en Documentos
+   * apenas está lista, en vez de todas al final del lote. Aquí importa más que
+   * allá, porque el OCR del contrato de prenda hace que cada cliente tarde.
+   */
+  private async generarGarantiasBg(input: {
+    asignacionId: string; nombre: string;
+    excel: Buffer; excelUrl: string | null;
+    lawyerId: string; soloCedulas?: string[];
+  }): Promise<void> {
+    const t0 = Date.now();
+    // Repone plantillas, certificados y el directorio SIJIN desde Drive. No lanza.
+    await sincronizarInsumos();
+
+    const asig = await prisma.asignacion.findUnique({
+      where: { id: input.asignacionId }, select: { filas: true, mapeo: true, banco: true },
+    });
+    const filas = (asig?.filas as unknown as Array<Record<string, unknown>>) ?? [];
+    const banco = asig?.banco || detectarBanco(filas);
+
+    // El MOTOR es quien decide de verdad a quién procesa (su parser del Excel
+    // aplica la misma regla de proceso). Esta lista sirve para el recuento y para
+    // no arrancar un lote vacío.
+    let objetivo = personasDeFilas(filas, mapeoDe(asig)).filter((p) => p.tipo === 'TRÁMITE PAGO DIRECTO');
+    if (input.soloCedulas?.length) {
+      const set = new Set(input.soloCedulas);
+      objetivo = objetivo.filter((p) => set.has(p.cedula));
+    }
+    if (!objetivo.length) {
+      notificationHub.broadcast({
+        type: 'generacion', level: 'warning', title: 'Sin solicitudes para generar',
+        message: `"${input.nombre}": no hay personas de trámite de pago directo.`,
+        meta: { asignacionId: input.asignacionId },
+      });
+      return;
+    }
+
+    notificationHub.broadcast({
+      type: 'generacion', level: 'info', title: 'Generando solicitudes de aprehensión',
+      message: `Generando ${objetivo.length} solicitud(es) de "${input.nombre}", una por una…`,
+      meta: { asignacionId: input.asignacionId, total: objetivo.length },
+    });
+
+    let generadas = 0; let omitidas = 0; let fallidas = 0;
+
+    for (const persona of objetivo) {
+      const quien = `${persona.nombre || persona.cedula}`;
+      try {
+        const r = await engineService.generateGarantias({
+          excel: input.excel,
+          excelFilename: `${input.nombre}.xlsx`,
+          soloCedulas: [persona.cedula],
+        });
+
+        const doc = (r.documentos ?? [])[0];
+        if (!doc) {
+          omitidas++;
+          // El motor NO genera si falta un documento del banco o un dato que
+          // deba ir al juzgado. El motivo dice exactamente cuál.
+          const motivo = (r.omitidos ?? [])[0]?.motivo || 'el motor la omitió';
+          notificationHub.broadcast({
+            type: 'generacion', level: 'warning', title: 'Solicitud no generada',
+            message: `${quien}: ${motivo}.`,
+            meta: { asignacionId: input.asignacionId, cedula: persona.cedula, motivo },
+          });
+          continue;
+        }
+
+        await this.persistirGarantia(doc, input, banco);
+        generadas++;
+        notificationHub.broadcast({
+          type: 'generacion', level: 'success', title: 'Solicitud lista',
+          message: `${quien}: solicitud de aprehensión generada.`,
+          meta: { asignacionId: input.asignacionId, cedula: persona.cedula },
+        });
+      } catch (e: unknown) {
+        fallidas++;
+        const msg = e instanceof Error ? e.message : 'error desconocido';
+        console.error(`[asignaciones/garantias] ${persona.cedula}: ${msg}`);
+        notificationHub.broadcast({
+          type: 'generacion', level: 'error', title: 'Fallo al generar',
+          message: `${quien}: ${msg}`,
+          meta: { asignacionId: input.asignacionId, cedula: persona.cedula },
+        });
+      }
+    }
+
+    notificationHub.broadcast({
+      type: 'generacion',
+      level: fallidas ? 'warning' : 'success',
+      title: 'Generación terminada',
+      message: `"${input.nombre}": ${generadas} solicitud(es) en ${Math.round((Date.now() - t0) / 1000)}s`
+        + `${omitidas ? `, ${omitidas} omitida(s)` : ''}`
+        + `${fallidas ? `, ${fallidas} con error` : ''}.`,
+      meta: { asignacionId: input.asignacionId, generadas, omitidas, fallidas },
+    });
+  }
+
+  /**
+   * Sube la solicitud a su árbol de Drive y guarda su Document.
+   *
+   * Va al árbol de PAGO DIRECTO (DEMANDAS/{banco}/GARANTIA MOBILIARIAS/GARANTIAS),
+   * no al del ejecutivo singular: cada proceso tiene el suyo y no se mezclan.
+   */
+  private async persistirGarantia(
+    doc: EngineDocument,
+    input: { asignacionId: string; excelUrl: string | null; lawyerId: string },
+    banco: string,
+  ): Promise<void> {
+    const f = doc.archivos?.demanda;
+    if (!f) return;
+
+    let url: string | undefined;
+    let rel: string | undefined;
+    if (storage.enabled && f.relPath) {
+      rel = await relEnCarpetaCedula(f.relPath, banco, 'pago_directo');
+      if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
+      url = storage.urlFor(rel);
+    } else {
+      url = fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url;
+    }
+
+    const datos = {
+      title: `Solicitud de Aprehensión — ${doc.nombre || doc.cedula}`,
+      type: 'DEMANDA_PAGO_DIRECTO',
+      banco,
+      status: 'GENERATED' as const,
+      clientName: doc.nombre || doc.cedula,
+      clientCedula: doc.cedula,
+      fileUrl: url,
+      asignacionUrl: input.excelUrl ?? undefined,
+      asignacionId: input.asignacionId,
+      notes: (doc.notas ?? []) as unknown as Prisma.InputJsonValue,
+      metadata: { demandaRelPath: rel ?? f.relPath } as Prisma.InputJsonValue,
+    };
+
+    // Una por (persona, asignación): regenerar reemplaza, no acumula.
+    const previos = await prisma.document.findMany({
+      where: { asignacionId: input.asignacionId, clientCedula: doc.cedula, type: 'DEMANDA_PAGO_DIRECTO' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (previos.length) {
+      await prisma.document.update({ where: { id: previos[0]!.id }, data: datos });
+      const sobrantes = previos.slice(1).map((p) => p.id);
+      if (sobrantes.length) await prisma.document.deleteMany({ where: { id: { in: sobrantes } } });
+    } else {
+      await prisma.document.create({ data: { ...datos, lawyerId: input.lawyerId } });
+    }
+  }
+
   // Revisa en Drive (`GARANTIAS/{cedula}`) los INSUMOS para generar la demanda:
   //  - sac:    hay SAC_*.pdf (antecedentes/correo). Se sube a Drive al descargar.
   //  - pagare: hay el PDF del pagaré. Regla espejo del motor (anexos.js): PDF que NO

@@ -6,6 +6,8 @@ export interface DocumentFilters {
   from?: string;
   to?: string;
   search?: string;
+  banco?: string;   // DEMANDANTE
+  tipo?: string;    // proceso: DEMANDA_SINGULAR | DEMANDA_PAGO_DIRECTO
   page?: number;
   pageSize?: number;
 }
@@ -15,6 +17,8 @@ export interface DocumentsPage {
   total: number;
   page: number;
   pageSize: number;
+  // Demandantes con documentos, para poblar el filtro sin lista fija de bancos.
+  demandantes?: string[];
 }
 
 export const documentApi = {

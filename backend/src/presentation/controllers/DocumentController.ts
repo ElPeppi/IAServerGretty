@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { prisma } from '../../infrastructure/database/prisma/client';
 import { GetDocumentsUseCase } from '../../application/use-cases/documents/GetDocumentsUseCase';
 import { GetDocumentByIdUseCase } from '../../application/use-cases/documents/GetDocumentByIdUseCase';
 import { SignDocumentUseCase } from '../../application/use-cases/documents/SignDocumentUseCase';
@@ -18,7 +19,7 @@ const signDocumentUseCase = new SignDocumentUseCase(documentRepository, userRepo
 export class DocumentController {
   async getAll(req: AuthRequest, res: Response): Promise<void> {
     try {
-      const { status, from, to, search, page, pageSize } = req.query;
+      const { status, from, to, search, banco, tipo, page, pageSize } = req.query;
 
       const p  = parseInt(page as string, 10);
       const ps = parseInt(pageSize as string, 10);
@@ -33,11 +34,19 @@ export class DocumentController {
         from: from ? new Date(from as string) : undefined,
         to: to ? new Date(to as string) : undefined,
         search: (search as string)?.trim() || undefined,
+        banco: (banco as string)?.trim() || undefined,
+        tipo: (tipo as string)?.trim() || undefined,
         page: pageNum,
         pageSize: sizeNum,
       });
 
-      res.json({ items, total, page: pageNum, pageSize: sizeNum });
+      // Demandantes que existen DE VERDAD, para que la web pinte el filtro sin
+      // una lista fija de bancos. Va en la misma respuesta y no en un endpoint
+      // aparte: con paginación, los de la página actual no serían todos.
+      const porBanco = await prisma.document.groupBy({ by: ['banco'] });
+      const demandantes = porBanco.map((b) => b.banco).filter(Boolean).sort();
+
+      res.json({ items, total, page: pageNum, pageSize: sizeNum, demandantes });
     } catch {
       res.status(500).json({ message: 'Error al obtener documentos' });
     }

@@ -142,6 +142,61 @@ function wrap(texto, font, size, maxWidth) {
   return out;
 }
 
+// Igual que wrap(), pero devuelve las PALABRAS de cada línea en vez de la línea
+// ya montada. Justificar exige saber dónde caen los huecos.
+function partirEnLineas(texto, font, size, maxWidth) {
+  const anchoEsp = font.widthOfTextAtSize(' ', size);
+  const lineas = [];
+  let actual = [];
+  let ancho = 0;
+  for (const palabra of String(texto).split(/\s+/).filter(Boolean)) {
+    const w = font.widthOfTextAtSize(palabra, size);
+    const conEsta = actual.length ? ancho + anchoEsp + w : w;
+    if (actual.length && conEsta > maxWidth) {
+      lineas.push(actual);
+      actual = [palabra];
+      ancho = w;
+    } else {
+      actual.push(palabra);
+      ancho = conEsta;
+    }
+  }
+  if (actual.length) lineas.push(actual);
+  return lineas;
+}
+
+// Cuánto se deja estirar un espacio antes de renunciar a justificar la línea,
+// en múltiplos del espacio normal. Sin este tope, una línea de dos palabras
+// repartida a lo ancho de la página queda ilegible.
+const ESTIRON_MAX = 3.5;
+
+/**
+ * Dibuja una línea JUSTIFICADA: reparte el sobrante entre los huecos para que
+ * empiece y acabe en el margen, como el poder en Word.
+ *
+ * pdf-lib no sabe justificar —drawText solo coloca un bloque de texto en una x—,
+ * así que se dibuja palabra por palabra calculando su posición.
+ *
+ * No se justifica la ÚLTIMA línea de cada párrafo (quedaría estirada sin motivo),
+ * ni las de una sola palabra, ni aquellas cuyo hueco resultante sería absurdo.
+ */
+function dibujarLinea(page, palabras, { x, y, size, font, maxWidth, justificar }) {
+  const plano = () => page.drawText(palabras.join(' '), { x, y, size, font });
+  if (!justificar || palabras.length < 2) return plano();
+
+  const anchoPalabras = palabras.reduce((s, w) => s + font.widthOfTextAtSize(w, size), 0);
+  const hueco = (maxWidth - anchoPalabras) / (palabras.length - 1);
+  const normal = font.widthOfTextAtSize(' ', size);
+  if (!(hueco > 0) || hueco > normal * ESTIRON_MAX) return plano();
+
+  let cx = x;
+  for (const palabra of palabras) {
+    page.drawText(palabra, { x: cx, y, size, font });
+    cx += font.widthOfTextAtSize(palabra, size) + hueco;
+  }
+  return undefined;
+}
+
 // Carátula "ANEXO N" + descripción centrada
 function caratula(out, fontB, font, n, descripcion) {
   const W = 612, H = 792;
@@ -213,25 +268,32 @@ async function paginaPoderOverlay(out, correoBuffer, parrafos) {
   const available = startY - bottom;
 
   // Elegir el tamaño de fuente más grande (10..7) con el que todo quepa.
-  let size = 10, leading = 12.5, lines = [];
+  // `null` en la lista = separación entre bloques (el párrafo vacío del .docx).
+  let size = 10, leading = 12.5, renglones = [];
   for (; size >= 7; size -= 0.5) {
     leading = size * 1.25;
-    lines = [];
+    renglones = [];
     for (const p of parrafos) {
-      if (!p) { lines.push('§GAP§'); continue; }
-      for (const ln of wrap(p, cFont, size, maxW)) lines.push(ln);
-      lines.push('§GAP§');
+      if (!p) { renglones.push(null); continue; }
+      const lineas = partirEnLineas(p, cFont, size, maxW);
+      lineas.forEach((palabras, i) => renglones.push({ palabras, ultima: i === lineas.length - 1 }));
+      renglones.push(null);
     }
     let h = 0;
-    for (const ln of lines) h += (ln === '§GAP§') ? leading * 0.55 : leading;
+    for (const r of renglones) h += r ? leading : leading * 0.55;
     if (h <= available) break;
   }
 
   let y = startY;
-  for (const ln of lines) {
-    if (ln === '§GAP§') { y -= leading * 0.55; continue; }
+  for (const r of renglones) {
+    if (!r) { y -= leading * 0.55; continue; }
     if (y < bottom) break;
-    page.drawText(ln, { x: left, y, size, font: cFont });
+    dibujarLinea(page, r.palabras, {
+      x: left, y, size, font: cFont, maxWidth: maxW,
+      // La última línea de un párrafo se deja como caiga: estirarla es justo lo
+      // que delata un texto justificado a la fuerza.
+      justificar: !r.ultima,
+    });
     y -= leading;
   }
 
@@ -379,4 +441,6 @@ async function generarAnexos(cedula, sacDocsDir, numeroPagare = '', correoPoderB
   }
 }
 
-module.exports = { generarAnexos, invalidarCompartidos };
+// partirEnLineas y dibujarLinea se exportan para poder verificar la
+// justificación sin montar un anexo entero.
+module.exports = { generarAnexos, invalidarCompartidos, partirEnLineas, dibujarLinea };

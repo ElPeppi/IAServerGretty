@@ -49,6 +49,13 @@ const PLANTILLA_PODER = process.env.PLANTILLA_PODER
 const PLANTILLA_PODER_PAGO_DIRECTO = process.env.PLANTILLA_PODER_PAGO_DIRECTO
   || path.join(path.dirname(PLANTILLA_PODER), 'PLANTILLA PODER BANCO FINANDINA PAGO DIRECTO.docx');
 
+// Demanda del TRÁMITE DE PAGO DIRECTO: la SOLICITUD DE APREHENSIÓN Y ENTREGA.
+// El nombre lleva dos puntos antes de la extensión ("FINANDINA..docx") tal como
+// está en el Drive de la oficina; se respeta para que el backend la reponga sin
+// que nadie tenga que renombrar nada allá.
+const PLANTILLA_DEMANDA_PAGO_DIRECTO = process.env.PLANTILLA_DEMANDA_PAGO_DIRECTO
+  || path.join(path.dirname(PLANTILLA_PODER_PAGO_DIRECTO), 'PLANTILLA MODELO DEMANDA PAGO DIRECTO BANCO FINANDINA..docx');
+
 // Imagen de la firma del abogado (PNG) — se estampa en la demanda. Por defecto
 // en la misma carpeta PLANTILLAS que las plantillas, archivo "Firma.png".
 const FIRMA_PATH = process.env.SAC_FIRMA_PATH
@@ -73,6 +80,18 @@ const ANEXOS_DIR_PODERES = process.env.ANEXOS_PODERES
 // ANEXO 1 (correo de otorgamiento) del ejecutivo singular.
 const ANEXOS_DIR_PODERES_PAGO_DIRECTO = process.env.ANEXOS_PODERES_PAGO_DIRECTO
   || path.join(ANEXOS_DIR_PODERES, 'PAGO DIRECTO');
+
+// ─── Directorios de terceros ─────────────────────────────────────────────────
+
+// Correos de la SIJIN a los que el juzgado debe oficiar la inmovilización del
+// vehículo (trámite de pago directo). Lo mantiene la oficina en el Drive, junto
+// a los certificados generales: DEMANDAS/DIRECTORIO SIJIN 2023.xlsx.
+//
+// OJO: sus 32 filas son las CAPITALES de departamento, no municipios. La búsqueda
+// resuelve por departamento (ver services/comun/sijin.js); si se buscara por
+// ciudad, cualquier garante de un municipio pequeño se quedaría sin correo.
+const DIRECTORIO_SIJIN = process.env.DIRECTORIO_SIJIN
+  || path.join(ANEXOS_DIR_DEMANDAS, 'DIRECTORIO SIJIN 2023.xlsx');
 
 // ─── Ollama (LLM local para mapeo de columnas del Excel) ─────────────────────
 
@@ -121,6 +140,7 @@ module.exports = {
   PLANTILLA_DEMANDA,
   PLANTILLA_PODER,
   PLANTILLA_PODER_PAGO_DIRECTO,
+  PLANTILLA_DEMANDA_PAGO_DIRECTO,
   FIRMA_PATH,
   ANEXOS_DIR_DEMANDAS,
   ANEXOS_DIR_FINANDINA,
@@ -135,6 +155,7 @@ module.exports = {
   SAC_ZIP_PASS,
   NOTIFY_URL,
   NOTIFY_SECRET,
+  DIRECTORIO_SIJIN,
   OCR_MOTOR,
   VISION_SA_KEY,
   SCRIPT_PUPPETEER,

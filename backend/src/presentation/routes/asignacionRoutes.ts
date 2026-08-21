@@ -19,5 +19,8 @@ router.post('/:id/poder', upload.single('poderFile'), (req, res) => controller.s
 router.post('/:id/generar-demandas', upload.single('correoPoder'), (req, res) =>
   controller.generarDemandas(req, res),
 );
+// Trámite de PAGO DIRECTO. No lleva correo de otorgamiento —esa demanda no lo
+// adjunta—, así que va como JSON y no como multipart.
+router.post('/:id/generar-garantias', (req, res) => controller.generarGarantias(req, res));
 
 export default router;

@@ -205,6 +205,28 @@ export interface SubirInsumoInput {
   archivo: Buffer;
 }
 
+/**
+ * Trámite de PAGO DIRECTO (garantía mobiliaria). Entra menos que en el singular
+ * porque los datos NO salen del Excel: el motor los lee de los documentos que el
+ * banco dejó en la carpeta de cada cliente. El Excel solo dice a quién procesar.
+ */
+export interface GenerateGarantiasInput {
+  excel: Buffer;
+  excelFilename: string;
+  soloCedulas?: string[];
+}
+
+export interface GenerateGarantiasOutput {
+  success: boolean;
+  total: number;
+  clientes: Array<{ cedula: string; nombre: string; placa: string; notas: EngineNote[] }>;
+  documentos: EngineDocument[];
+  // Un cliente sin todos sus documentos NO produce demanda: el motivo dice cuál
+  // faltó, para que la oficina sepa qué pedirle al banco.
+  omitidos?: Array<{ cedula: string; nombre: string; motivo: string }>;
+  errores?: Array<{ cedula: string; error: string }>;
+}
+
 export interface IEngineService {
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
   descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
@@ -212,6 +234,7 @@ export interface IEngineService {
   mapearColumnas(input: MapearColumnasInput): Promise<MapearColumnasOutput>;
   listarPlantillas(): Promise<PlantillaInfo[]>;
   restaurarPlantilla(clave: string, archivo: string): Promise<PlantillaResult>;
+  generateGarantias(input: GenerateGarantiasInput): Promise<GenerateGarantiasOutput>;
   listarInsumos(): Promise<InsumoDestino[]>;
   subirInsumo(input: SubirInsumoInput): Promise<void>;
 }

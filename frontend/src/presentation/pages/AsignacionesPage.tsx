@@ -28,6 +28,19 @@ export function AsignacionesPage() {
   const [actualizando, setActualizando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const [fechaAsc, setFechaAsc] = useState(false); // false = más recientes primero
+  const [demandante, setDemandante] = useState('');  // '' = todos
+
+  // Demandantes que hay DE VERDAD en la lista, no una lista fija de bancos: así
+  // el filtro crece solo cuando entre un banco nuevo y nunca ofrece uno vacío.
+  const demandantes = useMemo(
+    () => [...new Set(asignaciones.map((a) => a.banco).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es')),
+    [asignaciones],
+  );
+
+  const filtradas = useMemo(
+    () => (demandante ? asignaciones.filter((a) => a.banco === demandante) : asignaciones),
+    [asignaciones, demandante],
+  );
 
   // El backend ordena por `createdAt`, pero todas las asignaciones entran en el mismo
   // escaneo de Drive: el timestamp empata y queda el orden alfabético del scan. Se
@@ -38,7 +51,7 @@ export function AsignacionesPage() {
       const t = new Date(a.fechaAsignacion).getTime();
       return isNaN(t) ? null : t;
     };
-    return [...asignaciones].sort((a, b) => {
+    return [...filtradas].sort((a, b) => {
       const ta = ts(a);
       const tb = ts(b);
       // Las que no tienen fecha legible van al final en AMBOS sentidos: si no,
@@ -48,7 +61,7 @@ export function AsignacionesPage() {
       if (tb === null) return -1;
       return fechaAsc ? ta - tb : tb - ta;
     });
-  }, [asignaciones, fechaAsc]);
+  }, [filtradas, fechaAsc]);
 
   const handleActualizar = async () => {
     setActualizando(true);
@@ -79,9 +92,22 @@ export function AsignacionesPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Asignaciones</h1>
-          <p className="text-gray-500 text-sm mt-0.5">{asignaciones.length} asignación(es) cacheada(s)</p>
+          <p className="text-gray-500 text-sm mt-0.5">
+            {ordenadas.length} asignación(es)
+            {demandante ? ` de ${demandante}` : ' cacheada(s)'}
+          </p>
         </div>
         <div className="flex items-center gap-2">
+          <label className="sr-only" htmlFor="filtro-demandante">Demandante</label>
+          <select
+            id="filtro-demandante"
+            value={demandante}
+            onChange={(e) => setDemandante(e.target.value)}
+            className="px-3 py-2 border border-gray-200 rounded-xl text-sm text-gray-700 bg-white hover:bg-gray-50 transition-colors"
+          >
+            <option value="">Todos los demandantes</option>
+            {demandantes.map((b) => <option key={b} value={b}>{b}</option>)}
+          </select>
           <button onClick={handleActualizar} disabled={actualizando}
             className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-xl text-sm font-medium transition-colors disabled:opacity-50">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -109,10 +135,25 @@ export function AsignacionesPage() {
         <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="animate-pulse bg-gray-100 rounded-xl h-16" />)}</div>
       ) : error ? (
         <div className="text-center py-16 text-red-500">{error}</div>
-      ) : asignaciones.length === 0 ? (
+      ) : ordenadas.length === 0 ? (
         <div className="text-center py-16">
-          <p className="text-gray-500 font-medium">No hay asignaciones</p>
-          <p className="text-gray-400 text-sm mt-1">Sube el Excel de asignación o pulsa "Actualizar asignaciones".</p>
+          {demandante ? (
+            <>
+              <p className="text-gray-500 font-medium">No hay asignaciones de {demandante}</p>
+              <button
+                type="button"
+                onClick={() => setDemandante('')}
+                className="text-blue-600 hover:underline text-sm mt-1"
+              >
+                Ver todos los demandantes
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-gray-500 font-medium">No hay asignaciones</p>
+              <p className="text-gray-400 text-sm mt-1">Sube el Excel de asignación o pulsa "Actualizar asignaciones".</p>
+            </>
+          )}
         </div>
       ) : (
         <div className="overflow-x-auto border border-gray-200 rounded-xl">
@@ -120,6 +161,7 @@ export function AsignacionesPage() {
             <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
               <tr>
                 <th className="text-left font-medium px-4 py-3">Asignación</th>
+                <th className="text-left font-medium px-4 py-3">Demandante</th>
                 <th className="text-left font-medium px-4 py-3">
                   <button
                     type="button"
@@ -142,6 +184,11 @@ export function AsignacionesPage() {
               {ordenadas.map((a) => (
                 <tr key={a.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900">{a.nombre}</td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs font-medium">
+                      {a.banco}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-gray-600">{fmtFecha(a.fechaAsignacion)}</td>
                   <td className="px-4 py-3 text-center text-gray-600">{a.totalFilas}</td>
                   <td className="px-4 py-3 text-center">
