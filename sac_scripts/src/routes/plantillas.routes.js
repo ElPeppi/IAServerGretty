@@ -30,7 +30,7 @@ const crypto  = require('crypto');
 const multer  = require('multer');
 
 const config = require('../config');
-const { invalidarCompartidos } = require('../services/singular/anexos');
+const { invalidarCompartidos } = require('../services/finandina/singular/anexos');
 
 const router = express.Router();
 const upload = multer({ dest: config.TEMP_DIR, limits: { fileSize: 30 * 1024 * 1024 } });

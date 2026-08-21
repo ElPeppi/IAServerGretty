@@ -1,5 +1,5 @@
 /**
- * services/singular/antecedentes.js — Genera ANTECEDENTES.pdf por cliente
+ * services/finandina/singular/antecedentes.js — Genera ANTECEDENTES.pdf por cliente
  *
  * Une, en un solo PDF llamado ANTECEDENTES.pdf:
  *   1. El PDF de direcciones del SAC   → SAC_{cedula}_DIRYTEL.pdf
@@ -14,7 +14,7 @@ const path = require('path');
 const fs   = require('fs');
 const { PDFDocument } = require('pdf-lib');
 
-const { resolverCarpetaCedula } = require('../../utils/carpetas');
+const { resolverCarpetaCedula } = require('../../../utils/carpetas');
 
 // Copia todas las páginas de `srcBytes` dentro del documento `out`.
 async function anexarPdf(out, srcBytes) {

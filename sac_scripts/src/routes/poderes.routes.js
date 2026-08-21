@@ -32,14 +32,16 @@ const path      = require('path');
 const puppeteer = require('puppeteer');
 
 const config = require('../config');
-const { generarPoderesCombinado, camposPagoDirecto, sinPostProceso } = require('../services/singular/poderes');
-const { parsearExcelEntrada }     = require('../services/singular/excelEntrada');
-const { construirFilas }          = require('../services/singular/plantillaXlsx');
+const { generarPoderesCombinado }            = require('../services/comun/poderes');
+const { camposSingular, fixObligacionPlural } = require('../services/finandina/singular/poderes');
+const { camposPagoDirecto }                  = require('../services/finandina/garantia/poderes');
+const { parsearExcelEntrada }     = require('../services/comun/excelEntrada');
+const { construirFilas }          = require('../services/finandina/singular/plantillaXlsx');
 const { calcularCuantia, tipoCuantia, tipoJuzgadoPagoDirecto, normalizarTipoJuzgado } = require('../domain/cuantia');
 const { parseAnyDate, todayString }    = require('../utils/fechas');
-const { leerDatosDeDeceval } = require('../services/singular/carpetaCliente');
-const { loadRamaCache, buscarCorreoJuzgado, necesitaConsultaRama } = require('../services/singular/ramaJudicial');
-const { determinarLocalidad } = require('../services/singular/localidadBarranquilla');
+const { leerDatosDeDeceval } = require('../services/finandina/singular/carpetaCliente');
+const { loadRamaCache, buscarCorreoJuzgado, necesitaConsultaRama } = require('../services/comun/ramaJudicial');
+const { determinarLocalidad } = require('../services/comun/localidadBarranquilla');
 const { resolverCarpetaLectura, mkdirpSync } = require('../utils/carpetas');
 
 const router = express.Router();
@@ -176,7 +178,7 @@ router.post('/generar-poderes', async (req, res) => {
           // Sirve tanto el nº del certificado DECEVAL como el impreso que lee el
           // OCR del pagaré escaneado: en ambos casos es el número del TÍTULO, que
           // es lo que cita el poder. La OBLIGACION queda solo como último recurso,
-          // igual que en la demanda (ver services/singular/index.js).
+          // igual que en la demanda (ver services/finandina/singular/index.js).
           if (deceval.numeroPagare) {
             numeroPagare = String(deceval.numeroPagare).trim();
             pagareDesdeDocs = true;
@@ -270,9 +272,11 @@ router.post('/generar-poderes', async (req, res) => {
   let buffer, clientesGen;
   try {
     const plantilla = esPagoDirecto ? config.PLANTILLA_PODER_PAGO_DIRECTO : config.PLANTILLA_PODER;
+    // Cada proceso trae sus propios marcadores. El de pago directo no habla de
+    // obligaciones, así que no necesita el ajuste de plural.
     const opts = esPagoDirecto
-      ? { construirCampos: camposPagoDirecto, postProcesar: sinPostProceso }
-      : {};
+      ? { construirCampos: camposPagoDirecto }
+      : { construirCampos: camposSingular, postProcesar: fixObligacionPlural };
     ({ buffer, clientes: clientesGen } = generarPoderesCombinado(items, plantilla, opts));
   } catch (e) {
     console.error(`[/generar-poderes] error armando el Word: ${e.message}`);

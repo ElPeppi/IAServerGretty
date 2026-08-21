@@ -1,5 +1,5 @@
 /**
- * services/singular/mapeoColumnas.js — Mapeo inteligente de columnas del Excel
+ * services/comun/mapeoColumnas.js — Mapeo inteligente de columnas del Excel
  *
  * Los Excel de Finandina cambian de encabezados en cada envío
  * ("NOMBRE_CLIENTE" / "NOMBRE DEUDOR", "NIT" / "SALARIO" / "ID EMPLEADOR",

@@ -1,5 +1,5 @@
 /**
- * services/singular/anexos.js — Genera ANEXOS.pdf por cliente
+ * services/finandina/singular/anexos.js — Genera ANEXOS.pdf por cliente
  *
  * Une, en un solo PDF, las pruebas y anexos de la demanda, cada uno precedido
  * por su carátula ("ANEXO N ..."). La NUMERACIÓN es DINÁMICA y debe coincidir con
@@ -29,8 +29,8 @@ const fs   = require('fs');
 const AdmZip = require('adm-zip');
 const { PDFDocument, StandardFonts } = require('pdf-lib');
 
-const config = require('../../config');
-const { resolverCarpetaCedula } = require('../../utils/carpetas');
+const config = require('../../../config');
+const { resolverCarpetaCedula } = require('../../../utils/carpetas');
 
 // Descripciones de carátula (tomadas de ANEXO SINGULAR.pdf). Sin número fijo:
 // el número se asigna dinámicamente al armar el PDF (ver generarAnexos).

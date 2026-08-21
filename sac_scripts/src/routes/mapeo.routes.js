@@ -4,7 +4,7 @@
  *   POST /mapear-columnas  { headers: string[], filas: any[][] }
  *     → { success, mapeo: { CAMPO: idx }, porNombre: { CAMPO: "ENCABEZADO" } }
  *
- * Es un envoltorio delgado sobre services/singular/mapeoColumnas.js — la misma
+ * Es un envoltorio delgado sobre services/comun/mapeoColumnas.js — la misma
  * lógica que usa el motor al generar (heurística + Ollama local, con validación
  * de contenido y caché por firma de encabezados). Existe para que el BACKEND no
  * duplique su propia versión ingenua: una sola fuente de verdad de "qué columna
@@ -17,7 +17,7 @@
 'use strict';
 
 const express = require('express');
-const { mapearColumnas } = require('../services/singular/mapeoColumnas');
+const { mapearColumnas } = require('../services/comun/mapeoColumnas');
 
 const router = express.Router();
 

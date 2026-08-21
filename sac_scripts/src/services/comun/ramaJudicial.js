@@ -1,5 +1,5 @@
 /**
- * services/singular/ramaJudicial.js — Especialidades y correos de juzgados por ciudad
+ * services/comun/ramaJudicial.js — Especialidades y correos de juzgados por ciudad
  *
  * Fuente automática: el directorio oficial de cuentas de correo de la Rama
  * Judicial, publicado como reporte Power BI embebido en

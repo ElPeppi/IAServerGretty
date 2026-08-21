@@ -1,5 +1,5 @@
 /**
- * services/singular/excelEntrada.js — Parseo del Excel de entrada
+ * services/comun/excelEntrada.js — Parseo del Excel de entrada
  *
  * El Excel trae dos hojas:
  *   Hoja1 → datos maestros (cliente, ciudad, vehículos, fechas)

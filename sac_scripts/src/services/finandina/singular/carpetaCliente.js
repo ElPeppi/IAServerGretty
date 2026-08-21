@@ -1,5 +1,5 @@
 /**
- * services/singular/carpetaCliente.js — Lectura de la carpeta de documentos del cliente
+ * services/finandina/singular/carpetaCliente.js — Lectura de la carpeta de documentos del cliente
  *
  * Todo lo que se extrae de {SAC_OUT_DIR}/{cedula}/ :
  *   leerContactos      → CONTACTOS_{cedula}.csv (direcciones y emails)
@@ -13,8 +13,8 @@ const path     = require('path');
 const fs       = require('fs');
 const pdfParse = require('pdf-parse');
 
-const { resolverCarpetaCedula } = require('../../utils/carpetas');
-const { MESES_MAP } = require('../../utils/fechas');
+const { resolverCarpetaCedula } = require('../../../utils/carpetas');
+const { MESES_MAP } = require('../../../utils/fechas');
 
 // ─── Contactos CSV ────────────────────────────────────────────────────────────
 
@@ -392,7 +392,7 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
     // de una lectura de imagen y pueda corregirlo a mano.
     result.tipoPagare = 'FINANDINA';
     try {
-      const { ocrPdf, extraerCamposPagare } = require('../ocr');
+      const { ocrPdf, extraerCamposPagare } = require('../../ocr');
       const r = await ocrPdf(fs.readFileSync(escaneadoPath), { scale: 3, maxPages: 2 });
       const c = extraerCamposPagare(r.text);
       if (!result.direccion && c.direccion)            result.direccion = c.direccion;

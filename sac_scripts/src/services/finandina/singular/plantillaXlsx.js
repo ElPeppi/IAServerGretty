@@ -1,5 +1,5 @@
 /**
- * services/singular/plantillaXlsx.js — Construcción y llenado de la Plantilla Singular
+ * services/finandina/singular/plantillaXlsx.js — Construcción y llenado de la Plantilla Singular
  *
  *   construirFilas → arma la fila principal del cliente + filas extra de vehículos
  *   fillTemplate   → escribe las filas en la plantilla XLSX (Hoja1 + Hoja2)
@@ -10,8 +10,8 @@
 const XLSX = require('xlsx');
 const fs   = require('fs');
 
-const { parseAnyDate } = require('../../utils/fechas');
-const { calcularCuantia, tipoJuzgado, normalizarTipoJuzgado } = require('../../domain/cuantia');
+const { parseAnyDate } = require('../../../utils/fechas');
+const { calcularCuantia, tipoJuzgado, normalizarTipoJuzgado } = require('../../../domain/cuantia');
 
 // Columnas exactas del template (en orden)
 const TEMPLATE_HEADERS = [

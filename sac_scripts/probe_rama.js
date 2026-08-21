@@ -30,7 +30,7 @@ const puppeteer = require('puppeteer');
 const config = require('./src/config');
 const {
   PBI_URL, consultarCiudadPBI, analizarCuentas, buscarCorreoJuzgado,
-} = require('./src/services/singular/ramaJudicial');
+} = require('./src/services/comun/ramaJudicial');
 
 const ciudad  = process.argv[2] || 'LURUACO';
 const cuantia = (process.argv[3] || 'MINIMA').toUpperCase();

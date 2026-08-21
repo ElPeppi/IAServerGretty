@@ -1,5 +1,5 @@
 /**
- * services/singular/juzgadosConfig.js — Configuración manual de juzgados por ciudad
+ * services/comun/juzgadosConfig.js — Configuración manual de juzgados por ciudad
  *
  * La Rama Judicial desmontó el directorio público de correos (la página existe
  * pero llega vacía), así que la fuente PRIMARIA de especialidades y correos de

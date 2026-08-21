@@ -13,7 +13,7 @@ const multer  = require('multer');
 const fs      = require('fs');
 
 const config = require('../config');
-const { procesarSingular } = require('../services/singular');
+const { procesarSingular } = require('../services/finandina/singular');
 
 const router = express.Router();
 const upload = multer({ dest: config.TEMP_DIR });

@@ -1,5 +1,5 @@
 /**
- * services/singular/localidadBarranquilla.js — Localidad de Barranquilla por barrio
+ * services/comun/localidadBarranquilla.js — Localidad de Barranquilla por barrio
  *
  * En Barranquilla, cuando el juzgado es de Pequeñas Causas, la ciudad del
  * juzgado debe indicar la localidad: "BARRANQUILLA - {LOCALIDAD}".

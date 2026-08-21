@@ -1,5 +1,5 @@
 /**
- * services/singular — Procesador de Plantilla Singular (orquestador)
+ * services/finandina/singular — Procesador de Plantilla Singular (orquestador)
  *
  * Flujo completo:
  *   1. Parsear Excel de entrada (filtra clientes DECEVAL)        → excelEntrada
@@ -31,26 +31,26 @@ const path      = require('path');
 const fs        = require('fs');
 const puppeteer = require('puppeteer');
 
-const config = require('../../config');
-const { resolverCarpetaCedula }       = require('../../utils/carpetas');
-const { renombrarPagarePDFs }         = require('../zips');
-const { parseAnyDate, todayString }   = require('../../utils/fechas');
-const { calcularCuantia, tipoCuantia } = require('../../domain/cuantia');
-const { parsearVehiculos }             = require('../../domain/vehiculos');
+const config = require('../../../config');
+const { resolverCarpetaCedula }       = require('../../../utils/carpetas');
+const { renombrarPagarePDFs }         = require('../../zips');
+const { parseAnyDate, todayString }   = require('../../../utils/fechas');
+const { calcularCuantia, tipoCuantia } = require('../../../domain/cuantia');
+const { parsearVehiculos }             = require('../../../domain/vehiculos');
 
-const { parsearExcelEntrada }          = require('./excelEntrada');
+const { parsearExcelEntrada }          = require('../../comun/excelEntrada');
 const { construirFilas, fillTemplate } = require('./plantillaXlsx');
-const { loadRamaCache, buscarCorreoJuzgado } = require('./ramaJudicial');
+const { loadRamaCache, buscarCorreoJuzgado } = require('../../comun/ramaJudicial');
 const { leerContactos, leerDatosDeSACPdfs, leerDatosDeDeceval, datacreditoTieneCorreos,
         leerCorreosDeDatacredito } = require('./carpetaCliente');
 const { generarDemandasWord }          = require('./demandas');
 const { generarAntecedentes }          = require('./antecedentes');
 const { generarAnexos }                = require('./anexos');
 const { generarPoderes }               = require('./poderes');
-const { determinarLocalidad }          = require('./localidadBarranquilla');
-const { consultarPlacaRunt, cerrarWorker } = require('../runt');
-const { cerrarOcr }                        = require('../ocr');
-const { consultarCamaraRues }          = require('../rues');
+const { determinarLocalidad }          = require('../../comun/localidadBarranquilla');
+const { consultarPlacaRunt, cerrarWorker } = require('../../runt');
+const { cerrarOcr }                        = require('../../ocr');
+const { consultarCamaraRues }          = require('../../rues');
 
 /**
  * Normaliza el mapa de datos manuales a { [cedula]: { numeroPagare, fechaSuscripcion } },
