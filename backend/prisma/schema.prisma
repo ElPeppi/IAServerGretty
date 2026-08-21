@@ -32,6 +32,10 @@ model Document {
   id          String         @id @default(cuid())
   title       String
   type        String         @default("DEMANDA")
+  // Demandante. Denormalizado desde la asignación a propósito: asignacionId es
+  // opcional (hay documentos importados sin lote), así que filtrar por banco vía
+  // JOIN dejaría fuera justo esos.
+  banco       String         @default("FINANDINA")
   status      DocumentStatus @default(PENDING)
   fileUrl     String?        // demanda (Word) — panel izquierdo del visor
   signedUrl   String?
@@ -61,6 +65,7 @@ model Document {
   @@index([status])
   @@index([clientCedula])
   @@index([createdAt])
+  @@index([banco, createdAt])
   @@index([asignacionId])
   @@map("documents")
 }
@@ -71,6 +76,12 @@ model Document {
 model Asignacion {
   id              String     @id @default(cuid())
   nombre          String     @unique          // p. ej. "ASIGNACION 11 DE JUNIO DE 2026" (del archivo)
+  // DEMANDANTE del lote. Se deriva del contenido (EMPRESA/NIT/APLICATIVO) con
+  // detectarBanco() al subir el Excel, porque no hay columna "BANCO". Se guarda
+  // aquí, y no solo en la ruta de Drive, para poder filtrar por demandante sin
+  // parsear rutas — y para que las asignaciones de un segundo banco no queden
+  // indistinguibles de las de FINANDINA.
+  banco           String     @default("FINANDINA")
   fechaAsignacion DateTime?                    // fecha de la asignación (valida la antigüedad de los docs)
   excelUrl        String?                      // Excel de asignación en el NAS
   filas           Json                         // filas del Excel cacheadas [{ IDENTIFICACION, NOMBRE, ... }]
@@ -97,6 +108,7 @@ model Asignacion {
   updatedAt       DateTime   @updatedAt
 
   @@index([lawyerId, createdAt])
+  @@index([banco])
   @@map("asignaciones")
 }
 

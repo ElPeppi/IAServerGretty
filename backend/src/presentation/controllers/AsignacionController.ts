@@ -305,6 +305,7 @@ export class AsignacionController {
         where: { nombre },
         create: {
           nombre,
+          banco,
           fechaAsignacion: fecha && !isNaN(fecha.getTime()) ? fecha : null,
           excelUrl,
           filas: filas as unknown as Prisma.InputJsonValue,
@@ -313,6 +314,7 @@ export class AsignacionController {
           lawyerId: req.user!.userId,
         },
         update: {
+          banco,
           fechaAsignacion: fecha && !isNaN(fecha.getTime()) ? fecha : undefined,
           excelUrl,
           filas: filas as unknown as Prisma.InputJsonValue,
@@ -436,6 +438,9 @@ export class AsignacionController {
           await prisma.asignacion.create({
             data: {
               nombre: it.nombre,
+              // De la RUTA, no del contenido: la carpeta donde está el Excel es
+              // la que dice de qué banco es (ver escanearAsignaciones).
+              banco: it.banco,
               fechaAsignacion: fecha ?? null,
               // Referencia al archivo en su carpeta real (DEMANDAS/{banco}/ASIGNACION/{año}).
               excelUrl: storage.urlFor(it.relPath),
@@ -1000,6 +1005,7 @@ export class AsignacionController {
     const datos = {
       title: `Demanda Ejecutiva Singular — ${doc.nombre || doc.cedula}`,
       type: 'DEMANDA_SINGULAR',
+      banco,
       status: 'GENERATED' as const,
       clientName: doc.nombre || doc.cedula,
       clientCedula: doc.cedula,
@@ -1118,7 +1124,7 @@ export class AsignacionController {
 
   // Forma resumida para la UI.
   private resumen(a: {
-    id: string; nombre: string; fechaAsignacion: Date | null; totalFilas: number;
+    id: string; nombre: string; banco: string; fechaAsignacion: Date | null; totalFilas: number;
     poderUrl: string | null; poderGeneradoAt: Date | null; docsEnServidor: boolean;
     correoPoderUrl?: string | null;
     createdAt: Date; _count?: { poderes: number; documentos: number };
@@ -1126,6 +1132,8 @@ export class AsignacionController {
     return {
       id: a.id,
       nombre: a.nombre,
+      // Demandante del lote. Va en el resumen para que la web pueda filtrar por él.
+      banco: a.banco,
       fechaAsignacion: a.fechaAsignacion,
       totalFilas: a.totalFilas,
       tienePoder: !!a.poderUrl,
