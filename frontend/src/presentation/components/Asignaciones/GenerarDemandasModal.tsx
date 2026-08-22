@@ -1,17 +1,22 @@
 import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
-import { asignacionApi, type AsignacionResumen, type AsignacionPersona } from '../../../infrastructure/api/asignacionApi';
+import { asignacionApi, TIPOS_DEMANDA, type AsignacionResumen, type AsignacionPersona, type TipoPoder } from '../../../infrastructure/api/asignacionApi';
 import { expedienteApi, type CorreoPoder } from '../../../infrastructure/api/expedienteApi';
 
 interface Props {
   asignacion: AsignacionResumen;
   onClose: () => void;
   onDone: (message: string) => void;   // éxito → cerrar + mostrar aviso + refetch
-  onSinPoder: () => void;              // 409 SIN_PODER → abrir popup de poder faltante
+  // 409 SIN_PODER → abrir popup de poder faltante. Se le dice DE QUÉ PROCESO
+  // falta el poder: cada uno se enlaza en su propia columna.
+  onSinPoder: (tipo: TipoPoder) => void;
 }
 
-// El motor SOLO genera ejecutivo singular hoy. Los demás tipos se muestran para
-// que se vean las personas, pero deshabilitados para generar.
-const TIPO_GENERABLE = 'EJECUTIVO SINGULAR';
+// Procesos cuya demanda sabe generar el motor (ver TIPOS_DEMANDA). Los demás se
+// muestran para que se vean las personas, pero deshabilitados para generar.
+//
+// El ejecutivo singular va primero en la lista por ser el volumen habitual.
+const TIPO_PREFERIDO = 'EJECUTIVO SINGULAR';
+const esGenerable = (t: string) => t in TIPOS_DEMANDA;
 
 export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }: Props) {
   const [personas, setPersonas] = useState<AsignacionPersona[]>([]);
@@ -45,9 +50,12 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
       .then((p) => {
         if (cancelado) return;
         setPersonas(p);
-        // Preferir ejecutivo singular; si no hay, el primer tipo disponible.
+        // Preferir ejecutivo singular; si no hay, el primer proceso generable; y
+        // si tampoco, el primero que venga (solo para ver a sus personas).
         const tipos = [...new Set(p.map((x) => x.tipo))];
-        setTipo(tipos.includes(TIPO_GENERABLE) ? TIPO_GENERABLE : (tipos[0] ?? ''));
+        setTipo(tipos.includes(TIPO_PREFERIDO)
+          ? TIPO_PREFERIDO
+          : (tipos.find(esGenerable) ?? tipos[0] ?? ''));
       })
       .catch((err: unknown) => {
         if (cancelado) return;
@@ -63,14 +71,22 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
     const m = new Map<string, number>();
     for (const p of personas) m.set(p.tipo, (m.get(p.tipo) ?? 0) + 1);
     return [...m.entries()]
-      .map(([nombre, count]) => ({ nombre, count }))
-      .sort((a, b) => (a.nombre === TIPO_GENERABLE ? -1 : b.nombre === TIPO_GENERABLE ? 1 : a.nombre.localeCompare(b.nombre)));
+      .map(([nombre, count]) => ({ nombre, count, generable: esGenerable(nombre) }))
+      // Los generables primero; entre ellos, el singular arriba.
+      .sort((a, b) => (a.generable !== b.generable
+        ? (a.generable ? -1 : 1)
+        : a.nombre === TIPO_PREFERIDO ? -1
+        : b.nombre === TIPO_PREFERIDO ? 1
+        : a.nombre.localeCompare(b.nombre)));
   }, [personas]);
 
   const personasTipo = useMemo(() => personas.filter((p) => p.tipo === tipo), [personas, tipo]);
   // Las que ya tienen demanda quedan fuera de todo: ni se marcan ni se envían.
   const pendientesTipo = useMemo(() => personasTipo.filter((p) => !p.generada), [personasTipo]);
-  const generable = tipo === TIPO_GENERABLE;
+  const generable = esGenerable(tipo);
+  // El pago directo saca sus datos de los documentos de la carpeta, no del Excel,
+  // y su anexo no lleva el correo de otorgamiento: esa sección no le aplica.
+  const esPagoDirecto = TIPOS_DEMANDA[tipo] === 'pago_directo';
 
   // Al cambiar de tipo, limpiar la selección (son personas distintas).
   useEffect(() => { setSeleccion(new Set()); }, [tipo]);
@@ -89,7 +105,7 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!generable) { setError('El motor solo genera "Ejecutivo singular" por ahora.'); return; }
+    if (!generable) { setError('El motor todavía no genera demandas de este proceso.'); return; }
     if (!cedulasAEnviar.length) {
       setError(personasTipo.length
         ? 'No queda ninguna demanda pendiente de este tipo.'
@@ -99,11 +115,16 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
     setEnviando(true);
     setError(null);
     try {
-      const res = await asignacionApi.generarDemandas(asignacion.id, cedulasAEnviar, correoPoder, correoRel);
+      const res = esPagoDirecto
+        ? await asignacionApi.generarGarantias(asignacion.id, cedulasAEnviar)
+        : await asignacionApi.generarDemandas(asignacion.id, cedulasAEnviar, correoPoder, correoRel);
       onDone(res.message);
     } catch (err: unknown) {
       const resp = (err as { response?: { status?: number; data?: { codigo?: string; message?: string } } }).response;
-      if (resp?.status === 409 && resp.data?.codigo === 'SIN_PODER') { onSinPoder(); return; }
+      if (resp?.status === 409 && resp.data?.codigo === 'SIN_PODER') {
+        onSinPoder(TIPOS_DEMANDA[tipo] ?? 'singular');
+        return;
+      }
       setError(resp?.data?.message ?? (err instanceof Error ? err.message : 'Error al generar demandas'));
     } finally {
       setEnviando(false);
@@ -142,14 +163,22 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
               ) : (
                 tipos.map((t) => (
                   <option key={t.nombre} value={t.nombre}>
-                    {t.nombre} ({t.count}){t.nombre !== TIPO_GENERABLE ? ' — no soportado aún' : ''}
+                    {t.nombre} ({t.count}){t.generable ? '' : ' — no soportado aún'}
                   </option>
                 ))
               )}
             </select>
             {!cargando && !generable && (
               <p className="text-xs text-amber-600 mt-1">
-                El motor solo genera <b>Ejecutivo singular</b> por ahora. Este tipo se muestra solo como referencia.
+                El motor todavía no genera demandas de este proceso. Aparece solo como referencia.
+              </p>
+            )}
+            {!cargando && esPagoDirecto && (
+              <p className="text-xs text-gray-500 mt-1">
+                Se genera la <b>solicitud de aprehensión y entrega</b>. Los datos salen de los
+                documentos de cada carpeta (contrato de prenda, formularios de Confecámaras, RUNT y
+                Servientrega); si a un cliente le falta alguno, esa solicitud no se genera y se
+                informa cuál faltó.
               </p>
             )}
           </div>
@@ -212,8 +241,11 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
 
           {/* Correo del banco → ANEXO 1. Se ELIGE de los que ya están en el
               servidor (carpeta PODERES, del más reciente al más viejo); subir uno
-              nuevo queda como salida de emergencia si aún no está guardado. */}
-          <div>
+              nuevo queda como salida de emergencia si aún no está guardado.
+              No aplica al pago directo: su anexo del poder no lleva el correo de
+              otorgamiento, así que la sección se oculta en vez de pedir algo que
+              se va a ignorar. */}
+          <div className={esPagoDirecto ? 'hidden' : undefined}>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Correo del poder <span className="text-gray-400 font-normal">→ ANEXO 1</span>
             </label>

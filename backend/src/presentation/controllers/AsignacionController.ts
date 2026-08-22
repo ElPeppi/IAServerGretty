@@ -1065,6 +1065,13 @@ export class AsignacionController {
     for (const persona of objetivo) {
       const quien = `${persona.nombre || persona.cedula}`;
       try {
+        // Drive es la fuente de verdad y el disco del motor solo un caché: hay que
+        // BAJAR la carpeta del cliente antes de generar y borrarla al terminar,
+        // igual que en el ejecutivo singular. Sin esto el motor no encuentra el
+        // contrato de prenda ni los formularios, y omite a todo el mundo por
+        // "faltan documentos" — con los documentos perfectamente puestos en Drive.
+        await hidratarCedula(persona.cedula, banco, 'pago_directo');
+
         const r = await engineService.generateGarantias({
           excel: input.excel,
           excelFilename: `${input.nombre}.xlsx`,
@@ -1101,6 +1108,10 @@ export class AsignacionController {
           message: `${quien}: ${msg}`,
           meta: { asignacionId: input.asignacionId, cedula: persona.cedula },
         });
+      } finally {
+        // Se limpia SIEMPRE, también si la generación falló: lo que valga ya está
+        // en Drive, y dejar la copia local llenaría el disco lote tras lote.
+        limpiarLocalCedula(persona.cedula);
       }
     }
 
@@ -1302,17 +1313,25 @@ export class AsignacionController {
         res.status(404).json({ message: 'Asignación no encontrada' });
         return;
       }
+      // A QUÉ PROCESO pertenece el poder que se sube. Cada uno tiene su columna y
+      // su carpeta: sin esto, subir a mano el poder de un lote de PAGO DIRECTO lo
+      // guardaba en la del ejecutivo singular, y la generación seguía respondiendo
+      // "no hay poder enlazado" sin que se entendiera por qué.
+      const proceso: Proceso = req.body?.tipo === 'pago_directo' ? 'pago_directo' : 'singular';
+
       // Misma carpeta que el poder generado por el motor (ver `relPoder`): el que
       // se sube a mano no tiene por qué acabar en otro sitio.
       const poderUrl = storage.enabled
-        ? (await storage.save(this.relPoder(asignacion, file.originalname), file.buffer, DOCX_MIME)).url
-        : fileStorage.saveBuffer(file.buffer, `poderes-${asignacion.id}.docx`, DOCX_MIME).url;
+        ? (await storage.save(this.relPoder(asignacion, file.originalname, proceso), file.buffer, DOCX_MIME)).url
+        : fileStorage.saveBuffer(file.buffer, `poderes-${proceso}-${asignacion.id}.docx`, DOCX_MIME).url;
 
       await prisma.asignacion.update({
         where: { id: asignacion.id },
-        data: { poderUrl, poderGeneradoAt: new Date() },
+        data: proceso === 'pago_directo'
+          ? { poderPagoDirectoUrl: poderUrl, poderPagoDirectoAt: new Date() }
+          : { poderUrl, poderGeneradoAt: new Date() },
       });
-      res.json({ success: true, poderUrl });
+      res.json({ success: true, poderUrl, tipo: proceso });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al subir el poder';
       res.status(500).json({ message });
@@ -1350,6 +1369,7 @@ export class AsignacionController {
     id: string; nombre: string; banco: string; fechaAsignacion: Date | null; totalFilas: number;
     poderUrl: string | null; poderGeneradoAt: Date | null; docsEnServidor: boolean;
     correoPoderUrl?: string | null;
+    poderPagoDirectoUrl?: string | null;
     createdAt: Date; _count?: { poderes: number; documentos: number };
   }) {
     return {
@@ -1360,6 +1380,11 @@ export class AsignacionController {
       fechaAsignacion: a.fechaAsignacion,
       totalFilas: a.totalFilas,
       tienePoder: !!a.poderUrl,
+      // Los dos procesos tienen su propio poder y su propia columna. La web
+      // necesita saber de cuál dispone: un lote con solo el de pago directo tiene
+      // poder de sobra para generar garantías, y mirando únicamente `tienePoder`
+      // parecía no tener ninguno.
+      tienePoderPagoDirecto: !!a.poderPagoDirectoUrl,
       poderUrl: a.poderUrl,
       poderGeneradoAt: a.poderGeneradoAt,
       docsEnServidor: a.docsEnServidor,

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useAsignaciones } from '../../application/hooks/useAsignaciones';
 import { useRefreshOnNotification } from '../../application/context/NotificationContext';
-import { asignacionApi, type AsignacionResumen } from '../../infrastructure/api/asignacionApi';
+import { asignacionApi, type AsignacionResumen, type TipoPoder } from '../../infrastructure/api/asignacionApi';
 import { SubirAsignacionModal } from '../components/Asignaciones/SubirAsignacionModal';
 import { GenerarPoderesModal } from '../components/Asignaciones/GenerarPoderesModal';
 import { GenerarDemandasModal } from '../components/Asignaciones/GenerarDemandasModal';
@@ -25,6 +25,8 @@ export function AsignacionesPage() {
   const [poderTarget, setPoderTarget] = useState<AsignacionResumen | null>(null);   // Generar poderes
   const [demandasTarget, setDemandasTarget] = useState<AsignacionResumen | null>(null); // modal generar demandas
   const [faltanteTarget, setFaltanteTarget] = useState<AsignacionResumen | null>(null); // popup poder faltante
+  // Proceso cuyo poder falta: decide en qué columna se enlaza el Word que se suba.
+  const [faltanteTipo, setFaltanteTipo] = useState<TipoPoder>('singular');
   const [actualizando, setActualizando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const [fechaAsc, setFechaAsc] = useState(false); // false = más recientes primero
@@ -82,7 +84,14 @@ export function AsignacionesPage() {
   // abre el modal (tipo de demanda + selección de personas). El modal reusa el poder
   // y, si por alguna razón no hay, recibe el 409 y volvemos al popup de poder faltante.
   const handleGenerarDemandas = (a: AsignacionResumen) => {
-    if (!a.tienePoder) { setFaltanteTarget(a); return; }
+    // Basta con tener el poder de ALGUNO de los dos procesos: cuál hace falta
+    // depende del que se elija dentro del modal, y si no está, el 409 devuelve
+    // aquí con el proceso concreto. Sin ninguno, se pide el del singular, que es
+    // el caso normal.
+    if (!a.tienePoder && !a.tienePoderPagoDirecto) {
+      setFaltanteTarget(a);
+      return;
+    }
     setAviso(null);
     setDemandasTarget(a);
   };
@@ -240,12 +249,18 @@ export function AsignacionesPage() {
           asignacion={demandasTarget}
           onClose={() => setDemandasTarget(null)}
           onDone={(msg) => { setDemandasTarget(null); setAviso(msg); void refetch(); }}
-          onSinPoder={() => { const a = demandasTarget; setDemandasTarget(null); setFaltanteTarget(a); }}
+          onSinPoder={(t) => {
+            const a = demandasTarget;
+            setDemandasTarget(null);
+            setFaltanteTipo(t);
+            setFaltanteTarget(a);
+          }}
         />
       )}
       {faltanteTarget && (
         <PoderFaltanteModal
           asignacion={faltanteTarget}
+          tipo={faltanteTipo}
           onClose={() => setFaltanteTarget(null)}
           onGenerar={() => { const a = faltanteTarget; setFaltanteTarget(null); setPoderTarget(a); }}
           onSubido={() => { setFaltanteTarget(null); refetch(); }}

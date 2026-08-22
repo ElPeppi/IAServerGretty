@@ -9,6 +9,7 @@ export interface AsignacionResumen {
   fechaAsignacion: string | null;
   totalFilas: number;
   tienePoder: boolean;
+  tienePoderPagoDirecto: boolean;
   poderUrl: string | null;
   poderGeneradoAt: string | null;
   docsEnServidor: boolean;
@@ -25,6 +26,15 @@ export type TipoPoder = 'singular' | 'pago_directo';
 // Etiqueta del proceso (la que devuelve /personas) → parámetro que espera la API.
 // Solo los procesos aquí listados se pueden generar; el resto es informativo.
 export const TIPOS_PODER: Record<string, TipoPoder> = {
+  'EJECUTIVO SINGULAR': 'singular',
+  'TRÁMITE PAGO DIRECTO': 'pago_directo',
+};
+
+// Procesos cuya DEMANDA sabe generar el motor. Se mantiene aparte de TIPOS_PODER
+// porque las dos listas avanzan por separado: un proceso puede tener plantilla de
+// poder mucho antes que generador de demanda, que es como estuvo el pago directo
+// hasta ahora.
+export const TIPOS_DEMANDA: Record<string, TipoPoder> = {
   'EJECUTIVO SINGULAR': 'singular',
   'TRÁMITE PAGO DIRECTO': 'pago_directo',
 };
@@ -78,11 +88,15 @@ export const asignacionApi = {
       .then((r) => r.data),
 
   // Enlaza un Word de poderes ya hecho (subido a mano) a la asignación.
-  subirPoder: (id: string, poder: File) => {
+  // `tipo` decide EN QUÉ COLUMNA queda enlazado (poderUrl o poderPagoDirectoUrl) y
+  // en qué carpeta se guarda. Sin él, el poder de un lote de pago directo acababa
+  // en la del ejecutivo singular y la generación seguía diciendo que no hay poder.
+  subirPoder: (id: string, poder: File, tipo: TipoPoder = 'singular') => {
     const form = new FormData();
     form.append('poderFile', poder);
+    form.append('tipo', tipo);
     return apiClient
-      .post<{ success: boolean; poderUrl: string }>(`/asignaciones/${id}/poder`, form, {
+      .post<{ success: boolean; poderUrl: string; tipo: TipoPoder }>(`/asignaciones/${id}/poder`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       .then((r) => r.data);
@@ -120,4 +134,16 @@ export const asignacionApi = {
       )
       .then((r) => r.data);
   },
+
+  // Solicitudes de aprehensión y entrega (trámite de pago directo). Va por su
+  // propio endpoint, no por generarDemandas: los datos no salen del Excel sino de
+  // los documentos que el banco deja en la carpeta de cada cliente, y no lleva
+  // correo del poder. También responde 409 { codigo: 'SIN_PODER' }.
+  generarGarantias: (id: string, cedulas?: string[]) =>
+    apiClient
+      .post<{ success: boolean; started: boolean; message: string }>(
+        `/asignaciones/${id}/generar-garantias`,
+        cedulas && cedulas.length ? { cedulas } : {},
+      )
+      .then((r) => r.data),
 };

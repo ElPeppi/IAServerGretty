@@ -33,6 +33,7 @@ const { cerrarOcr } = require('../../ocr');
 const { localizar } = require('./documentos');
 const { extraer } = require('./extraccion');
 const { construirCampos, generarDemanda } = require('./demandas');
+const { generarAnexos } = require('./anexos');
 
 const MIME_DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -65,7 +66,7 @@ function nombreDemanda(nombre, cedula) {
   return `SOLICITUD DE APREHENSION DEMANDANTE BANCO FINANDINA SA BIC CONTRA ${limpio} CC ${cedula}.docx`;
 }
 
-function leerArchivoB64(filePath, sacDocsDir) {
+function leerArchivoB64(filePath, sacDocsDir, mimeType = MIME_DOCX) {
   try {
     if (!filePath || !fs.existsSync(filePath)) return null;
     const relPath = sacDocsDir
@@ -73,7 +74,7 @@ function leerArchivoB64(filePath, sacDocsDir) {
       : undefined;
     return {
       filename: path.basename(filePath),
-      mimeType: MIME_DOCX,
+      mimeType,
       base64: fs.readFileSync(filePath).toString('base64'),
       relPath,
     };
@@ -169,6 +170,10 @@ async function procesarGarantias(excelBuffer, options = {}) {
         const buffer = generarDemanda(plantilla, fieldMap);
         const destino = path.join(carpeta, nombreDemanda(datos.garante.nombre, cedula));
         fs.writeFileSync(destino, buffer);
+
+        // Los anexos NO bloquean: si fallan, la demanda ya está hecha y se puede
+        // armar el PDF a mano. Devolver '' y seguir es mejor que perder el lote.
+        const anexos = await generarAnexos(carpeta, halladas, datos, options.correoPoderBuffer || null);
 
         // Trazabilidad de lo que no se pudo confirmar contra dos fuentes, para
         // que quien revise sepa dónde mirar. No bloquean: el dato está.

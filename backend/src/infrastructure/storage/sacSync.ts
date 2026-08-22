@@ -175,18 +175,37 @@ export async function hidratarCedula(
     );
     const yaBajado = new Set<string>();
     const pendientes: Array<{ rel: string; nombre: string }> = [];
-    carpetas.forEach((carpeta, i) => {
-      for (const f of listados[i] ?? []) {
-        if (yaBajado.has(f)) continue;
-        yaBajado.add(f);
-        pendientes.push({ rel: unir(carpeta.relPath, f), nombre: f });
+    // Se baja también lo que hay en SUBCARPETAS, conservando la estructura.
+    //
+    // Al ejecutivo singular le daba igual —sus documentos cuelgan sueltos de la
+    // carpeta del cliente—, pero el banco entrega los del trámite de pago directo
+    // repartidos: la carta al garante, el formulario de ejecución y el acta de
+    // Servientrega suelen ir en una subcarpeta con el nombre de la persona. Sin
+    // esto, tres de los seis documentos obligatorios no llegaban al motor y todos
+    // los clientes se omitían por "faltan documentos".
+    const recolectar = async (relDir: string, prefijo: string, nombres: string[]): Promise<void> => {
+      for (const f of nombres) {
+        const rel = unir(relDir, f);
+        const relLocal = prefijo ? `${prefijo}/${f}` : f;
+        if (yaBajado.has(relLocal)) continue;
+        yaBajado.add(relLocal);
+        // Una carpeta se distingue porque se puede listar; un archivo da error o
+        // lista vacío. Se prueba una sola vez y se reutiliza el resultado.
+        const hijos = /\.[A-Za-z0-9]{1,5}$/.test(f) ? [] : await storage.list(rel).catch(() => []);
+        if (hijos.length) await recolectar(rel, relLocal, hijos);
+        else pendientes.push({ rel, nombre: relLocal });
       }
-    });
+    };
+    for (let i = 0; i < carpetas.length; i++) {
+      await recolectar(carpetas[i]!.relPath, '', listados[i] ?? []);
+    }
     // Solo lecturas: no crean carpetas, así que no hay carrera posible.
     await enParalelo(pendientes, async ({ rel, nombre }) => {
       try {
         const buf = await storage.read(rel);
-        fs.writeFileSync(path.join(absDir, nombre), buf);
+        const destino = path.join(absDir, nombre);
+        fs.mkdirSync(path.dirname(destino), { recursive: true });
+        fs.writeFileSync(destino, buf);
         bajados++;
       } catch (e) {
         console.error('[sacSync] no se pudo hidratar', ced, nombre, e instanceof Error ? e.message : e);

@@ -1,15 +1,18 @@
 import { useRef, useState } from 'react';
-import { asignacionApi, type AsignacionResumen } from '../../../infrastructure/api/asignacionApi';
+import { asignacionApi, type AsignacionResumen, type TipoPoder } from '../../../infrastructure/api/asignacionApi';
 
 interface Props {
   asignacion: AsignacionResumen;
+  // Proceso cuyo poder falta. Cada uno se enlaza en su propia columna, así que
+  // subir el Word sin saber cuál es lo dejaría en el sitio equivocado.
+  tipo?: TipoPoder;
   onClose: () => void;
   onGenerar: () => void;   // abrir el modal de Generar poderes
   onSubido: () => void;    // se subió el Word y quedó enlazado
 }
 
 // Popup: "no hay poder enlazado a esta asignación, ¿subirlo o generarlo?"
-export function PoderFaltanteModal({ asignacion, onClose, onGenerar, onSubido }: Props) {
+export function PoderFaltanteModal({ asignacion, tipo = 'singular', onClose, onGenerar, onSubido }: Props) {
   const [isLoading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -19,7 +22,7 @@ export function PoderFaltanteModal({ asignacion, onClose, onGenerar, onSubido }:
     setLoading(true);
     setError(null);
     try {
-      await asignacionApi.subirPoder(asignacion.id, f);
+      await asignacionApi.subirPoder(asignacion.id, f, tipo);
       onSubido();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
