@@ -1,20 +1,26 @@
 /**
  * services/finandina/garantia/anexos.js — ANEXOS.pdf del TRÁMITE DE PAGO DIRECTO.
  *
- * Une en un solo PDF los once anexos que enumera la SOLICITUD DE APREHENSIÓN,
+ * Une en un solo PDF los DIEZ anexos que enumera la SOLICITUD DE APREHENSIÓN,
  * cada uno tras su carátula numerada. El orden y los textos salen literalmente
- * del acápite "PRUEBAS Y ANEXOS" de la plantilla: si ahí se reordena algo, aquí
- * hay que reordenarlo igual, porque la demanda se remite a esos números.
+ * del acápite "ANEXOS:" de la demanda: si ahí se reordena algo, aquí hay que
+ * reordenarlo igual, porque la demanda se remite a esos números.
  *
- * SE DIFERENCIA DEL EJECUTIVO SINGULAR en que aquí NO hay anexos condicionales:
- * la lista es fija, siempre once. En el singular la numeración baila según haya
- * vehículos o empleador; aquí no, porque los documentos que faltan bloquean la
+ * SON DIEZ, NO ONCE. El ANEXO 4 es UNO de dos —el certificado de tradición si el
+ * banco lo mandó, y si no el del RUNT—, nunca los dos; de ahí los dos modelos de
+ * demanda del Drive ("MODELO 1 CTL" y "MODELO 2 RUNT"). El resto de la lista es
+ * fija: a diferencia del ejecutivo singular, aquí la numeración no baila según
+ * haya vehículos o empleador, porque los documentos que faltan bloquean la
  * generación antes de llegar hasta aquí (ver garantia/documentos.js).
  *
+ * LOS TEXTOS SE COPIAN TAL CUAL, erratas incluidas ("INCRIPCION", "envió",
+ * "requisito para actual"). No son descuidos de este archivo: son las carátulas
+ * que la oficina lleva radicando, y el encargo era que lo generado saliera igual
+ * que lo radicado. Corregirlas es una decisión del despacho, no del motor.
+ *
  * La carátula va SIEMPRE, aunque el documento no esté. Los cuatro certificados
- * compartidos y el certificado de tradición pueden faltar sin que sea grave —se
- * insertan a mano después—, y dejar el hueco numerado es justo lo que permite
- * hacerlo sin recontar nada.
+ * compartidos pueden faltar sin que sea grave —se insertan a mano después—, y
+ * dejar el hueco numerado es justo lo que permite hacerlo sin recontar nada.
  */
 
 'use strict';
@@ -44,31 +50,22 @@ function correoPoderPagoDirecto() {
   );
 }
 
-// Textos de carátula, copiados del acápite ANEXOS de la plantilla. {PLACA} y
-// {CIUDAD} se reemplazan con los datos del cliente.
+// Textos de carátula, transcritos de las radicadas (ver cabecera: las erratas
+// van a propósito). {PLACA}, {CIUDAD} y {NOMBRE} se reemplazan con los datos del
+// cliente, igual que los MERGEFIELD de la demanda.
 const DESC = {
   poder: 'Poder especial para obrar conferido a la sociedad J RAMOS ABOGADOS Y ASOCIADOS S.A.S por el acreedor garantizado BANCO FINANDINA BIC conforme a la ley 2213 del 13 de junio de 2022',
-  prenda: 'Copia del Contrato de prenda sin Tenencia debidamente suscrito por el garante y donde consta la aceptación por parte del garante, al procedimiento de PAGO DIRECTO, contemplado en la Ley 1676 de 2013',
-  formularios: 'Formularios de INSCRIPCIÓN INICIAL y de EJECUCIÓN POR PAGO DIRECTO expedidos por el Registro de Garantías Mobiliarias',
+  prenda: 'Copia del Contrato de prenda sin Tenencia debidamente suscrito por el garante Sr(a). {NOMBRE} y donde consta la aceptación por parte del garante, al procedimiento de PAGO DIRECTO, contemplado en la Ley 1676 de 2013',
+  formularios: 'Formularios de INCRIPCION INICIAL y de EJECUCIÓN POR PAGO DIRECTO expedido por el Registro de Garantías Mobiliarias',
   tradicion: 'Certificado de Tradición del vehículo de placa {PLACA} expedido por la secretaria de transporte y transito de {CIUDAD}',
   runt: 'Certificado del vehículo de placa {PLACA}, expedido por RUNT',
-  requerimiento: 'Copia del Requerimiento de entrega voluntaria del vehículo enviada a la dirección electrónica del garante',
-  servientrega: 'Constancia de envío del correo electrónico de requerimiento de entrega voluntaria a la dirección del garante, expedido por Servientrega',
+  requerimiento: 'Copia del Requerimiento de entrega voluntaria del vehículo enviada la dirección electrónica del garante, señor(a) {NOMBRE}',
+  servientrega: 'Constancia de envió correo electrónico requerimiento entrega voluntaria a la dirección del garante, señor(a) {NOMBRE}, expedido por Servientrega',
   ccoJRamos: 'Certificado de existencia y representación legal de la sociedad J RAMOS ABOGADOS Y ASOCIADOS S.A.S, expedido por la cámara de comercio de Barranquilla',
-  sirna: 'Certificado de registro Nacional de abogados del abogado JAIRO ENRIQUE RAMOS LAZARO para demostrar el requisito para actuar de la Sociedad J RAMOS ABOGADOS S.A.S. de conformidad con el inciso primero del artículo 75 del C.G.P',
+  sirna: 'Certificado de registro Nacional de abogados del abogado JAIRO ENRIQUE RAMOS LAZARO para demostrar el requisito para actual de la Sociedad J RAMOS ABOGADOS S.A.S. de conformidad con el inciso primero del artículo 75 del C.G.P.',
   superfin: 'Certificado de existencia y representación legal de BANCO FINANDINA BIC expedido por Superintendencia Financiera de Colombia',
   ccoFin: 'Certificado de Cámara de Comercio de BANCO FINANDINA BIC. expedido por la Cámara de Comercio de Bogotá',
 };
-
-/** Certificado de tradición y libertad. La oficina lo nombra "CTL {cédula}.pdf". */
-function buscarTradicion(dir) {
-  try {
-    const f = fs.readdirSync(dir).find((n) => /\.pdf$/i.test(n) && /\bCTL\b|TRADICION/i.test(n));
-    return f ? path.join(dir, f) : null;
-  } catch (e) {
-    return null;
-  }
-}
 
 /** El poder .docx del cliente, si el motor lo dejó en su carpeta. */
 function buscarPoderDocx(dir) {
@@ -89,12 +86,16 @@ function buscarPoderDocx(dir) {
  */
 async function generarAnexos(carpeta, halladas, datos, correoPoderBuffer = null) {
   const d = halladas.documentos || {};
-  const placa = (datos.vehiculo && datos.vehiculo.placa) || '';
-  const ciudad = (datos.garante && datos.garante.municipio) || '';
+  const placa = ((datos.vehiculo && datos.vehiculo.placa) || '').toUpperCase();
+  const ciudad = ((datos.garante && datos.garante.municipio) || '').toUpperCase();
+  const nombre = (datos.garante && datos.garante.nombre) || '';
   const comp = resolverCompartidos();
 
   const leer = (p) => fs.readFileSync(p);
-  const texto = (s) => s.replace('{PLACA}', placa || '#####').replace('{CIUDAD}', ciudad || '#####');
+  const texto = (s) => s
+    .replace('{PLACA}', placa || '#####')
+    .replace('{CIUDAD}', ciudad || '#####')
+    .replace('{NOMBRE}', nombre || '#####');
 
   try {
     const out = await PDFDocument.create();
@@ -144,27 +145,30 @@ async function generarAnexos(carpeta, halladas, datos, correoPoderBuffer = null)
     await anexar('Prenda', d.prenda && d.prenda.ruta);
 
     // 3 — Los DOS formularios de Confecámaras bajo una sola carátula, como los
-    // enumera la demanda ("Formularios de INSCRIPCIÓN INICIAL y de EJECUCIÓN").
+    // enumera la demanda ("Formularios de INCRIPCION INICIAL y de EJECUCIÓN").
     car(DESC.formularios);
     await anexar('Inscripción', d.inscripcion && d.inscripcion.ruta);
     await anexar('Ejecución', d.ejecucion && d.ejecucion.ruta);
 
-    // 4 — Certificado de tradición. No lo exige el localizador: no siempre llega
-    // con el resto y se inserta a mano.
-    car(DESC.tradicion);
-    await anexar('Tradición', buscarTradicion(carpeta));
+    // 4 — El certificado de tradición SI llegó; si no, el del RUNT. Uno de los
+    // dos, nunca los dos: es el mismo criterio con el que garantia/demandas.js
+    // borra de la lista de anexos el renglón que no aplica, y los dos tienen que
+    // decidir igual o la demanda se remitiría a un número que no existe.
+    if (d.tradicion) {
+      car(DESC.tradicion);
+      await anexar('Tradición', d.tradicion.ruta);
+    } else {
+      car(DESC.runt);
+      await anexar('RUNT', d.runt && d.runt.ruta);
+    }
 
-    // 5 — RUNT.
-    car(DESC.runt);
-    await anexar('RUNT', d.runt && d.runt.ruta);
-
-    // 6 y 7 — Requerimiento al garante y su constancia de envío.
+    // 5 y 6 — Requerimiento al garante y su constancia de envío.
     car(DESC.requerimiento);
     await anexar('Carta', d.carta && d.carta.ruta);
     car(DESC.servientrega);
     await anexar('Servientrega', d.servientrega && d.servientrega.ruta);
 
-    // 8 a 11 — Certificados compartidos, los mismos del ejecutivo singular.
+    // 7 a 10 — Certificados compartidos, los mismos del ejecutivo singular.
     car(DESC.ccoJRamos);
     await anexar('CCO J Ramos', comp.ccoJRamos);
     car(DESC.sirna);

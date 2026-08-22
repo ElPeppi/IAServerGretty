@@ -17,6 +17,8 @@ interface Props {
 // El ejecutivo singular va primero en la lista por ser el volumen habitual.
 const TIPO_PREFERIDO = 'EJECUTIVO SINGULAR';
 const esGenerable = (t: string) => t in TIPOS_DEMANDA;
+// Tipo del Excel → proceso, para pedir los poderes y correos de ESE trámite.
+const procesoDe = (t: string): TipoPoder => TIPOS_DEMANDA[t] ?? 'singular';
 
 export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }: Props) {
   const [personas, setPersonas] = useState<AsignacionPersona[]>([]);
@@ -34,13 +36,19 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
 
   useEffect(() => {
     let cancelado = false;
+    setCargandoCorreos(true);
+    // Cada proceso tiene SUS correos de otorgamiento, en carpetas distintas: los
+    // del ejecutivo singular dicen otra cosa y van dirigidos a otro trámite, así
+    // que la lista se recarga al cambiar de tipo y se limpia lo ya elegido.
+    setCorreoRel('');
+    setCorreoPoder(null);
     expedienteApi
-      .correosPoder('singular')
+      .correosPoder(procesoDe(tipo))
       .then((cs) => { if (!cancelado) setCorreos(cs); })
       .catch(() => { if (!cancelado) setCorreos([]); })
       .finally(() => { if (!cancelado) setCargandoCorreos(false); });
     return () => { cancelado = true; };
-  }, []);
+  }, [tipo]);
 
   useEffect(() => {
     let cancelado = false;
@@ -85,7 +93,8 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
   const pendientesTipo = useMemo(() => personasTipo.filter((p) => !p.generada), [personasTipo]);
   const generable = esGenerable(tipo);
   // El pago directo saca sus datos de los documentos de la carpeta, no del Excel,
-  // y su anexo no lleva el correo de otorgamiento: esa sección no le aplica.
+  // y va por su propio endpoint. El correo de otorgamiento sí lo lleva, igual que
+  // el singular, pero el suyo: por eso la lista se pide por proceso.
   const esPagoDirecto = TIPOS_DEMANDA[tipo] === 'pago_directo';
 
   // Al cambiar de tipo, limpiar la selección (son personas distintas).
@@ -94,6 +103,10 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
   // Sin marcar = todas las PENDIENTES, no todas. Antes esto reprocesaba las ya
   // generadas, que es trabajo caro y de riesgo (cada una llama al motor).
   const cedulasAEnviar = seleccion.size ? [...seleccion] : pendientesTipo.map((p) => p.cedula);
+
+  // El pago directo no tiene correo guardado al que caer: si no se elige uno, el
+  // servidor rechaza el lote. Se bloquea aquí para no gastar el viaje.
+  const faltaCorreo = esPagoDirecto && !correoPoder && !correoRel;
 
   const togglePersona = (cedula: string) => {
     setSeleccion((prev) => {
@@ -116,7 +129,7 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
     setError(null);
     try {
       const res = esPagoDirecto
-        ? await asignacionApi.generarGarantias(asignacion.id, cedulasAEnviar)
+        ? await asignacionApi.generarGarantias(asignacion.id, cedulasAEnviar, correoPoder, correoRel)
         : await asignacionApi.generarDemandas(asignacion.id, cedulasAEnviar, correoPoder, correoRel);
       onDone(res.message);
     } catch (err: unknown) {
@@ -240,12 +253,11 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
           </div>
 
           {/* Correo del banco → ANEXO 1. Se ELIGE de los que ya están en el
-              servidor (carpeta PODERES, del más reciente al más viejo); subir uno
-              nuevo queda como salida de emergencia si aún no está guardado.
-              No aplica al pago directo: su anexo del poder no lleva el correo de
-              otorgamiento, así que la sección se oculta en vez de pedir algo que
-              se va a ignorar. */}
-          <div className={esPagoDirecto ? 'hidden' : undefined}>
+              servidor (carpeta PODERES del proceso, del más reciente al más
+              viejo); subir uno nuevo queda como salida de emergencia si aún no
+              está guardado. El pago directo tiene su propia carpeta y sus propios
+              correos: la lista se recarga al cambiar de tipo. */}
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Correo del poder <span className="text-gray-400 font-normal">→ ANEXO 1</span>
             </label>
@@ -259,8 +271,11 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
                 <option value="">Cargando correos del servidor…</option>
               ) : (
                 <>
+                  {/* El pago directo no guarda su correo en la asignación (ver
+                      asignacionApi.generarGarantias), así que ahí no hay nada
+                      que reusar: siempre hay que elegir uno. */}
                   <option value="">
-                    {asignacion.correoPoderUrl
+                    {asignacion.correoPoderUrl && !esPagoDirecto
                       ? '— Usar el ya guardado en esta asignación —'
                       : '— Elige el correo del poder —'}
                   </option>
@@ -290,9 +305,9 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
               <input ref={correoRef} type="file" accept=".pdf" className="hidden" disabled={enviando}
                 onChange={(e) => { if (e.target.files?.[0]) { setCorreoPoder(e.target.files[0]); setCorreoRel(''); } }} />
             </div>
-            {!correos.length && !cargandoCorreos && !asignacion.correoPoderUrl && (
+            {!correos.length && !cargandoCorreos && (!asignacion.correoPoderUrl || esPagoDirecto) && (
               <p className="text-xs text-amber-600 mt-1">
-                No hay correos de poder en el servidor: sube uno.
+                No hay correos de poder {esPagoDirecto ? 'de pago directo ' : ''}en el servidor: sube uno.
               </p>
             )}
           </div>
@@ -306,7 +321,7 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
               className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50">
               Cancelar
             </button>
-            <button type="submit" disabled={enviando || cargando || !generable || !cedulasAEnviar.length}
+            <button type="submit" disabled={enviando || cargando || !generable || !cedulasAEnviar.length || faltaCorreo}
               className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
               {enviando ? 'Generando…' : `Generar${cedulasAEnviar.length ? ` (${cedulasAEnviar.length})` : ''}`}
             </button>

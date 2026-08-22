@@ -137,13 +137,25 @@ export const asignacionApi = {
 
   // Solicitudes de aprehensión y entrega (trámite de pago directo). Va por su
   // propio endpoint, no por generarDemandas: los datos no salen del Excel sino de
-  // los documentos que el banco deja en la carpeta de cada cliente, y no lleva
-  // correo del poder. También responde 409 { codigo: 'SIN_PODER' }.
-  generarGarantias: (id: string, cedulas?: string[]) =>
-    apiClient
+  // los documentos que el banco deja en la carpeta de cada cliente.
+  //
+  // El correo del poder funciona igual que en el singular —se elige uno del
+  // servidor o se sube— pero tiene que ser el de PAGO DIRECTO, así que la lista
+  // se pide con ese proceso. A diferencia del singular NO se guarda en la
+  // asignación: hay que elegirlo en cada generación.
+  //
+  // Responde 409 { codigo: 'SIN_PODER' } y 400 { codigo: 'SIN_CORREO_PODER' }.
+  generarGarantias: (id: string, cedulas?: string[], correoPoder?: File | null, correoPoderRel?: string) => {
+    const form = new FormData();
+    if (cedulas && cedulas.length) form.append('cedulas', JSON.stringify(cedulas));
+    if (correoPoder) form.append('correoPoder', correoPoder);
+    else if (correoPoderRel) form.append('correoPoderRel', correoPoderRel);
+    return apiClient
       .post<{ success: boolean; started: boolean; message: string }>(
         `/asignaciones/${id}/generar-garantias`,
-        cedulas && cedulas.length ? { cedulas } : {},
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
       )
-      .then((r) => r.data),
+      .then((r) => r.data);
+  },
 };

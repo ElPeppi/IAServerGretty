@@ -37,6 +37,7 @@ const { textoDePdf } = require('../../comun/pdfTexto');
  * `contenido` — debe aparecer en el texto del PDF. Confirma y desempata.
  * `escaneado` — el PDF no trae capa de texto: no se le exige `contenido` y lo
  *               leerá el OCR más adelante.
+ * `opcional`   — si no aparece NO bloquea la generación (no entra en `faltantes`).
  */
 const TIPOS = {
   prenda: {
@@ -79,6 +80,19 @@ const TIPOS = {
     // de verdad es el contenido, y las claves solo acotan la búsqueda.
     claves: /TITULO|TESTIGO|SERVIENTREGA|ENVIO|E-?ENTREGA/,
     contenido: /Servientrega[\s\S]{0,80}Acta\s*de\s*Env[ií]o/i,
+  },
+  // OPCIONAL, y el único que decide algo: su presencia elige el MODELO de
+  // demanda. Con certificado de tradición, el ANEXO 4 es ese certificado; sin
+  // él, es el del RUNT. Nunca van los dos (ver garantia/demandas.js).
+  //
+  // El de Jorge es un escaneo sin capa de texto, así que no hay contenido que
+  // exigirle: se identifica solo por el nombre, que la oficina sí normaliza
+  // ("CTL {cédula}.pdf").
+  tradicion: {
+    etiqueta: 'certificado de tradición y libertad',
+    claves: /\bCTL\b|TRADICION/,
+    escaneado: true,
+    opcional: true,
   },
 };
 
@@ -162,7 +176,10 @@ async function localizar(carpeta) {
       ? porNombre
       : porNombre.filter((f) => def.contenido.test(f.TEXTO));
 
-    if (!candidatos.length) { faltantes.push(def.etiqueta); continue; }
+    if (!candidatos.length) {
+      if (!def.opcional) faltantes.push(def.etiqueta);
+      continue;
+    }
     const elegido = mejor(candidatos);
     documentos[tipo] = { ruta: elegido.ruta, nombre: elegido.nombre };
     textos[tipo] = elegido.TEXTO;

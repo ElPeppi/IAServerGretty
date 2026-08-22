@@ -75,6 +75,12 @@ export class EngineService implements IEngineService {
       contentType: XLSX_MIME,
     });
     if (input.soloCedulas?.length) form.append('soloCedulas', JSON.stringify(input.soloCedulas));
+    if (input.correoPoder) {
+      form.append('correoPoder', input.correoPoder, {
+        filename: 'CORREO_PODER.pdf',
+        contentType: 'application/pdf',
+      });
+    }
 
     const { data } = await axios.post<GenerateGarantiasOutput>(
       `${this.baseUrl}/generar-garantias`,

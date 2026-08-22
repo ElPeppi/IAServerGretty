@@ -214,6 +214,9 @@ export interface GenerateGarantiasInput {
   excel: Buffer;
   excelFilename: string;
   soloCedulas?: string[];
+  // Correo del banco que otorga el poder DE PAGO DIRECTO: es el cuerpo sobre el
+  // que se sobrepone el poder en el ANEXO 1. Sin él, ese anexo queda en carátula.
+  correoPoder?: Buffer | null;
 }
 
 export interface GenerateGarantiasOutput {

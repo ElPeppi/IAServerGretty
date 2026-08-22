@@ -16,7 +16,9 @@
  *
  * Las excepciones son SERIE y MOTOR: hay vehículos que no tienen uno u otro, y el
  * RUNT los deja en blanco. En las demandas hechas a mano la oficina no escribe la
- * casilla vacía: BORRA el renglón entero. Aquí se hace igual (ver quitarRenglones).
+ * casilla vacía: BORRA el renglón entero. Aquí se hace igual (ver quitarRenglones),
+ * que además borra el ANEXO 4 que no aplica —el certificado de tradición o el del
+ * RUNT— para que la lista de anexos quede en diez, como en las radicadas.
  */
 'use strict';
 
@@ -140,7 +142,7 @@ function generarDemanda(plantillaPath, fieldMap, opts = {}) {
 
   xml = reemplazarCampos(xml, fieldMap);
   xml = aplanarCamposWord(xml);
-  xml = quitarRenglones(xml);
+  xml = quitarRenglones(xml, opts);
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'));
   desactivarMailMerge(zip);
   if (opts.firmar !== false) {
@@ -149,26 +151,48 @@ function generarDemanda(plantillaPath, fieldMap, opts = {}) {
   return zip.toBuffer();
 }
 
+// Los dos renglones que se disputan el ANEXO 4 en el acápite "ANEXOS:". Van uno
+// O el otro, nunca los dos: ver quitarRenglones.
+const ANEXO_TRADICION = /^Certificado de Tradici[oó]n del veh[ií]culo de placa\b/i;
+const ANEXO_RUNT = /^Certificado del veh[ií]culo de placa\b[\s\S]*\bRUNT\b/i;
+
 /**
- * Borra los renglones del bloque del vehículo que se quedaron sin valor.
+ * Borra del documento ya rellenado los renglones que no van.
  *
- * El bloque aparece TRES veces (peticiones, oficio a la Policía y hechos), y no
- * todos los vehículos tienen número de serie o de motor: el RUNT los deja en
- * blanco. La oficina, al hacer la demanda a mano, borra ese renglón — así está
- * en las radicadas de Emily (sin Serie) y de Isaac (sin Serie ni Motor).
+ * DOS CASOS, los dos "lo que hace la oficina a mano":
  *
- * Dejar "Motor:" con el hueco detrás sería peor que quitarlo: parece un dato que
- * se olvidó de rellenar. Se hace DESPUÉS de aplanar los MERGEFIELD, cuando el
- * párrafo ya contiene el texto final y no el código del campo.
+ * 1) SERIE y MOTOR sin valor. El bloque del vehículo aparece TRES veces
+ *    (peticiones, oficio a la Policía y hechos), y no todos los vehículos tienen
+ *    número de serie o de motor: el RUNT los deja en blanco. Dejar "Motor:" con
+ *    el hueco detrás sería peor que quitarlo —parece un dato que se olvidó de
+ *    rellenar—, así que se borra el renglón entero, como en las radicadas de
+ *    Emily (sin Serie) y de Isaac (sin Serie ni Motor).
+ *
+ * 2) EL ANEXO 4 SOBRANTE. La lista de anexos de las demandas radicadas tiene
+ *    DIEZ entradas, y la cuarta es el certificado de tradición o el del RUNT
+ *    según cuál mandó el banco. La plantilla trae los dos renglones; por eso en
+ *    el Drive hay un "DEMANDA MODELO 1 CTL" y un "DEMANDA MODELO 2 RUNT": son
+ *    esta misma demanda con uno u otro quitado. Se quita aquí en vez de mantener
+ *    dos plantillas en paralelo, que se desincronizarían a la primera corrección
+ *    de redacción. La lista es numerada de Word, así que el resto se renumera
+ *    solo y los "numeral 2 del acápite de pruebas" del cuerpo siguen cuadrando.
+ *
+ * Se hace DESPUÉS de aplanar los MERGEFIELD, cuando el párrafo ya contiene el
+ * texto final y no el código del campo.
+ *
+ * @param {Object} [opts]
+ * @param {boolean} [opts.conTradicion]  el banco mandó el certificado de tradición
  */
-function quitarRenglones(xml) {
+function quitarRenglones(xml, { conTradicion = false } = {}) {
   const VACIO = /^(?:Serie|Motor)\s*:\s*$/i;
+  const sobrante = conTradicion ? ANEXO_RUNT : ANEXO_TRADICION;
   return xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (parrafo) => {
     const texto = (parrafo.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [])
       .map((t) => t.replace(/<[^>]+>/g, ''))
       .join('')
       .trim();
-    return VACIO.test(texto) ? '' : parrafo;
+    if (VACIO.test(texto)) return '';
+    return sobrante.test(texto) ? '' : parrafo;
   });
 }
 

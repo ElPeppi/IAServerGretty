@@ -946,9 +946,14 @@ export class AsignacionController {
   }
 
   // ── Trámite de PAGO DIRECTO (garantía mobiliaria) ──────────────────────────
-  // Gemelo de generarDemandas, con dos diferencias de fondo: exige el poder de
-  // PAGO DIRECTO (no el del singular, que es otro documento con otra plantilla)
-  // y no necesita el correo de otorgamiento, porque esta demanda no lo lleva.
+  // Gemelo de generarDemandas. Todo lo que pide es lo MISMO pero de su propio
+  // trámite: el poder de PAGO DIRECTO (no el del singular, que es otro documento
+  // con otra plantilla) y el correo de otorgamiento de PAGO DIRECTO, que es el
+  // cuerpo sobre el que se sobrepone el poder en el ANEXO 1.
+  //
+  // A diferencia del singular, el correo NO se guarda en la asignación: no hay
+  // columna para el de pago directo y meterlo en `correoPoderUrl` pisaría el del
+  // ejecutivo singular de esa misma asignación. Se elige en cada generación.
   async generarGarantias(req: AuthRequest, res: Response): Promise<void> {
     try {
       const id = req.params['id'] as string;
@@ -985,6 +990,12 @@ export class AsignacionController {
       // Mismo formato que en el singular: JSON (array) o multipart (string JSON).
       const soloCedulas = parseCedulas(req.body.cedulas);
 
+      const correoPoder = await this.correoDePagoDirecto(req, asignacion);
+      if (!correoPoder.ok) {
+        res.status(400).json({ codigo: correoPoder.codigo, message: correoPoder.message });
+        return;
+      }
+
       res.json({
         started: true,
         message: 'Generación de solicitudes de aprehensión iniciada en segundo plano.',
@@ -1000,6 +1011,7 @@ export class AsignacionController {
         excelUrl: asignacion.excelUrl,
         lawyerId: req.user!.userId,
         soloCedulas: soloCedulas.length ? soloCedulas : undefined,
+        correoPoder: correoPoder.buffer,
       })
         .catch((e: unknown) => {
           const msg = e instanceof Error ? e.message : 'error desconocido';
@@ -1022,10 +1034,52 @@ export class AsignacionController {
    * apenas está lista, en vez de todas al final del lote. Aquí importa más que
    * allá, porque el OCR del contrato de prenda hace que cada cliente tarde.
    */
+  /**
+   * Correo de otorgamiento del PAGO DIRECTO para esta generación: el PDF subido
+   * en la petición, o uno de los que ya están en el servidor elegido en la web
+   * (`correoPoderRel`, ver GET /api/expedientes/_correos-poder?proceso=pago_directo).
+   *
+   * Se EXIGE, igual que en el singular. El motor tiene un respaldo en disco, pero
+   * esa carpeta no se sincroniza desde Drive: en el servidor estaría vacía y el
+   * ANEXO 1 saldría en carátula, sin poder y sin error. Mejor no generar.
+   *
+   * La ruta elegida se valida contra la carpeta de poderes DE PAGO DIRECTO: es lo
+   * único que impide que llegue la ruta de cualquier otro PDF del storage.
+   */
+  private async correoDePagoDirecto(
+    req: AuthRequest,
+    asignacion: { filas: unknown },
+  ): Promise<{ ok: true; buffer: Buffer } | { ok: false; codigo: string; message: string }> {
+    const sinCorreo = {
+      ok: false as const,
+      codigo: 'SIN_CORREO_PODER',
+      message: 'Elige el correo del banco que otorga el poder de pago directo (PDF): es el ANEXO 1 de la solicitud.',
+    };
+
+    if (req.file) return { ok: true, buffer: req.file.buffer };
+
+    const elegido = String(req.body?.correoPoderRel ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!elegido) return sinCorreo;
+
+    const banco = detectarBanco((asignacion.filas as Array<Record<string, unknown>>) ?? []);
+    const base = carpetaPoderes(banco, 'pago_directo');
+    if (!elegido.startsWith(`${base}/`)) {
+      return {
+        ok: false,
+        codigo: 'CORREO_FUERA_DE_CARPETA',
+        message: 'El correo elegido no está en la carpeta de poderes de pago directo.',
+      };
+    }
+
+    const buffer = await this.leerArchivo(storage.urlFor(elegido));
+    return buffer ? { ok: true, buffer } : sinCorreo;
+  }
+
   private async generarGarantiasBg(input: {
     asignacionId: string; nombre: string;
     excel: Buffer; excelUrl: string | null;
     lawyerId: string; soloCedulas?: string[];
+    correoPoder: Buffer;
   }): Promise<void> {
     const t0 = Date.now();
     // Repone plantillas, certificados y el directorio SIJIN desde Drive. No lanza.
@@ -1076,6 +1130,7 @@ export class AsignacionController {
           excel: input.excel,
           excelFilename: `${input.nombre}.xlsx`,
           soloCedulas: [persona.cedula],
+          correoPoder: input.correoPoder,
         });
 
         const doc = (r.documentos ?? [])[0];

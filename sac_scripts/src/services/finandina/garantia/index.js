@@ -167,7 +167,11 @@ async function procesarGarantias(excelBuffer, options = {}) {
           continue;
         }
 
-        const buffer = generarDemanda(plantilla, fieldMap);
+        // El certificado de tradición decide el ANEXO 4 (y con él, cuál de los
+        // dos renglones sobra en la lista de anexos de la demanda).
+        const buffer = generarDemanda(plantilla, fieldMap, {
+          conTradicion: !!halladas.documentos.tradicion,
+        });
         const destino = path.join(carpeta, nombreDemanda(datos.garante.nombre, cedula));
         fs.writeFileSync(destino, buffer);
 
