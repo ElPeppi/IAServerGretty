@@ -12,6 +12,20 @@
  *   node probe_ocr.js /ruta/al/PAGARE.pdf
  *   node probe_ocr.js 1045231446    ← solo si el cliente está en disco
  *
+ * SEGUNDO ARGUMENTO: cuántas páginas leer. Por defecto 2, que es lo que usa la
+ * generación del ejecutivo singular. Para un CONTRATO DE PRENDA hay que pasar 6,
+ * que es lo que usa garantías (extraccion.js): con 2 no se llega a la fecha de
+ * suscripción y sale en blanco como si el OCR fallara.
+ *
+ *   node probe_ocr.js "/docs/….../…PRENDA.pdf" 6
+ *
+ * Sirve también para COMPARAR MOTORES sobre el mismo documento; el fichero de
+ * texto crudo lleva el motor en el nombre para que la segunda pasada no pise la
+ * primera:
+ *
+ *   node probe_ocr.js "…" 6
+ *   OCR_MOTOR=vision node probe_ocr.js "…" 6
+ *
  * En producción los documentos del cliente viven en DRIVE, no en el disco del
  * servidor: se bajan para generar y se limpian después. Por eso la vía buena es
  * la URL /docs/… (que el backend sirve leyendo de Drive), no la cédula.
@@ -30,12 +44,19 @@ const path = require('path');
 const config = require('./src/config');
 const { ocrPdf, extraerCamposPagare, cerrarOcr } = require('./src/services/ocr');
 const { resolverCarpetaCedula } = require('./src/utils/carpetas');
+const { montoDePrenda } = require('./src/services/finandina/garantia/extraccion');
 
 const arg = process.argv[2];
 if (!arg) {
   console.error('Falta el argumento: una ruta a un PDF o una cédula.');
+  console.error('Uso: node probe_ocr.js <ruta|/docs/…|cédula> [páginas]');
+  console.error('     páginas = 2 por defecto (pagaré); 6 para un contrato de prenda.');
   process.exit(1);
 }
+
+// Páginas a leer. El valor por defecto es el de la generación del singular; el
+// contrato de prenda necesita 6 (ver cabecera).
+const PAGINAS = Number(process.argv[3]) || 2;
 
 // El backend sirve /docs/… leyendo de Drive. Se le pide a él en vez de hablar
 // con Drive desde aquí: el motor no tiene credenciales de Drive a propósito.
@@ -110,30 +131,53 @@ async function resolverPdf(entrada) {
   const t0 = Date.now();
   let r;
   try {
-    // Mismos parámetros que usa la generación en carpetaCliente.js.
-    r = await ocrPdf(buf, { scale: 3, maxPages: 2 });
+    // Mismos parámetros que usa la generación (carpetaCliente.js para el pagaré,
+    // garantia/extraccion.js para la prenda; solo cambia el número de páginas).
+    r = await ocrPdf(buf, { scale: 3, maxPages: PAGINAS });
   } catch (e) {
     console.log(`✗ el OCR no llegó a correr: ${e.message}`);
     console.log('  Suele ser que falta el binario de rasterizado o los .traineddata.');
     await cerrarOcr().catch(() => {});
     process.exit(2);
   }
-  console.log(`✓ OCR terminado en ${((Date.now() - t0) / 1000).toFixed(1)}s — ${r.numPages} página(s)`);
+  // El motor efectivo, no el configurado: si Vision falla, ocr.js cae a Tesseract
+  // y sin esto la comparación entre motores mediría dos veces lo mismo.
+  console.log(`✓ OCR terminado en ${((Date.now() - t0) / 1000).toFixed(1)}s con ${r.motor} — ${r.numPages} página(s)`);
   for (const p of r.pages) {
     console.log(`   · página ${p.page}: confianza ${p.confidence}%, ${p.text.length} caracteres`);
   }
 
-  const destino = path.join(config.TEMP_DIR, `ocr-probe-${path.basename(pdf)}.txt`);
+  // El motor va en el NOMBRE: si no, comparar dos motores sobre el mismo PDF
+  // hace que la segunda pasada pise el texto de la primera y no quede nada que
+  // comparar. (El basename ya trae un "ocr-probe-" si el PDF se descargó.)
+  const limpio = path.basename(pdf).replace(/^ocr-probe-/, '');
+  const destino = path.join(config.TEMP_DIR, `ocr-probe-${r.motor}-${limpio}.txt`);
   fs.writeFileSync(destino, r.text, 'utf8');
   console.log(`   texto crudo → ${destino}`);
 
   const c = extraerCamposPagare(r.text);
   console.log('\nCampos extraídos:', JSON.stringify(c, null, 1));
 
+  // Lo que GARANTÍAS saca de este documento, si es un contrato de prenda. Son
+  // los dos únicos campos que dependen del OCR en ese proceso, así que son los
+  // que hay que mirar al cambiar de motor: el resto sale de PDFs con texto.
+  const monto = montoDePrenda(r.text);
+  const esPrenda = !!monto || /contrato de prenda|sin tenencia/i.test(r.text);
+
   console.log('\nDiagnóstico:');
   if (r.text.trim().length < 200) {
     console.log('  ✗ El OCR devolvió casi nada. El PDF puede venir en blanco, muy');
     console.log('    borroso o al revés. Ábrelo y míralo antes de tocar código.');
+  } else if (esPrenda) {
+    // El diagnóstico del pagaré no aplica aquí: una prenda no lleva "PAGARÉ No."
+    // y decir ✗ haría pensar que el OCR falló cuando está haciendo su trabajo.
+    console.log('  Es un CONTRATO DE PRENDA. Lo que usaría garantías de él:');
+    console.log(`    monto garantizado   : ${monto || '✗ no se encontró "asciende a la suma de"'}`);
+    console.log(`    fecha de suscripción: ${c.fechaCorta || `✗ no leída (se leyeron ${PAGINAS} página(s); la generación lee 6)`}`);
+    if (monto && c.fechaCorta) {
+      console.log('    Los dos salieron. Contrástalos con la demanda ya radicada de');
+      console.log('    este cliente antes de dar por bueno un cambio de motor.');
+    }
   } else if (!c.numeroPagare) {
     // Se busca a mano para saber si el número ESTÁ y el patrón no lo pilla.
     const sueltos = [...r.text.matchAll(/\b\d[\d.\s]{6,}\d\b/g)].map((m) => m[0].trim()).slice(0, 10);
