@@ -278,4 +278,6 @@ module.exports = {
   reemplazarCampos,
   aplanarCamposWord,
   desactivarMailMerge,
+  ORDINALES,
+  ORDINAL_RE,
 };

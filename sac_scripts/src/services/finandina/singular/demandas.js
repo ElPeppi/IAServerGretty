@@ -28,6 +28,7 @@ const { fmtCOP } = require('../../../utils/numeros');
 const { resolverCarpetaCedula } = require('../../../utils/carpetas');
 const {
   estamparFirma, xmlEscape, getParagraphs, textoDe, reemplazarCampos,
+  ORDINAL_RE, ORDINALES,
 } = require('../../comun/docx');
 
 // Organismo de tránsito donde está matriculado el vehículo (cola del campo placa)
