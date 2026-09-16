@@ -108,6 +108,25 @@ const SAC_PASS = process.env.SAC_PASS || '';
 // Contraseña por defecto de los ZIPs que llegan por correo
 const SAC_ZIP_PASS = process.env.SAC_ZIP_PASS || null;
 
+// ─── Conexión SAC El Libertador (Oracle Service Cloud / RightNow CX) ──────────
+// Cliente DISTINTO de Finandina: NO comparte portal, login ni plantillas. El
+// acceso automatizable es AgentWeb (agente en explorador), un login por
+// formulario (usuario/contraseña) que corre en Chromium headless en Linux.
+// La app de escritorio .NET (WebView2/Edge) es solo Windows y no se usa aquí.
+//
+// El worker `libertador_puppeteer.js` navega a LIBERTADOR_SAC_URL (AgentWeb),
+// dispara el flujo SSO propio de Oracle y llena el formulario #loginform
+// (#username / #password / #loginbutton).
+const LIBERTADOR_SAC_URL  = process.env.LIBERTADOR_SAC_URL  || 'https://ellibertador.custhelp.com/AgentWeb/';
+const LIBERTADOR_SAC_USER = process.env.LIBERTADOR_SAC_USER || '';
+const LIBERTADOR_SAC_PASS = process.env.LIBERTADOR_SAC_PASS || '';
+
+// Plantilla del PODER DE CONCILIACIÓN de Libertador (marcadores MERGEFIELD «...»).
+// A diferencia de Finandina, el poder de Libertador es INDIVIDUAL por caso y se
+// guarda en la carpeta del caso; los 6 campos salen de la DECLARACION DE PAGOS.
+const PLANTILLA_PODER_LIBERTADOR_CONCILIACION = process.env.PLANTILLA_PODER_LIBERTADOR_CONCILIACION
+  || path.join(path.dirname(PLANTILLA_DEMANDA), 'PLANTILLA PODER DE CONCILIACION.docx');
+
 // ─── Notificaciones al backend (SSE) ─────────────────────────────────────────
 // El motor avisa al backend el fin de sus pasos (extracción de ZIPs) y éste lo
 // retransmite a los usuarios logueados. Desactivado si falta alguna de las dos.
@@ -153,6 +172,10 @@ module.exports = {
   SAC_USER,
   SAC_PASS,
   SAC_ZIP_PASS,
+  LIBERTADOR_SAC_URL,
+  LIBERTADOR_SAC_USER,
+  LIBERTADOR_SAC_PASS,
+  PLANTILLA_PODER_LIBERTADOR_CONCILIACION,
   NOTIFY_URL,
   NOTIFY_SECRET,
   DIRECTORIO_SIJIN,

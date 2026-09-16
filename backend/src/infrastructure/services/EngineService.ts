@@ -13,6 +13,8 @@ import {
   DescargarSacOutput,
   GenerarPoderesInput,
   GenerarPoderesOutput,
+  GenerarPoderLibertadorInput,
+  GenerarPoderLibertadorOutput,
   MapearColumnasInput,
   MapearColumnasOutput,
   PlantillaInfo,
@@ -125,6 +127,23 @@ export class EngineService implements IEngineService {
         soloCedulas: input.soloCedulas?.length ? input.soloCedulas : undefined,
         correcciones: input.correcciones && Object.keys(input.correcciones).length
           ? input.correcciones : undefined,
+      },
+      {
+        timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+    return data;
+  }
+
+  async generarPoderLibertador(input: GenerarPoderLibertadorInput): Promise<GenerarPoderLibertadorOutput> {
+    const { data } = await axios.post<GenerarPoderLibertadorOutput>(
+      `${this.baseUrl}/generar-poder-libertador`,
+      {
+        solicitud: input.solicitud,
+        declaracionBase64: input.declaracion.toString('base64'),
+        plantillaBase64: input.plantilla ? input.plantilla.toString('base64') : undefined,
       },
       {
         timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,

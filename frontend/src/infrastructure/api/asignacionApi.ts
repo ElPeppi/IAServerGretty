@@ -47,6 +47,16 @@ export interface GenerarPoderesResult {
   excluidos: Array<{ cedula: string; nombre?: string; motivo: string }>;
 }
 
+export interface LibertadorPoderesResult {
+  success: boolean;
+  generados: number;
+  excluidos: number;
+  resultados: {
+    generados: Array<{ solicitud: string; nombreArchivo: string; carpeta: string; faltantes: string[]; fuente?: string }>;
+    excluidos: Array<{ solicitud: string; motivo: string }>;
+  };
+}
+
 export interface AsignacionPersona {
   cedula: string;
   nombre: string;
@@ -80,6 +90,24 @@ export const asignacionApi = {
       })
       .then((r) => r.data);
   },
+
+  // Libertador: crea una asignación por lista de números de solicitud (sin Excel).
+  // `solicitudes` = texto pegado (números separados por espacios/comas/saltos).
+  crearLibertador: (solicitudes: string, nombre?: string) =>
+    apiClient
+      .post<{ success: boolean; asignacion: AsignacionResumen }>('/asignaciones/libertador', { solicitudes, nombre })
+      .then((r) => r.data),
+
+  // Libertador: genera los poderes de conciliación (uno por caso, subido a la
+  // carpeta del caso en Drive). `solicitudes` opcional acota el lote.
+  generarPoderesLibertador: (id: string, solicitudes?: string[]) =>
+    apiClient
+      .post<LibertadorPoderesResult>(
+        `/asignaciones/${id}/generar-poderes-libertador`,
+        solicitudes && solicitudes.length ? { solicitudes } : {},
+        { timeout: 3600000 },
+      )
+      .then((r) => r.data),
 
   // Escanea el servidor y agrega las asignaciones que falten en la DB.
   actualizar: () =>

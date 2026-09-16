@@ -3,3 +3,6 @@ sa-key.json
 *.sa-key.json
 drive-sa-*.json
 token.json
+
+# Descargas temporales del Drive (documentos reales de la oficina)
+_descargas/

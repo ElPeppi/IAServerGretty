@@ -31,6 +31,7 @@ export function AsignacionesPage() {
   const [aviso, setAviso] = useState<string | null>(null);
   const [fechaAsc, setFechaAsc] = useState(false); // false = más recientes primero
   const [demandante, setDemandante] = useState('');  // '' = todos
+  const [generandoLib, setGenerandoLib] = useState<string | null>(null); // id de asignación Libertador en curso
 
   // Demandantes que hay DE VERDAD en la lista, no una lista fija de bancos: así
   // el filtro crece solo cuando entre un banco nuevo y nunca ofrece uno vacío.
@@ -94,6 +95,27 @@ export function AsignacionesPage() {
     }
     setAviso(null);
     setDemandasTarget(a);
+  };
+
+  // Libertador: genera los poderes de conciliación de toda la asignación (un poder
+  // por caso, subido a la carpeta del caso en Drive). No usa el modal cédula-céntrico.
+  const handleGenerarPoderesLibertador = async (a: AsignacionResumen) => {
+    setGenerandoLib(a.id);
+    setAviso(null);
+    try {
+      const res = await asignacionApi.generarPoderesLibertador(a.id);
+      const exc = res.resultados.excluidos.map((e) => `${e.solicitud} (${e.motivo})`).join(' · ');
+      setAviso(
+        `Libertador — ${res.generados} poder(es) generado(s), ${res.excluidos} excluido(s).` +
+        (exc ? ` Excluidos: ${exc}` : ''),
+      );
+      await refetch();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
+      setAviso(msg ?? (err instanceof Error ? err.message : 'Error al generar poderes de Libertador'));
+    } finally {
+      setGenerandoLib(null);
+    }
   };
 
   return (
@@ -223,14 +245,23 @@ export function AsignacionesPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => setPoderTarget(a)}
-                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors">
-                        {a.tienePoder ? 'Regenerar poderes' : 'Generar poderes'}
-                      </button>
-                      <button onClick={() => handleGenerarDemandas(a)}
-                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-medium transition-colors">
-                        Generar demandas
-                      </button>
+                      {a.banco === 'LIBERTADOR' ? (
+                        <button onClick={() => handleGenerarPoderesLibertador(a)} disabled={generandoLib === a.id}
+                          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+                          {generandoLib === a.id ? 'Generando…' : 'Generar poderes conciliación'}
+                        </button>
+                      ) : (
+                        <>
+                          <button onClick={() => setPoderTarget(a)}
+                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors">
+                            {a.tienePoder ? 'Regenerar poderes' : 'Generar poderes'}
+                          </button>
+                          <button onClick={() => handleGenerarDemandas(a)}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-medium transition-colors">
+                            Generar demandas
+                          </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>

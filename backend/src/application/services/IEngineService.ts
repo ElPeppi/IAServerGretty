@@ -142,6 +142,24 @@ export interface GenerarPoderesOutput {
   error?: string;
 }
 
+// ─── Poder de Conciliación de Libertador (individual por caso) ──────────────────
+export interface GenerarPoderLibertadorInput {
+  solicitud: string;
+  declaracion: Buffer;   // bytes de la DECLARACION DE PAGOS (.docx o .pdf)
+  plantilla?: Buffer;    // plantilla del poder; si falta, el motor usa la de config
+}
+
+export interface GenerarPoderLibertadorOutput {
+  success: boolean;
+  solicitud: string;
+  campos?: Record<string, unknown>;
+  faltantes?: string[];
+  fuente?: string;
+  nombreArchivo?: string;
+  poderBase64?: string;  // el .docx del poder (para que el backend lo suba a Drive)
+  error?: string;
+}
+
 // ─── Mapeo de columnas del Excel de asignación ──────────────────────────────────
 // Los Excel del banco cambian de encabezados en cada envío. El motor ya resuelve
 // "qué columna es qué" (heurística + Ollama local, validando el CONTENIDO de la
@@ -234,6 +252,7 @@ export interface IEngineService {
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
   descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
   generarPoderes(input: GenerarPoderesInput): Promise<GenerarPoderesOutput>;
+  generarPoderLibertador(input: GenerarPoderLibertadorInput): Promise<GenerarPoderLibertadorOutput>;
   mapearColumnas(input: MapearColumnasInput): Promise<MapearColumnasOutput>;
   listarPlantillas(): Promise<PlantillaInfo[]>;
   restaurarPlantilla(clave: string, archivo: string): Promise<PlantillaResult>;

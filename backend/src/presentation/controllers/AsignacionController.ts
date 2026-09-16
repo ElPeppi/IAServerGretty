@@ -15,6 +15,10 @@ import {
 import { hidratarCedula, limpiarLocalCedula, enParalelo } from '../../infrastructure/storage/sacSync';
 import { carpetasDeCedula, relEnCarpetaCedula } from '../../infrastructure/storage/carpetasCedula';
 import { sincronizarInsumos } from '../../infrastructure/storage/sincronizarInsumos';
+import {
+  resolverCarpetaCaso, bajarDeclaracionPagos, bajarPlantillaConciliacion,
+  subirPoder, libertadorDriveDisponible,
+} from '../../infrastructure/storage/libertadorDrive';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { getSettings } from '../../infrastructure/config/settings';
 import { EngineFile, EngineClientInfo, EngineDocument, TipoPoder } from '../../application/services/IEngineService';
@@ -1420,6 +1424,100 @@ export class AsignacionController {
   }
 
   // Forma resumida para la UI.
+  // POST /api/asignaciones/libertador → crea una asignación de Libertador a partir
+  // de una lista de NÚMEROS DE SOLICITUD (Libertador no trae Excel ni cédulas).
+  async crearLibertador(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const raw = req.body?.solicitudes;
+      const lista: string[] = Array.isArray(raw)
+        ? raw.map((s: unknown) => String(s).trim())
+        : String(raw || '').split(/[\s,;]+/).map((s) => s.trim());
+      const solicitudes = [...new Set(lista.filter((s) => /^\d{3,}$/.test(s)))];
+      if (!solicitudes.length) {
+        res.status(400).json({ message: 'No se recibieron números de solicitud válidos.' });
+        return;
+      }
+
+      const hoy = new Date();
+      const nombre = String(req.body?.nombre || '').trim()
+        || `LIBERTADOR CONCILIACION ${hoy.toISOString().slice(0, 10)}`;
+      const filas = solicitudes.map((s) => ({ SOLICITUD: s, TIPO: 'CONCILIACION' }));
+
+      const asignacion = await prisma.asignacion.upsert({
+        where: { nombre },
+        create: {
+          nombre,
+          banco: 'LIBERTADOR',
+          fechaAsignacion: hoy,
+          filas: filas as unknown as Prisma.InputJsonValue,
+          totalFilas: solicitudes.length,
+          lawyerId: req.user!.userId,
+        },
+        update: {
+          banco: 'LIBERTADOR',
+          filas: filas as unknown as Prisma.InputJsonValue,
+          totalFilas: solicitudes.length,
+        },
+      });
+      res.status(201).json({ success: true, asignacion: this.resumen(asignacion) });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error al crear la asignación Libertador';
+      res.status(500).json({ message });
+    }
+  }
+
+  // POST /api/asignaciones/:id/generar-poderes-libertador → por cada solicitud:
+  // ubica la carpeta del caso en Drive, baja la DECLARACION DE PAGOS, pide el poder
+  // al motor y lo sube a esa misma carpeta. `solicitudes` opcional acota el lote.
+  async generarPoderesLibertador(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params['id'] as string;
+      const asig = await prisma.asignacion.findUnique({ where: { id } });
+      if (!asig) { res.status(404).json({ message: 'Asignación no encontrada' }); return; }
+      if (!libertadorDriveDisponible()) {
+        res.status(400).json({ message: 'Drive no está configurado (DRIVE_SA_KEY / DRIVE_IMPERSONATE_USER / DRIVE_SHARED_DRIVE_ID).' });
+        return;
+      }
+
+      const filas = (asig.filas as unknown as Array<Record<string, unknown>>) || [];
+      let solicitudes = filas.map((f) => String(f.SOLICITUD || '').trim()).filter(Boolean);
+      const subset = Array.isArray(req.body?.solicitudes)
+        ? (req.body.solicitudes as unknown[]).map((s) => String(s).trim()) : [];
+      if (subset.length) { const set = new Set(subset); solicitudes = solicitudes.filter((s) => set.has(s)); }
+      if (!solicitudes.length) { res.status(400).json({ message: 'La asignación no tiene solicitudes.' }); return; }
+
+      const plantilla = await bajarPlantillaConciliacion();
+      if (!plantilla) {
+        res.status(400).json({ message: 'No se encontró PLANTILLA PODER DE CONCILIACION en Drive (LIBERTADOR/CREAR PODERES).' });
+        return;
+      }
+
+      const generados: Array<{ solicitud: string; nombreArchivo: string; carpeta: string; faltantes: string[]; fuente?: string }> = [];
+      const excluidos: Array<{ solicitud: string; motivo: string }> = [];
+
+      for (const solicitud of solicitudes) {
+        try {
+          const carpeta = await resolverCarpetaCaso(solicitud);
+          if (!carpeta) { excluidos.push({ solicitud, motivo: 'No se encontró la carpeta del caso en Drive' }); continue; }
+          const decl = await bajarDeclaracionPagos(carpeta.folderId);
+          if (!decl) { excluidos.push({ solicitud, motivo: 'La carpeta no tiene DECLARACION DE PAGOS' }); continue; }
+          const r = await engineService.generarPoderLibertador({ solicitud, declaracion: decl.buffer, plantilla });
+          if (!r.success || !r.poderBase64) { excluidos.push({ solicitud, motivo: r.error || 'El motor no generó el poder' }); continue; }
+          await subirPoder(carpeta.folderId, r.nombreArchivo || `PODER DE CONCILIACION - ${solicitud}.docx`, Buffer.from(r.poderBase64, 'base64'));
+          generados.push({ solicitud, nombreArchivo: r.nombreArchivo || '', carpeta: carpeta.folderName, faltantes: r.faltantes || [], fuente: r.fuente });
+        } catch (e: unknown) {
+          excluidos.push({ solicitud, motivo: e instanceof Error ? e.message : 'Error inesperado' });
+        }
+      }
+
+      await prisma.asignacion.update({ where: { id }, data: { poderGeneradoAt: new Date() } }).catch(() => { /* no bloquea */ });
+      res.json({ success: true, generados: generados.length, excluidos: excluidos.length, resultados: { generados, excluidos } });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error al generar poderes de Libertador';
+      res.status(500).json({ message });
+    }
+  }
+
   private resumen(a: {
     id: string; nombre: string; banco: string; fechaAsignacion: Date | null; totalFilas: number;
     poderUrl: string | null; poderGeneradoAt: Date | null; docsEnServidor: boolean;

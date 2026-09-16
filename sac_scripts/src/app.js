@@ -34,6 +34,7 @@ app.use(require('./routes/garantias.routes'));
 app.use(require('./routes/ocr.routes'));
 app.use(require('./routes/mapeo.routes'));
 app.use(require('./routes/plantillas.routes'));
+app.use(require('./routes/libertador.routes'));
 
 app.get('/health', (_, res) => res.json({ status: 'ok', port: config.PORT, outDir: config.OUT_DIR }));
 
