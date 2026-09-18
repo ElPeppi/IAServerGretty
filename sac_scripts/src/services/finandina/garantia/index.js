@@ -35,6 +35,9 @@ const { localizar, TIPOS } = require('./documentos');
 const { extraer, vehiculoDeDescripcion } = require('./extraccion');
 const { construirCampos, generarDemanda } = require('./demandas');
 const { generarAnexos } = require('./anexos');
+// Los antecedentes (SAC DIRYTEL + OBL unidos) son iguales que en el singular: el
+// generador es genérico (lee los SAC de la carpeta del cliente), se reusa tal cual.
+const { generarAntecedentes } = require('../singular/antecedentes');
 
 const MIME_DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -239,6 +242,15 @@ async function procesarGarantias(excelBuffer, options = {}) {
         // armar el PDF a mano. Devolver '' y seguir es mejor que perder el lote.
         const anexos = await generarAnexos(carpeta, halladas, datos, options.correoPoderBuffer || null);
 
+        // Antecedentes: los SAC (direcciones + obligaciones) unidos, igual que en el
+        // singular. Tampoco bloquean.
+        let antecedentes = '';
+        try {
+          antecedentes = await generarAntecedentes(cedula, sacDocsDir);
+        } catch (e) {
+          console.error(`[ANTECEDENTES-GAR] ${cedula}: ${e.message}`);
+        }
+
         // Trazabilidad de lo que no se pudo confirmar contra dos fuentes, para
         // que quien revise sepa dónde mirar. No bloquean: el dato está.
         const notas = [];
@@ -264,9 +276,11 @@ async function procesarGarantias(excelBuffer, options = {}) {
           notas,
           archivos: {
             demanda: leerArchivoB64(destino, sacDocsDir),
-            // El ANEXOS.pdf se generó en la carpeta local; hay que DEVOLVERLO para
-            // que el backend lo suba a Drive (si no, se pierde al limpiar el caché).
+            // El ANEXOS.pdf/ANTECEDENTES.pdf se generaron en la carpeta local; hay
+            // que DEVOLVERLOS para que el backend los suba a Drive (si no, se
+            // pierden al limpiar el caché).
             anexos: anexos ? leerArchivoB64(anexos, sacDocsDir, 'application/pdf') : null,
+            antecedentes: antecedentes ? leerArchivoB64(antecedentes, sacDocsDir, 'application/pdf') : null,
           },
         });
         console.error(`[GARANTIA] ok ${quien} — ${datos.vehiculo.placa} — ${tipoJuzgado} de ${ciudad}`);

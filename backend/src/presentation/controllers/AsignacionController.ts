@@ -1211,10 +1211,13 @@ export class AsignacionController {
     };
 
     // La demanda va primero y SOLA: crea la carpeta del cliente si falta (ese
-    // "buscar → crear" no tiene candado). Con la carpeta ya hecha, el anexo se sube
-    // sin riesgo de duplicarla.
+    // "buscar → crear" no tiene candado). Con la carpeta ya hecha, anexo y
+    // antecedentes se suben en paralelo sin riesgo de duplicarla.
     const demanda = await subir(f);
-    const anexos = await subir(doc.archivos?.anexos);
+    const [anexos, antecedentes] = await Promise.all([
+      subir(doc.archivos?.anexos),
+      subir(doc.archivos?.antecedentes),
+    ]);
 
     const datos = {
       title: `Solicitud de Aprehensión — ${doc.nombre || doc.cedula}`,
@@ -1225,6 +1228,7 @@ export class AsignacionController {
       clientCedula: doc.cedula,
       fileUrl: demanda.url,
       anexosUrl: anexos.url,
+      antecedentesUrl: antecedentes.url,
       asignacionUrl: input.excelUrl ?? undefined,
       asignacionId: input.asignacionId,
       notes: (doc.notas ?? []) as unknown as Prisma.InputJsonValue,
