@@ -69,9 +69,13 @@ const TIPOS = {
   sac: {
     etiqueta: 'consulta del SAC (días de mora)',
     // El SAC del ejecutivo singular se llama "SAC_<algo>.pdf" y el que deja el
-    // banco en estas carpetas "__ SAC __ v6.0.0.6.pdf". La palabra suelta cubre
-    // los dos sin casarse con ninguna convención.
-    claves: /\bSAC\b/,
+    // banco en estas carpetas "__ SAC __ v6.0.0.6.pdf". OJO: no se puede usar
+    // \bSAC\b — el "_" pegado en "SAC_123" cuenta como carácter de palabra, así
+    // que ahí NO hay frontera y el SAC del scraper se quedaba sin detectar. Se
+    // exige que "SAC" vaya delimitado por algo que NO sea letra (inicio, espacio,
+    // guion, guion bajo o dígito), lo que cubre las dos convenciones sin casar
+    // con palabras que contengan "sac" (RESACA, MOSAICO…).
+    claves: /(?:^|[^A-Z])SAC(?:[^A-Z]|$)/,
     contenido: /D[ií]as\s*Mora/i,
   },
   servientrega: {
