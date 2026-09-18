@@ -34,6 +34,7 @@
 const fs = require('fs');
 
 const { leerFormulario, valor, valorEnSeccion, valorComo, valorDerecha } = require('../../comun/pdfFormulario');
+const { fragmentosDePdf } = require('../../comun/pdfTexto');
 const { ocrPdf, extraerCamposPagare } = require('../../ocr');
 
 const SECCION_DEUDOR = /A\.1.*DEUDOR/i;
@@ -113,15 +114,80 @@ const ROTULO = {
   chasis: /^N[UÚ]MERO DE CHASIS/,
 };
 
-function vehiculoDeRunt(campos, texto) {
+// Rótulos del CERTIFICADO DE TRADICIÓN (CTL). Trae los mismos datos que el RUNT
+// pero con etiquetas más cortas ("Placa:", "Serie:", "Motor:", "Chasis:"); el
+// resto (Marca, Línea, Modelo) coincide. Misma maquinaria posicional que el RUNT.
+const ROTULO_CTL = {
+  placa:  /^PLACA:?$/,
+  marca:  /^MARCA:?$/,
+  linea:  /^L[IÍ]NEA:?$/,
+  modelo: /^MODELO:?$/,
+  serie:  /^SERIE:?$/,
+  motor:  /^MOTOR:?$/,
+  chasis: /^CHASIS:?$/,
+};
+
+// Núcleo compartido: por cada campo, el valor a la derecha del rótulo si tiene la
+// FORMA esperada; si no, el candidato de abajo con esa forma; y como último
+// recurso, la primera línea con esa forma tras el rótulo (impresos a una columna,
+// valor en la página siguiente). Exigir la forma evita meter un encabezado del
+// navegador o un rótulo vacío en el hueco de la serie.
+function vehiculoPorRotulos(campos, texto, rotulos) {
   const lineas = String(texto || '').split('\n').map((l) => l.trim());
   const out = {};
-  for (const [campo, rotulo] of Object.entries(ROTULO)) {
+  for (const [campo, rotulo] of Object.entries(rotulos)) {
     const forma = FORMA[campo];
     const derecha = limpio(valorDerecha(campos, rotulo));
     out[campo] = forma.test(derecha)
       ? derecha
       : limpio(valorComo(campos, rotulo, forma)) || porLineas(lineas, rotulo, forma);
+  }
+  return out;
+}
+
+function vehiculoDeRunt(campos, texto) {
+  return vehiculoPorRotulos(campos, texto, ROTULO);
+}
+
+function norm(s) {
+  return String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
+/**
+ * Valor A LA DERECHA de un rótulo, emparejando por geometría cruda (no por filas
+ * a lo ancho). El CTL apila TODAS las etiquetas y luego TODOS los valores, y el
+ * valor del motor cae ~1pt desalineado de su rótulo: agrupar la página en filas
+ * lo mete en la fila de al lado. Emparejar cada rótulo con el fragmento que está
+ * a su derecha en (casi) la misma `y` y que además tiene la FORMA del dato es
+ * firme ante ese desfase y ante los valores vacíos (serie).
+ */
+function valorDerechaFrag(frags, reRotulo, forma) {
+  for (const lab of frags) {
+    if (!reRotulo.test(norm(lab.str))) continue;
+    const alto = lab.alto || 8;
+    const derecha = frags
+      .filter((f) => f !== lab && f.x > lab.x && Math.abs(f.y - lab.y) <= alto * 0.7)
+      .sort((a, b) => a.x - b.x);
+    for (const c of derecha) {
+      const v = limpio(c.str);
+      if (forma.test(v)) return v;
+    }
+  }
+  return '';
+}
+
+/**
+ * Vehículo del CTL. Primero por geometría (fragmentos), que es lo fiable cuando
+ * hay capa de texto; si algún campo queda vacío, se cae a la maquinaria por
+ * rótulos (leerFormulario + texto), que cubre el CTL escaneado leído por OCR.
+ */
+function vehiculoDeTradicion(paginas, campos, texto) {
+  const frags = [].concat(...(paginas || []));
+  const out = {};
+  for (const [campo, rotulo] of Object.entries(ROTULO_CTL)) {
+    const forma = FORMA[campo];
+    out[campo] = (frags.length ? valorDerechaFrag(frags, rotulo, forma) : '')
+      || vehiculoPorRotulos(campos || [], texto, { [campo]: rotulo })[campo];
   }
   return out;
 }
@@ -215,6 +281,33 @@ function montoDePrenda(texto) {
 }
 
 /**
+ * Datos del vehículo del expediente, eligiendo la fuente: el CTL (certificado de
+ * tradición) si está —manda porque trae todo el vehículo y el ANEXO 4 será ese
+ * mismo documento—, y si no, el RUNT de la carpeta. Un CTL escaneado (sin capa de
+ * texto) se pasa por OCR, como el contrato de prenda.
+ */
+async function vehiculoDeExpediente(documentos, textos) {
+  if (documentos.tradicion) {
+    const buf = fs.readFileSync(documentos.tradicion.ruta);
+    const { paginas } = await fragmentosDePdf(buf);
+    const campos = (await leerFormulario(buf)).campos;
+    let texto = textos.tradicion || '';
+    if (texto.replace(/\s/g, '').length < 40) {
+      // CTL escaneado (sin capa de texto): no hay fragmentos ni campos útiles, se
+      // lee por OCR y el parser cae a la vía por texto.
+      try {
+        texto = (await ocrPdf(buf, { scale: 3, maxPages: 2 })).text || '';
+      } catch (e) {
+        console.error(`[GARANTIA] OCR del CTL falló: ${e.message}`);
+      }
+    }
+    return vehiculoDeTradicion(paginas, campos, texto);
+  }
+  const campos = (await leerFormulario(fs.readFileSync(documentos.runt.ruta))).campos;
+  return vehiculoDeRunt(campos, textos.runt);
+}
+
+/**
  * @param {{documentos: Object, textos: Object}} halladas  de documentos.localizar
  * @returns {Promise<Object>} datos crudos; los huecos van como cadena vacía
  */
@@ -223,7 +316,6 @@ async function extraer(halladas) {
 
   const eje = (await leerFormulario(fs.readFileSync(documentos.ejecucion.ruta))).campos;
   const ini = (await leerFormulario(fs.readFileSync(documentos.inscripcion.ruta))).campos;
-  const runt = (await leerFormulario(fs.readFileSync(documentos.runt.ruta))).campos;
 
   const v = (re) => valorEnSeccion(eje, SECCION_DEUDOR, re);
   const nombre = [v(/^PRIMER NOMBRE/), v(/^SEGUNDO NOMBRE/), v(/^PRIMER APELLIDO/), v(/^SEGUNDO APELLIDO/)]
@@ -232,19 +324,21 @@ async function extraer(halladas) {
   const municipio = limpio(v(/^MUNICIPIO/));
   const direccion = direccionLimpia(v(/^DIRECCION$/));
 
-  const delRunt = vehiculoDeRunt(runt, textos.runt);
+  // Fuente del vehículo: MANDA el CTL (certificado de tradición) si está —trae
+  // todos los datos y suele tener capa de texto—; si no, el RUNT de la carpeta.
+  const base = await vehiculoDeExpediente(documentos, textos);
   const respaldo = vehiculoDeDescripcion(`${textos.inscripcion || ''}\n${textos.ejecucion || ''}`);
   const vehiculo = {};
-  for (const k of Object.keys(delRunt)) {
+  for (const k of Object.keys(base)) {
     // SERIE y MOTOR NO admiten respaldo. Hay vehículos que sencillamente no los
-    // tienen, y el RUNT —el registro oficial— los deja en blanco a propósito. El
+    // tienen, y el registro oficial —RUNT o CTL— los deja en blanco a propósito. El
     // formulario de Confecámaras, en cambio, rellena "Serie:0", y usar eso metería
     // en la demanda un número de serie que el registro no reconoce. Las radicadas
     // de Emily y de Isaac no traen ese renglón siquiera.
     //
     // Para los otros cinco el respaldo sí vale: el PDF del RUNT parte a veces un
     // valor entre dos páginas (la LÍNEA de Jorge).
-    vehiculo[k] = SIN_RESPALDO.has(k) ? delRunt[k] : (delRunt[k] || respaldo[k] || '');
+    vehiculo[k] = SIN_RESPALDO.has(k) ? base[k] : (base[k] || respaldo[k] || '');
   }
 
   // Un solo OCR del contrato de prenda (es el único escaneado): de ahí salen la
@@ -278,4 +372,4 @@ async function extraer(halladas) {
   };
 }
 
-module.exports = { extraer, fechaEnvioServientrega, montoDePrenda, vehiculoDeRunt, diasMoraDeSac };
+module.exports = { extraer, fechaEnvioServientrega, montoDePrenda, vehiculoDeRunt, vehiculoDeTradicion, vehiculoDeDescripcion, diasMoraDeSac };

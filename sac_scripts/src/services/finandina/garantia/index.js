@@ -30,8 +30,9 @@ const { loadRamaCache, buscarCorreoJuzgado } = require('../../comun/ramaJudicial
 const { buscarEnConfig } = require('../../comun/juzgadosConfig');
 const { correoSijin } = require('../../comun/sijin');
 const { cerrarOcr } = require('../../ocr');
-const { localizar } = require('./documentos');
-const { extraer } = require('./extraccion');
+const { consultarPlacaRunt, cerrarWorker } = require('../../runt');
+const { localizar, TIPOS } = require('./documentos');
+const { extraer, vehiculoDeDescripcion } = require('./extraccion');
 const { construirCampos, generarDemanda } = require('./demandas');
 const { generarAnexos } = require('./anexos');
 
@@ -64,6 +65,52 @@ async function resolverJuzgado(ciudad, browser, cacheFile) {
 function nombreDemanda(nombre, cedula) {
   const limpio = String(nombre || cedula).trim().replace(/[<>:"/\\|?*]/g, '_');
   return `SOLICITUD DE APREHENSION DEMANDANTE BANCO FINANDINA SA BIC CONTRA ${limpio} CC ${cedula}.docx`;
+}
+
+/** Navegador headless para la Rama Judicial y/o la consulta del RUNT. */
+async function lanzarBrowser() {
+  return puppeteer.launch({
+    // headless: 'new' — el modo viejo no renderiza el reporte Power BI de la
+    // Rama (ver services/comun/ramaJudicial.js).
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--window-size=1600,1000'],
+  });
+}
+
+/**
+ * Cuando no hay ni CTL ni certificado del RUNT en la carpeta, intenta BAJAR el
+ * RUNT del portal público (best-effort) y guardarlo en la carpeta del cliente.
+ *
+ * La placa sale de los formularios de Confecámaras (campo "Descripción"), que sí
+ * son obligatorios; el propietario es la cédula del garante. `consultarPlacaRunt`
+ * guarda la consulta como PDF con un nombre que contiene "RUNT" y cuyo contenido
+ * ("PLACA DEL VEHÍCULO") pasa la detección de documentos.
+ *
+ * NUNCA lanza ni bloquea: el captcha del RUNT se resuelve por OCR y el portal
+ * limita por IP, así que fallará en algunos. Si no baja, el cliente se omite por
+ * "falta RUNT/CTL", igual que antes.
+ *
+ * @returns {Promise<boolean>} true si el RUNT quedó en la carpeta.
+ */
+async function intentarDescargarRunt(carpeta, halladas, cedula, browser) {
+  const descr = `${halladas.textos.inscripcion || ''}\n${halladas.textos.ejecucion || ''}`;
+  const placa = String(vehiculoDeDescripcion(descr).placa || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!/^[A-Z]{3}\d{2,3}[A-Z]?$/.test(placa)) {
+    console.error(`[GARANTIA] ${cedula}: sin placa legible en los formularios → no se puede bajar el RUNT`);
+    return false;
+  }
+  const pdfPath = path.join(carpeta, `RUNT ${cedula}.pdf`);
+  try {
+    const r = await consultarPlacaRunt(browser, placa, cedula, { pdfPath });
+    if (r && r.pdfPath && fs.existsSync(pdfPath)) {
+      console.error(`[GARANTIA] ${cedula}: RUNT bajado del portal (${placa}) → ${path.basename(pdfPath)}`);
+      return true;
+    }
+    console.error(`[GARANTIA] ${cedula}: no se pudo bajar el RUNT del portal (${placa}).`);
+  } catch (e) {
+    console.error(`[GARANTIA] ${cedula}: error bajando el RUNT: ${e.message}`);
+  }
+  return false;
 }
 
 function leerArchivoB64(filePath, sacDocsDir, mimeType = MIME_DOCX) {
@@ -115,12 +162,7 @@ async function procesarGarantias(excelBuffer, options = {}) {
   });
   if (necesitaRama) {
     try {
-      browser = await puppeteer.launch({
-        // headless: 'new' — el modo viejo no renderiza el reporte Power BI de la
-        // Rama (ver services/comun/ramaJudicial.js).
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--window-size=1600,1000'],
-      });
+      browser = await lanzarBrowser();
     } catch (e) {
       console.error(`[GARANTIA] Puppeteer no disponible: ${e.message}. El juzgado saldrá del archivo de la oficina.`);
     }
@@ -142,9 +184,27 @@ async function procesarGarantias(excelBuffer, options = {}) {
           continue;
         }
 
-        const halladas = await localizar(carpeta);
+        let halladas = await localizar(carpeta);
+
+        // Sin CTL ni RUNT, y si es lo ÚNICO que falta: intentar bajar el RUNT del
+        // portal (best-effort). Solo se abre el navegador y se gasta el captcha si
+        // el resto del expediente ya está completo. Si baja, se re-detecta.
+        if (!halladas.documentos.tradicion && !halladas.documentos.runt
+            && halladas.faltantes.length === 1 && halladas.faltantes[0] === TIPOS.runt.etiqueta) {
+          if (!browser) {
+            try { browser = await lanzarBrowser(); }
+            catch (e) { console.error(`[GARANTIA] Puppeteer no disponible para el RUNT: ${e.message}`); }
+          }
+          if (browser && await intentarDescargarRunt(carpeta, halladas, cedula, browser)) {
+            halladas = await localizar(carpeta);
+          }
+        }
+
         if (halladas.faltantes.length) {
-          omitidos.push({ cedula, nombre: cliente.nombre, motivo: `faltan documentos: ${halladas.faltantes.join(', ')}` });
+          const motivo = halladas.faltantes.includes(TIPOS.runt.etiqueta) && !halladas.documentos.tradicion
+            ? `faltan documentos: ${halladas.faltantes.join(', ')} (no hay CTL y no se pudo bajar el RUNT)`
+            : `faltan documentos: ${halladas.faltantes.join(', ')}`;
+          omitidos.push({ cedula, nombre: cliente.nombre, motivo });
           console.error(`[GARANTIA] x ${quien} — faltan: ${halladas.faltantes.join(', ')}`);
           continue;
         }
@@ -193,7 +253,7 @@ async function procesarGarantias(excelBuffer, options = {}) {
           notas.push({
             campo: 'serie',
             nivel: 'info',
-            mensaje: 'El RUNT no reporta número de serie para este vehículo.',
+            mensaje: 'El registro oficial (RUNT/CTL) no reporta número de serie para este vehículo.',
           });
         }
 
@@ -211,6 +271,7 @@ async function procesarGarantias(excelBuffer, options = {}) {
       }
     }
   } finally {
+    await cerrarWorker().catch(() => {}); // worker OCR del captcha + página del RUNT
     if (browser) { try { await browser.close(); } catch (e) { /* se cierra igual */ } }
     await cerrarOcr().catch(() => {});
   }

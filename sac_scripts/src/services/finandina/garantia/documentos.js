@@ -185,6 +185,14 @@ async function localizar(carpeta) {
     textos[tipo] = elegido.TEXTO;
   }
 
+  // El CTL (certificado de tradición) trae los mismos datos del vehículo que el
+  // RUNT, y cuando está es además el ANEXO 4. Así que si hay CTL, el RUNT deja de
+  // ser obligatorio: no bloquea la generación por su ausencia.
+  if (documentos.tradicion) {
+    const i = faltantes.indexOf(TIPOS.runt.etiqueta);
+    if (i >= 0) faltantes.splice(i, 1);
+  }
+
   return { documentos, textos, faltantes };
 }
 
