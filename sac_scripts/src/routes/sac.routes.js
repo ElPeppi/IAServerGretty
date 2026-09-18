@@ -35,7 +35,12 @@ function parseCedulas(raw) {
 }
 
 // ─── POST /descargar-sac ──────────────────────────────────────────────────────
-// Body: { cedulas: "123-456, 789" | ["123","456"], sacUser?, sacPass?, sacBaseUrl?, outputBaseDir? }
+// Body: { cedulas, sacUser?, sacPass?, sacBaseUrl?, outputBaseDir?, proceso? }
+//   El SAC baja SIEMPRE al disco local del motor (caché efímero). El árbol de
+//   Drive donde queda NO lo decide el motor: lo decide el BACKEND al subirlo,
+//   según `proceso`. Por eso `proceso` no cambia `outBase` aquí; solo viaja en el
+//   aviso por cédula para que el backend suba al árbol correcto (singular vs.
+//   garantía mobiliaria).
 router.post('/descargar-sac', async (req, res) => {
   const cedulas = parseCedulas(req.body.cedulas);
   if (!cedulas.length) {
@@ -45,6 +50,8 @@ router.post('/descargar-sac', async (req, res) => {
     });
   }
 
+  const proceso = String(req.body.proceso || '').toLowerCase() === 'pago_directo'
+    ? 'pago_directo' : 'singular';
   const sacUrl  = req.body.sacBaseUrl    || config.SAC_URL;
   const sacUser = req.body.sacUser       || config.SAC_USER;
   const sacPass = req.body.sacPass       || config.SAC_PASS;
@@ -64,14 +71,14 @@ router.post('/descargar-sac', async (req, res) => {
     message: `Descarga del SAC iniciada para ${cedulas.length} cédula(s). Se avisa por cada una que termine.`,
   });
 
-  void descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass });
+  void descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass, proceso });
 });
 
 // Despacha TODAS las cédulas a la cola del SAC y deja que sea ella quien limite
 // cuántas sesiones corren a la vez (SAC_CONCURRENCIA, por defecto 1). Notifica al
 // backend por cada una en cuanto termina. Nunca lanza: un fallo de una cédula no
 // puede tumbar el lote ni el proceso del motor.
-async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass }) {
+async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass, proceso = 'singular' }) {
   const t0 = Date.now();
   const resultados = [];
 
@@ -134,6 +141,9 @@ async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacP
         pdfs: (item.pdfsSAC || []).length,
         hechas,
         total: cedulas.length,
+        // El backend usa esto para subir el SAC al árbol de Drive correcto
+        // (singular vs. garantía mobiliaria). Ver notificationRoutes.
+        proceso,
       },
     });
   };

@@ -72,10 +72,13 @@ export const generateApi = {
    * IDENTIFICACION). Devuelve apenas se encola: el scraping sigue en segundo
    * plano y avisa por notificaciones (SSE) a medida que termina cada persona.
    */
-  descargarSac: (cedulas: string, excel?: File | null) => {
+  // `proceso` = 'pago_directo' hace que el SAC caiga en el árbol de garantía
+  // mobiliaria (la carpeta que lee la generación de garantías). Default 'singular'.
+  descargarSac: (cedulas: string, excel?: File | null, proceso: 'singular' | 'pago_directo' = 'singular') => {
     const form = new FormData();
     if (cedulas) form.append('cedulas', cedulas);
     if (excel)   form.append('excelFile', excel);
+    form.append('proceso', proceso);
     return apiClient
       .post<DescargarSacResult>('/generate/descargar-sac', form, {
         headers: { 'Content-Type': 'multipart/form-data' },

@@ -76,6 +76,9 @@ export interface GenerateSingularOutput {
 // ─── Descarga de obligaciones del SAC por cédula (reemplaza el disparo por ZIP) ──
 export interface DescargarSacInput {
   cedulas: string | string[]; // el motor las normaliza (separadas por "-", "," o espacios)
+  // 'pago_directo' → el SAC cae en la base de garantía mobiliaria (misma carpeta
+  // que lee la generación de garantías). Por defecto, 'singular'.
+  proceso?: 'singular' | 'pago_directo';
 }
 
 export interface DescargarSacItem {

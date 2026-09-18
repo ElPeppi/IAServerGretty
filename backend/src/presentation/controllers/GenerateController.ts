@@ -225,7 +225,11 @@ export class GenerateController {
         return;
       }
 
-      const result = await engineService.descargarSac({ cedulas });
+      // 'pago_directo' hace que el SAC caiga en el árbol de garantía mobiliaria
+      // (misma carpeta que lee la generación de garantías). Default 'singular'.
+      const proceso = String(req.body?.proceso || '').toLowerCase() === 'pago_directo'
+        ? 'pago_directo' as const : 'singular' as const;
+      const result = await engineService.descargarSac({ cedulas, proceso });
       res.status(202).json(result);
     } catch (error: unknown) {
       const axiosCode = (error as { code?: string }).code;

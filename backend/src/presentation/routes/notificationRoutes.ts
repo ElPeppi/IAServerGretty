@@ -73,7 +73,12 @@ router.post('/engine', (req, res) => {
   // subimos esos archivos a Drive para que el SAC también quede en el servidor, no solo
   // en local. En segundo plano (no bloquea la respuesta del aviso).
   if (type === 'sac' && meta && meta.fase === 'cedula' && meta.success && meta.cedula) {
-    void subirSacDeCedula(String(meta.cedula));
+    // `proceso` (lo manda el motor) decide el árbol de Drive: 'pago_directo' →
+    // garantía mobiliaria (la carpeta que lee la generación de garantías);
+    // cualquier otra cosa → ejecutivas singulares. Sin esto, el SAC de pago
+    // directo caía siempre en singular.
+    const proceso = meta.proceso === 'pago_directo' ? 'pago_directo' : 'singular';
+    void subirSacDeCedula(String(meta.cedula), undefined, proceso);
   }
 
   res.json({ ok: true, id: n.id, clients: notificationHub.clientCount() });

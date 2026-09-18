@@ -28,6 +28,8 @@ export function DescargarSacModal({ onClose }: Props) {
   const [seleccion, setSeleccion]     = useState<Set<string>>(new Set()); // cédulas marcadas; vacío = todas
   const [isLoading, setLoading]       = useState(false);
   const [error, setError]             = useState<string | null>(null);
+  // Árbol donde cae el SAC: singular (ejecutivas) o pago directo (garantía mobiliaria).
+  const [proceso, setProceso]         = useState<'singular' | 'pago_directo'>('singular');
   const [result, setResult]           = useState<DescargarSacResult | null>(null);
 
   // Al elegir una asignación, traer sus personas y limpiar la selección previa.
@@ -83,7 +85,7 @@ export function DescargarSacModal({ onClose }: Props) {
     try {
       // Unir cédulas pegadas + las de la asignación (el motor deduplica/normaliza).
       const todas = [cedulas, ...cedulasAsig].filter(Boolean).join(' ');
-      const res = await generateApi.descargarSac(todas, null);
+      const res = await generateApi.descargarSac(todas, null, proceso);
       setResult(res);
     } catch (err: unknown) {
       const axiosMsg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
@@ -120,6 +122,28 @@ export function DescargarSacModal({ onClose }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Proceso</label>
+            <div className="grid grid-cols-2 gap-2">
+              {([['singular', 'Ejecutivo singular'], ['pago_directo', 'Pago directo (garantía mobiliaria)']] as const).map(([val, label]) => (
+                <button
+                  key={val}
+                  type="button"
+                  onClick={() => setProceso(val)}
+                  disabled={isLoading}
+                  className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-50 ${
+                    proceso === val ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Define en qué árbol de carpetas cae el SAC. Para las de aprehensión y entrega, elige <b>Pago directo</b>.
+            </p>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Cédulas <span className="text-gray-400 font-normal">(separadas por "-", "," o espacios)</span>
