@@ -360,6 +360,8 @@ export class GenerateController {
         transito: getSettings().transito,
         correoPoder,
         correoPoderFilename,
+        // El pago directo (garantía mobiliaria) se regenera con su propio motor.
+        proceso: document.type === 'DEMANDA_PAGO_DIRECTO' ? 'pago_directo' : 'singular',
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al regenerar';
@@ -373,35 +375,47 @@ export class GenerateController {
     excel: Buffer; fechaAsignacion?: string; smmv?: number;
     transito?: Array<{ ciudad: string; entidad: string; correo: string }>;
     correoPoder?: Buffer | null; correoPoderFilename?: string;
+    proceso?: 'singular' | 'pago_directo';
   }): Promise<void> {
     const t0 = Date.now();
     // Drive es la fuente de verdad: el motor lee del DISCO, así que hay que bajarle
     // la carpeta del cliente antes de correrlo (y borrarla al final). Sin esto la
     // regeneración fallaba con "sin pagaré en la carpeta del cliente" aunque el
     // pagaré estuviera en Drive — la generación por lote sí hidrataba, ésta no.
-    const bancoCliente = bancoDeExcel(input.excel);
+    const banco = bancoDeExcel(input.excel);
+    const proceso: 'singular' | 'pago_directo' = input.proceso === 'pago_directo' ? 'pago_directo' : 'singular';
     try {
-      await hidratarCedula(input.cedula, bancoCliente);
+      await hidratarCedula(input.cedula, banco, proceso);
     } catch (e) {
       console.error(`[regenerar] ${input.cedula}: no se pudo hidratar de Drive:`, e instanceof Error ? e.message : e);
     }
     try {
-      const result = await engineService.generateSingular({
-        excel: input.excel,
-        excelFilename: 'regeneracion.xlsx',
-        // Sin esto la demanda regenerada salía SIN el ANEXO 1 (correo del banco
-        // que otorga el poder): la generación original sí lo mandaba y la
-        // regeneración no, así que el documento quedaba peor que el primero.
-        correoPoder: input.correoPoder ?? null,
-        correoPoderFilename: input.correoPoderFilename,
-        fechaAsignacion: input.fechaAsignacion,
-        smmv: input.smmv,
-        transito: input.transito,
-        soloCedulas: [input.cedula],
-        // Nº de pagaré / fecha de suscripción capturados a mano en el visor: el
-        // OCR no puede leerlos del pagaré escaneado, así que mandan sobre él.
-        correcciones: await correccionesDeCedulas([input.cedula]),
-      });
+      // El trámite de PAGO DIRECTO (garantía mobiliaria) se regenera con SU motor:
+      // el singular parsea solo las filas de proceso singular y omitiría la cédula
+      // ("no está en el Excel de asignación") aunque esté perfectamente en el lote.
+      const result = proceso === 'pago_directo'
+        ? await engineService.generateGarantias({
+            excel: input.excel,
+            excelFilename: 'regeneracion.xlsx',
+            soloCedulas: [input.cedula],
+            correoPoder: input.correoPoder ?? null,
+          })
+        : await engineService.generateSingular({
+            excel: input.excel,
+            excelFilename: 'regeneracion.xlsx',
+            // Sin esto la demanda regenerada salía SIN el ANEXO 1 (correo del banco
+            // que otorga el poder): la generación original sí lo mandaba y la
+            // regeneración no, así que el documento quedaba peor que el primero.
+            correoPoder: input.correoPoder ?? null,
+            correoPoderFilename: input.correoPoderFilename,
+            fechaAsignacion: input.fechaAsignacion,
+            smmv: input.smmv,
+            transito: input.transito,
+            soloCedulas: [input.cedula],
+            // Nº de pagaré / fecha de suscripción capturados a mano en el visor: el
+            // OCR no puede leerlos del pagaré escaneado, así que mandan sobre él.
+            correcciones: await correccionesDeCedulas([input.cedula]),
+          });
 
       const doc = (result.documentos ?? []).find((d) => d.cedula === input.cedula);
       if (!doc) {
@@ -418,14 +432,14 @@ export class GenerateController {
         return;
       }
 
-      const banco = bancoDeExcel(input.excel);
       const fileRef = async (f?: EngineFile | null): Promise<string | undefined> => {
         if (!f) return undefined;
         if (storage.enabled && f.relPath) {
           // El motor escribe en SU disco y devuelve base64+relPath ({cedula}/...).
           // `relEnCarpetaCedula` lo lleva a la carpeta que el cliente ya tenga en
-          // Drive (que puede llamarse "1143152167-AGOSTO 2026" o "CC 9306310").
-          const rel = await relEnCarpetaCedula(f.relPath, banco);
+          // Drive (que puede llamarse "1143152167-AGOSTO 2026" o "CC 9306310"), en
+          // el árbol del proceso que toca (singular vs. garantía mobiliaria).
+          const rel = await relEnCarpetaCedula(f.relPath, banco, proceso);
           if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
           return storage.urlFor(rel);
         }
