@@ -25,6 +25,7 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
   const [cargando, setCargando] = useState(true);
   const [tipo, setTipo] = useState('');
   const [seleccion, setSeleccion] = useState<Set<string>>(new Set()); // cédulas marcadas; vacío = todas del tipo
+  const [regenerar, setRegenerar] = useState(false); // incluir/rehacer las ya generadas
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [correoPoder, setCorreoPoder] = useState<File | null>(null);
@@ -97,12 +98,15 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
   // el singular, pero el suyo: por eso la lista se pide por proceso.
   const esPagoDirecto = TIPOS_DEMANDA[tipo] === 'pago_directo';
 
-  // Al cambiar de tipo, limpiar la selección (son personas distintas).
-  useEffect(() => { setSeleccion(new Set()); }, [tipo]);
+  // Al cambiar de tipo (o el modo regenerar), limpiar la selección.
+  useEffect(() => { setSeleccion(new Set()); }, [tipo, regenerar]);
 
-  // Sin marcar = todas las PENDIENTES, no todas. Antes esto reprocesaba las ya
-  // generadas, que es trabajo caro y de riesgo (cada una llama al motor).
-  const cedulasAEnviar = seleccion.size ? [...seleccion] : pendientesTipo.map((p) => p.cedula);
+  // Sin marcar = todas las PENDIENTES (regenerar OFF) o TODAS las del tipo,
+  // incluidas las ya generadas (regenerar ON). Reprocesar es caro —cada una vuelve
+  // a llamar al motor y reemplaza el documento—, por eso por defecto solo van las
+  // pendientes.
+  const objetivoDefault = regenerar ? personasTipo : pendientesTipo;
+  const cedulasAEnviar = seleccion.size ? [...seleccion] : objetivoDefault.map((p) => p.cedula);
 
   // El pago directo no tiene correo guardado al que caer: si no se elige uno, el
   // servidor rechaza el lote. Se bloquea aquí para no gastar el viaje.
@@ -213,14 +217,17 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
               ) : personasTipo.length === 0 ? (
                 <p className="p-3 text-sm text-gray-400">No hay personas de este tipo.</p>
               ) : (
-                personasTipo.map((p) => (
+                personasTipo.map((p) => {
+                  // Una ya generada solo se puede marcar en modo regenerar.
+                  const bloqueada = p.generada && !regenerar;
+                  return (
                   <label key={p.cedula}
-                    className={`flex items-center gap-3 px-3 py-2 ${p.generada ? 'cursor-default bg-gray-50/60' : 'cursor-pointer hover:bg-gray-50'}`}>
-                    <input type="checkbox" checked={!p.generada && seleccion.has(p.cedula)}
+                    className={`flex items-center gap-3 px-3 py-2 ${bloqueada ? 'cursor-default bg-gray-50/60' : 'cursor-pointer hover:bg-gray-50'}`}>
+                    <input type="checkbox" checked={seleccion.has(p.cedula)}
                       onChange={() => togglePersona(p.cedula)}
-                      disabled={enviando || p.generada}
+                      disabled={enviando || bloqueada}
                       className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-50" />
-                    <span className={`text-sm truncate flex-1 ${p.generada ? 'text-gray-400' : 'text-gray-700'}`}>
+                    <span className={`text-sm truncate flex-1 ${bloqueada ? 'text-gray-400' : 'text-gray-700'}`}>
                       {p.nombre || <span className="text-gray-400">(sin nombre)</span>}
                       <span className="text-gray-400"> — {p.cedula}</span>
                     </span>
@@ -234,17 +241,31 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
                       </span>
                     )}
                   </label>
-                ))
+                  );
+                })
               )}
             </div>
+            {/* Rehacer las ya generadas (p. ej. tras un arreglo del motor). Solo
+                aparece si hay alguna generada. Es caro: cada una vuelve a llamar al
+                motor y REEMPLAZA el documento existente. */}
+            {!cargando && generable && personasTipo.some((p) => p.generada) && (
+              <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
+                <input type="checkbox" checked={regenerar} disabled={enviando}
+                  onChange={(e) => setRegenerar(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500" />
+                <span className="text-xs text-gray-600">Regenerar también las ya generadas (reemplaza el documento)</span>
+              </label>
+            )}
             {!cargando && personasTipo.length > 0 && (
               <p className="text-xs mt-1 text-gray-400">
-                {pendientesTipo.length === 0 ? (
+                {seleccion.size ? (
+                  `${seleccion.size} seleccionada${seleccion.size !== 1 ? 's' : ''}`
+                ) : regenerar ? (
+                  `Se regenerarán las ${personasTipo.length} demanda${personasTipo.length !== 1 ? 's' : ''} de este tipo (incluye las ya generadas)`
+                ) : pendientesTipo.length === 0 ? (
                   <span className="text-emerald-600 font-medium">
                     Todas las demandas de este tipo ya están generadas.
                   </span>
-                ) : seleccion.size ? (
-                  `${seleccion.size} de ${pendientesTipo.length} pendiente${pendientesTipo.length !== 1 ? 's' : ''} seleccionada${seleccion.size !== 1 ? 's' : ''}`
                 ) : (
                   `Se generarán las ${pendientesTipo.length} demanda${pendientesTipo.length !== 1 ? 's' : ''} pendiente${pendientesTipo.length !== 1 ? 's' : ''} de este tipo`
                 )}
@@ -323,7 +344,7 @@ export function GenerarDemandasModal({ asignacion, onClose, onDone, onSinPoder }
             </button>
             <button type="submit" disabled={enviando || cargando || !generable || !cedulasAEnviar.length || faltaCorreo}
               className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-              {enviando ? 'Generando…' : `Generar${cedulasAEnviar.length ? ` (${cedulasAEnviar.length})` : ''}`}
+              {enviando ? 'Generando…' : `${regenerar ? 'Regenerar' : 'Generar'}${cedulasAEnviar.length ? ` (${cedulasAEnviar.length})` : ''}`}
             </button>
           </div>
         </form>
