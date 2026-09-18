@@ -262,7 +262,12 @@ async function procesarGarantias(excelBuffer, options = {}) {
           cedula,
           nombre: datos.garante.nombre,
           notas,
-          archivos: { demanda: leerArchivoB64(destino, sacDocsDir) },
+          archivos: {
+            demanda: leerArchivoB64(destino, sacDocsDir),
+            // El ANEXOS.pdf se generó en la carpeta local; hay que DEVOLVERLO para
+            // que el backend lo suba a Drive (si no, se pierde al limpiar el caché).
+            anexos: anexos ? leerArchivoB64(anexos, sacDocsDir, 'application/pdf') : null,
+          },
         });
         console.error(`[GARANTIA] ok ${quien} — ${datos.vehiculo.placa} — ${tipoJuzgado} de ${ciudad}`);
       } catch (e) {

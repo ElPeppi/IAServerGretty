@@ -1199,15 +1199,22 @@ export class AsignacionController {
     const f = doc.archivos?.demanda;
     if (!f) return;
 
-    let url: string | undefined;
-    let rel: string | undefined;
-    if (storage.enabled && f.relPath) {
-      rel = await relEnCarpetaCedula(f.relPath, banco, 'pago_directo');
-      if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
-      url = storage.urlFor(rel);
-    } else {
-      url = fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url;
-    }
+    // Sube al árbol de PAGO DIRECTO (GARANTIA MOBILIARIAS), no al del singular.
+    const subir = async (file?: EngineFile | null): Promise<{ url?: string; rel?: string }> => {
+      if (!file) return {};
+      if (storage.enabled && file.relPath) {
+        const rel = await relEnCarpetaCedula(file.relPath, banco, 'pago_directo');
+        if (file.base64) await storage.save(rel, Buffer.from(file.base64, 'base64'), file.mimeType);
+        return { url: storage.urlFor(rel), rel };
+      }
+      return { url: fileStorage.saveBase64(file.base64, file.filename, file.mimeType).url };
+    };
+
+    // La demanda va primero y SOLA: crea la carpeta del cliente si falta (ese
+    // "buscar → crear" no tiene candado). Con la carpeta ya hecha, el anexo se sube
+    // sin riesgo de duplicarla.
+    const demanda = await subir(f);
+    const anexos = await subir(doc.archivos?.anexos);
 
     const datos = {
       title: `Solicitud de Aprehensión — ${doc.nombre || doc.cedula}`,
@@ -1216,11 +1223,12 @@ export class AsignacionController {
       status: 'GENERATED' as const,
       clientName: doc.nombre || doc.cedula,
       clientCedula: doc.cedula,
-      fileUrl: url,
+      fileUrl: demanda.url,
+      anexosUrl: anexos.url,
       asignacionUrl: input.excelUrl ?? undefined,
       asignacionId: input.asignacionId,
       notes: (doc.notas ?? []) as unknown as Prisma.InputJsonValue,
-      metadata: { demandaRelPath: rel ?? f.relPath } as Prisma.InputJsonValue,
+      metadata: { demandaRelPath: demanda.rel ?? f.relPath } as Prisma.InputJsonValue,
     };
 
     // Una por (persona, asignación): regenerar reemplaza, no acumula.
