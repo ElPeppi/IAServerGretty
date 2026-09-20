@@ -34,6 +34,8 @@ const { consultarPlacaRunt, cerrarWorker } = require('../../runt');
 const { localizar, TIPOS } = require('./documentos');
 const { extraer, vehiculoDeDescripcion } = require('./extraccion');
 const { construirCampos, generarDemanda } = require('./demandas');
+const { camposPagoDirecto } = require('./poderes');
+const { fillPoder } = require('../../comun/poderes');
 const { generarAnexos } = require('./anexos');
 // Los antecedentes (SAC DIRYTEL + OBL unidos) son iguales que en el singular: el
 // generador es genérico (lee los SAC de la carpeta del cliente), se reusa tal cual.
@@ -237,6 +239,35 @@ async function procesarGarantias(excelBuffer, options = {}) {
         });
         const destino = path.join(carpeta, nombreDemanda(datos.garante.nombre, cedula));
         fs.writeFileSync(destino, buffer);
+
+        // Poder INDIVIDUAL del cliente en la carpeta: es lo que el ANEXO 1
+        // sobrepone sobre el correo del banco (ver garantia/anexos → buscarPoderDocx).
+        // Sin esto el anexo salía con el correo pero SIN el poder. El singular ya lo
+        // hace en su flujo; aquí faltaba. No bloquea: si falla, queda el correo solo.
+        try {
+          const plantillaPoder = config.PLANTILLA_PODER_PAGO_DIRECTO;
+          if (plantillaPoder && fs.existsSync(plantillaPoder)) {
+            const { fieldMap: fmPoder } = camposPagoDirecto({
+              cedula,
+              nombre: datos.garante.nombre,
+              tipoJuzgado,
+              ciudadJuzgado: ciudad,
+              placa: datos.vehiculo.placa,
+              // El poder identifica el bien con marca + línea (como el dato del banco).
+              marca: [datos.vehiculo.marca, datos.vehiculo.linea].filter(Boolean).join(' '),
+              modelo: datos.vehiculo.modelo,
+            }) || {};
+            if (fmPoder) {
+              const poderBuf = fillPoder(fs.readFileSync(plantillaPoder), fmPoder);
+              const seguro = String(datos.garante.nombre || cedula).trim().replace(/[<>:"/\\|?*]/g, '_');
+              fs.writeFileSync(path.join(carpeta, `PODER PAGO DIRECTO ${seguro} - ${cedula}.docx`), poderBuf);
+            }
+          } else {
+            console.error(`[GARANTIA] ${cedula}: sin plantilla de poder; ANEXO 1 saldrá con el correo sin poder`);
+          }
+        } catch (e) {
+          console.error(`[GARANTIA] ${cedula}: no se pudo generar el poder individual: ${e.message}`);
+        }
 
         // Los anexos NO bloquean: si fallan, la demanda ya está hecha y se puede
         // armar el PDF a mano. Devolver '' y seguir es mejor que perder el lote.
