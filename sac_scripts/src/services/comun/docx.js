@@ -270,6 +270,67 @@ function desactivarMailMerge(zip) {
   } catch (_) { /* sin settings.xml: nada que desactivar */ }
 }
 
+/**
+ * Quita las FUENTES EMBEBIDAS del .docx.
+ *
+ * La plantilla de pago directo trae 10 fuentes embebidas (.odttf, ~6.7 MB) y la
+ * marca `<w:embedTrueTypeFonts/>`. Al re-empaquetar el .docx con adm-zip (que no
+ * es Word), esas fuentes obfuscadas hacen que Word abra el documento con "Word
+ * encontró contenido no legible… ¿desea recuperar?". Como son fuentes estándar
+ * (Arial Narrow, etc.) presentes en cualquier Office, se quitan: el documento se
+ * ve igual, pesa ~6.7 MB menos y deja de dar el aviso. La singular no las trae, y
+ * por eso nunca dio este problema.
+ *
+ * Se elimina TODO el conjunto para no dejar referencias colgando (que también
+ * corromperían el archivo): la bandera en settings, los <w:embed*> de fontTable,
+ * los .odttf, su .rels y el content-type.
+ */
+function quitarFuentesEmbebidas(zip) {
+  try {
+    let tocado = false;
+
+    try {
+      let s = zip.readAsText('word/settings.xml');
+      if (s && /<w:(?:embedTrueTypeFonts|embedSystemFonts|saveSubsetFonts)\b/.test(s)) {
+        s = s.replace(/<w:embedTrueTypeFonts[^>]*\/>/g, '')
+             .replace(/<w:embedSystemFonts[^>]*\/>/g, '')
+             .replace(/<w:saveSubsetFonts[^>]*\/>/g, '');
+        zip.updateFile('word/settings.xml', Buffer.from(s, 'utf8'));
+        tocado = true;
+      }
+    } catch (_) { /* sin settings.xml */ }
+
+    try {
+      let ft = zip.readAsText('word/fontTable.xml');
+      if (ft && /<w:embed(?:Regular|Bold|Italic|BoldItalic)\b/.test(ft)) {
+        // Los <w:embed*> llevan el r:id y la fontKey; sin ellos, <w:font> queda
+        // como una simple declaración (nombre, panose…), que es lo válido sin embeber.
+        ft = ft.replace(/<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*\/>/g, '');
+        zip.updateFile('word/fontTable.xml', Buffer.from(ft, 'utf8'));
+        tocado = true;
+      }
+    } catch (_) { /* sin fontTable.xml */ }
+
+    for (const e of zip.getEntries()) {
+      if (/^word\/fonts\/.*\.odttf$/i.test(e.entryName)) { zip.deleteFile(e.entryName); tocado = true; }
+    }
+    try { zip.deleteFile('word/_rels/fontTable.xml.rels'); } catch (_) { /* no estaba */ }
+
+    try {
+      let ct = zip.readAsText('[Content_Types].xml');
+      if (ct && /Extension="odttf"/i.test(ct)) {
+        ct = ct.replace(/<Default Extension="odttf"[^>]*\/>/gi, '');
+        zip.updateFile('[Content_Types].xml', Buffer.from(ct, 'utf8'));
+        tocado = true;
+      }
+    } catch (_) { /* sin content types */ }
+
+    if (tocado) console.error('[docx] fuentes embebidas eliminadas del documento');
+  } catch (e) {
+    console.error('[docx] no se pudieron quitar las fuentes embebidas:', e.message);
+  }
+}
+
 module.exports = {
   estamparFirma,
   xmlEscape,
@@ -278,6 +339,7 @@ module.exports = {
   reemplazarCampos,
   aplanarCamposWord,
   desactivarMailMerge,
+  quitarFuentesEmbebidas,
   ORDINALES,
   ORDINAL_RE,
 };

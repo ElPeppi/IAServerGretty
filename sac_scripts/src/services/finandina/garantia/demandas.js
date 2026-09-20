@@ -25,7 +25,7 @@
 const fs = require('fs');
 const AdmZip = require('adm-zip');
 
-const { reemplazarCampos, aplanarCamposWord, desactivarMailMerge, estamparFirma } = require('../../comun/docx');
+const { reemplazarCampos, aplanarCamposWord, desactivarMailMerge, quitarFuentesEmbebidas, estamparFirma } = require('../../comun/docx');
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -145,6 +145,9 @@ function generarDemanda(plantillaPath, fieldMap, opts = {}) {
   xml = quitarRenglones(xml, opts);
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'));
   desactivarMailMerge(zip);
+  // La plantilla de pago directo trae fuentes embebidas que, re-empaquetadas por
+  // adm-zip, hacen que Word abra el .docx con "contenido no legible". Se quitan.
+  quitarFuentesEmbebidas(zip);
   if (opts.firmar !== false) {
     try { estamparFirma(zip); } catch (e) { console.error(`[GARANTIA] firma no estampada: ${e.message}`); }
   }
