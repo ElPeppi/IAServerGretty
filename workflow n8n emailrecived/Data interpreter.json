@@ -8,13 +8,13 @@
         "nodeCredentialType": "gmailOAuth2",
         "options": {}
       },
-      "id": "2677cfa3-7d48-4c73-9f9a-c5dc8be96532",
+      "id": "7bfb7319-daa6-4679-945c-4944ff0d76df",
       "name": "HTTP - Obtener Mensaje Completo",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        240,
-        0
+        -608,
+        112
       ],
       "credentials": {
         "gmailOAuth2": {
@@ -27,13 +27,13 @@
       "parameters": {
         "jsCode": "// Extrae IDs de adjuntos desde payload.parts del mensaje Gmail completo\nconst payload = $json.payload || {};\nconst messageId = $json.id;\n\n// Cabeceras del mensaje\nconst headers = payload.headers || [];\nconst getHeader = (name) => (headers.find(h => h.name.toLowerCase() === name.toLowerCase()) || {}).value || '';\n\nconst emailFrom    = $json.From || $json.from || getHeader('From') || '';\nconst emailSubject = $json.Subject || $json.subject || getHeader('Subject') || '(sin asunto)'; const decodeB64Url = (d) => d ? Buffer.from(String(d).replace(/-/g,'+').replace(/_/g,'/'),'base64').toString('utf8') : ''; function extraerBody(node){ let text='',html=''; (function walk(part){ if(!part) return; const mt=(part.mimeType||'').toLowerCase(); if(mt==='text/plain'&&part.body&&part.body.data&&!text) text=decodeB64Url(part.body.data); else if(mt==='text/html'&&part.body&&part.body.data&&!html) html=decodeB64Url(part.body.data); if(part.parts) part.parts.forEach(walk); })(node); if(!text&&!html&&node&&node.body&&node.body.data) text=decodeB64Url(node.body.data); return {text,html}; } const _body = extraerBody(payload); const emailBody = _body.text || ''; const emailBodyHtml = _body.html || ''; const emailSnippet = $json.snippet || '';\n\n// Recorre partes recursivamente para encontrar adjuntos reales\nfunction extractAttachments(parts, depth) {\n  if (!parts || depth > 6) return [];\n  const result = [];\n  for (const part of parts) {\n    if (part.filename && part.filename.length > 0 && part.body && part.body.attachmentId) {\n      result.push({\n        attachmentId: part.body.attachmentId,\n        fileName:     part.filename,\n        mimeType:     part.mimeType || 'application/octet-stream'\n      });\n    }\n    if (part.parts) result.push(...extractAttachments(part.parts, depth + 1));\n  }\n  return result;\n}\n\nconst allAttachments = extractAttachments(payload.parts || [], 0);\n\nlet excelAtt = null;\nlet zipAtt   = null;\n\nfor (const att of allAttachments) {\n  const fn = att.fileName.toLowerCase();\n  const mt = att.mimeType.toLowerCase();\n  if (!excelAtt && (fn.endsWith('.xlsx') || fn.endsWith('.xls') || mt.includes('spreadsheet') || mt.includes('excel') || mt.includes('openxmlformats'))) {\n    excelAtt = att;\n  } else if (!zipAtt && (fn.endsWith('.zip') || mt.includes('zip') || mt.includes('x-zip') || mt.includes('compressed'))) {\n    zipAtt = att;\n  }\n}\n\nreturn [{ json: {\n  messageId,\n  emailFrom,\n  emailSubject,\n  emailBody,\n  emailBodyHtml,\n  emailSnippet,\n  hasExcel:          !!excelAtt,\n  hasZip:            !!zipAtt,\n  excelAttachmentId: excelAtt ? excelAtt.attachmentId : '',\n  excelFileName:     excelAtt ? excelAtt.fileName     : '',\n  excelMimeType:     excelAtt ? excelAtt.mimeType     : '',\n  zipAttachmentId:   zipAtt   ? zipAtt.attachmentId   : '',\n  zipFileName:       zipAtt   ? zipAtt.fileName       : '',\n  zipMimeType:       zipAtt   ? zipAtt.mimeType       : ''\n}}];"
       },
-      "id": "93cc6fcc-aa34-4e86-87e6-98bfd51d2825",
+      "id": "277fd828-0eca-45a7-b554-58d09cc0b0bb",
       "name": "Extraer IDs de Adjuntos",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        480,
-        0
+        -368,
+        112
       ]
     },
     {
@@ -103,7 +103,7 @@
                     "rightValue": "jeffry0414@gmail.com",
                     "operator": {
                       "type": "string",
-                      "operation": "equals"
+                      "operation": "contains"
                     }
                   }
                 ],
@@ -119,10 +119,10 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
       "position": [
-        704,
-        -16
+        -144,
+        96
       ],
-      "id": "37c4ef41-aae7-4fdc-91e4-71330d8ba1fa",
+      "id": "e0ef79d0-298f-4f51-b43a-26447971060c",
       "name": "Switch"
     },
     {
@@ -132,11 +132,120 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.2,
       "position": [
-        32,
+        -832,
         0
       ],
-      "id": "a650f75b-d8e0-450c-a655-7bf53a2f82ee",
+      "id": "0adf13b1-c597-46d8-8d63-7acac1ad46b0",
       "name": "Ejecutar"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a-set-cliente-lib",
+              "name": "cliente",
+              "value": "LIBERTADOR",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        80,
+        -80
+      ],
+      "id": "e2bb0268-ff13-4d04-b16f-47e02b24a8c0",
+      "name": "Set Cliente Libertador"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a-set-cliente-fin",
+              "name": "cliente",
+              "value": "FINANDINA",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        80,
+        96
+      ],
+      "id": "984df919-0846-47e8-bc55-d2bfd799a37b",
+      "name": "Set Cliente Finandina"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a-set-cliente-pru",
+              "name": "cliente",
+              "value": "PRUEBAS",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        80,
+        256
+      ],
+      "id": "27a0cce8-ce34-45da-a15e-b051690997c4",
+      "name": "Set Cliente Pruebas"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        304,
+        96
+      ],
+      "id": "6dabec04-ef59-46c4-9f6e-430ac15a8663",
+      "name": "Salida"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -896,
+        176
+      ],
+      "id": "1fff8636-fcda-4ed2-8e86-496883576678",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Hag7LRxhQJ8GjtYl",
+          "name": "Gmail account"
+        }
+      }
     }
   ],
   "pinData": {},
@@ -173,6 +282,75 @@
           }
         ]
       ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Set Cliente Libertador",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Cliente Finandina",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Cliente Pruebas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Cliente Libertador": {
+      "main": [
+        [
+          {
+            "node": "Salida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Cliente Finandina": {
+      "main": [
+        [
+          {
+            "node": "Salida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Cliente Pruebas": {
+      "main": [
+        [
+          {
+            "node": "Salida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Obtener Mensaje Completo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
@@ -181,8 +359,9 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "749e6462-bde7-4a9e-94bd-dcf13756f80b",
+  "versionId": "e8da3087-b755-4a60-b1b3-34dd3d336135",
   "meta": {
+    "templateCredsSetupCompleted": true,
     "instanceId": "f7656dd70f520a71b7ddb63dda74e9cf1a7d19c349853a4306ddd69eb0f83944"
   },
   "nodeGroups": [],
