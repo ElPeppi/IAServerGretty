@@ -1,0 +1,605 @@
+{
+  "name": "email automatization",
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-excel",
+              "leftValue": "={{ $json.hasExcel }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b6b6198e-b2f0-49e8-973e-d573bda784bd",
+      "name": "¿Tiene Excel?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        48,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://gmail.googleapis.com/gmail/v1/users/me/messages/{{ $json.messageId }}/attachments/{{ $json.excelAttachmentId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gmailOAuth2",
+        "options": {}
+      },
+      "id": "7e076ada-38c4-4c20-90ee-090baf7bf635",
+      "name": "HTTP - Descargar Excel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        256,
+        272
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Hag7LRxhQJ8GjtYl",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convierte la respuesta base64url de Gmail API a binario n8n\nconst base64url = $json.data || '';\nif (!base64url) throw new Error('Gmail API devolvió data vacía para el adjunto Excel.');\n\n// base64url → base64 estándar\nconst base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');\nconst buffer = Buffer.from(base64, 'base64');\n\nconst excelInfo = $node[\"Extraer IDs de Adjuntos\"].json;\nconst fileName  = excelInfo.excelFileName || 'adjunto.xlsx';\nconst mimeType  = excelInfo.excelMimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';\n\nconst binaryData = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);\n\nreturn [{\n  json: {\n    messageId:    excelInfo.messageId,\n    emailFrom:    excelInfo.emailFrom,\n    emailSubject: excelInfo.emailSubject,\n    hasExcel:     true,\n    hasZip:       excelInfo.hasZip,\n    excelFileName: fileName\n  },\n  binary: { excelFile: binaryData }\n}];"
+      },
+      "id": "dfa0d127-8de9-4ad4-a87c-82b4a17f7afe",
+      "name": "Excel Base64 a Binario",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "excelFile",
+        "options": {
+          "headerRow": true,
+          "sheetName": "Hoja2"
+        }
+      },
+      "id": "7cdef66b-bae9-4d4e-8bcc-b8e527d36836",
+      "name": "Leer Excel - Hoja2",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 1,
+      "position": [
+        736,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst REQUIRED = ['OBLIGACION', 'CEDULA', 'NOMBRE', 'CAPITAL', 'INTERES'];\n\nif (!items || items.length === 0) {\n  return [{ json: { isValid: false, validationError: 'El Excel no tiene datos en Hoja2.', rows: [], rowCount: 0 } }];\n}\n\nconst validRows = items.map(i => i.json).filter(r => Object.values(r).some(v => v !== null && v !== undefined && v !== ''));\n\nif (validRows.length === 0) {\n  return [{ json: { isValid: false, validationError: 'Todas las filas de Hoja2 están vacías.', rows: [], rowCount: 0 } }];\n}\n\nconst cols = Object.keys(validRows[0]);\nconst missing = REQUIRED.filter(c => !cols.includes(c));\n\nif (missing.length > 0) {\n  return [{ json: { isValid: false, validationError: `Columnas faltantes: ${missing.join(', ')}. Detectadas: ${cols.slice(0, 10).join(', ')}`, rows: [], rowCount: 0 } }];\n}\n\nreturn [{ json: { isValid: true, rows: validRows, rowCount: validRows.length, columns: cols } }];"
+      },
+      "id": "94b1cd65-a2de-4ef1-be88-85680b290f05",
+      "name": "Validar Estructura Excel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.isValid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "78463ade-2354-4aec-b031-0d086d58d0f3",
+      "name": "¿Excel Válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $json.rows;\nconst MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];\nconst hoy = new Date();\nconst fechaHoy = `${hoy.getDate()} de ${MESES[hoy.getMonth()]} del ${hoy.getFullYear()}`;\n\nconst fmt = (val) => {\n  if (val === null || val === undefined || val === '') return '';\n  const n = parseFloat(String(val).replace(/[^0-9.-]/g, ''));\n  return isNaN(n) ? String(val) : n.toLocaleString('es-CO');\n};\n\nconst fmtFecha = (val) => {\n  if (!val) return '';\n  try {\n    const d = new Date(val);\n    if (!isNaN(d.getTime())) return `${d.getDate()} de ${MESES[d.getMonth()]} del ${d.getFullYear()}`;\n  } catch(e) {}\n  return String(val);\n};\n\nreturn rows.map(row => ({ json: {\n  'FECHA DE ASIGNACION':                fechaHoy,\n  'TIPO DE JUZGADO':                    'PROMISCUO MUNICIPAL',\n  'CIUDAD DE JUZGADO':                  '',\n  'CUANTIA':                            'MINIMA',\n  'OBLIGACION':                         row.OBLIGACION || '',\n  'IDENTIFICACION':                     row.CEDULA || '',\n  'NOMBRE':                             row.NOMBRE || '',\n  'CAPITAL':                            fmt(row.CAPITAL),\n  'INTERES':                            fmt(row.INTERES),\n  'FECHA MORA':                         fmtFecha(row.MORA),\n  'FECHA DE SUSCRIPCION':               '',\n  'VALOR CUANTIA':                      fmt(row['TOTAL INTERES'] || row.TOTAL || ''),\n  'DIRECCION DE RESIDENCIA':            '',\n  'DIRECCION ELECTRONICA':              '',\n  'NIT EMPRESA TT':                     '',\n  'NOMBRE EMPRESA TT':                  '',\n  'DIRECCION ELECTRONICA EMPLEADOR':    '',\n  'PLACA':                              '',\n  'SERVICIO':                           '',\n  'CLASE':                              '',\n  'MARCA':                              '',\n  'LINEA':                              '',\n  'MODELO':                             '',\n  'COLOR':                              '',\n  'SERIE':                              '',\n  'MOTOR':                              '',\n  'CHASIS':                             '',\n  'TIPO DE CARROCERIA':                 '',\n  'STRIA MCPAL\\nTTOyTTE':               '',\n  'DIRECCION ELECTRONICA DEL TRANSITO': ''\n}}));"
+      },
+      "id": "be477f1e-6969-407c-9a88-353134804f66",
+      "name": "Mapear a Plantilla Singular",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toFile",
+        "fileFormat": "xlsx",
+        "binaryPropertyName": "plantillaSingular",
+        "options": {
+          "sheetName": "Hoja1"
+        }
+      },
+      "id": "e6c03979-276b-4442-b2cf-087ddc4cf9d1",
+      "name": "Generar Plantilla Singular XLSX",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 1,
+      "position": [
+        1696,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Extraer IDs de Adjuntos\"].json.emailFrom }}",
+        "subject": "=RE: {{ $node[\"Extraer IDs de Adjuntos\"].json.emailSubject }} - Plantilla procesada ✔",
+        "message": "=<p>Hola,</p><p>Se procesó correctamente el Excel adjunto. Se encontraron <strong>{{ $node[\"Validar Estructura Excel\"].json.rowCount }} registros</strong>.</p><p>Adjunto encontrará la <strong>Plantilla Singular</strong> generada.</p><p><em>Nota: Campos de dirección, correo, placa y vehículo deben completarse manualmente desde Hoja1.</em></p><br><p><em>Sistema automatizado de procesamiento de documentos.</em></p>",
+        "options": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "plantillaSingular"
+              }
+            ]
+          }
+        }
+      },
+      "id": "19105271-a72c-4310-8584-0290bc818e8e",
+      "name": "Gmail - Enviar Plantilla Procesada",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1936,
+        160
+      ],
+      "webhookId": "b69301d3-48ba-405d-a047-19b814ab5f52"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Extraer IDs de Adjuntos\"].json.emailFrom }}",
+        "subject": "=RE: {{ $node[\"Extraer IDs de Adjuntos\"].json.emailSubject }} - Excel inválido ✖",
+        "message": "=<p>Hola,</p><p>El Excel adjunto <strong>no es válido</strong> para procesar.</p><p><strong>Motivo:</strong> {{ $json.validationError }}</p><p>Verifique que el archivo contenga <strong>Hoja2</strong> con columnas: <code>OBLIGACION, CEDULA, NOMBRE, CAPITAL, INTERES, MORA, TOTAL, ABOGADO</code>.</p><br><p><em>Sistema automatizado de procesamiento de documentos.</em></p>",
+        "options": {}
+      },
+      "id": "b79d9e2b-45fc-4ff2-86bb-64b2742d76a8",
+      "name": "Gmail - Excel Inválido",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        384
+      ],
+      "webhookId": "4f10ef1e-a5d7-4e86-bc09-0d8cd867cb29",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Hag7LRxhQJ8GjtYl",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-zip",
+              "leftValue": "={{ $json.hasZip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "87c79a9a-8c05-49f1-a622-2e79dae6a4b6",
+      "name": "¿Tiene ZIP?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        256,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://gmail.googleapis.com/gmail/v1/users/me/messages/{{ $json.messageId }}/attachments/{{ $json.zipAttachmentId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gmailOAuth2",
+        "options": {}
+      },
+      "id": "8aaa2d57-51de-4f94-9722-2663a790c0d1",
+      "name": "HTTP - Descargar ZIP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        496,
+        560
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Hag7LRxhQJ8GjtYl",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const base64url = $json.data || '';\nif (!base64url) throw new Error('Gmail API devolvió data vacía para el adjunto ZIP.');\n\nconst base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');\nconst buffer = Buffer.from(base64, 'base64');\n\nconst zipInfo  = $node[\"Extraer IDs de Adjuntos\"].json;\nconst fileName = zipInfo.zipFileName || 'adjunto.zip';\nconst mimeType = zipInfo.zipMimeType || 'application/zip';\n\nconst binaryData = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);\n\nreturn [{\n  json: {\n    messageId:    zipInfo.messageId,\n    emailFrom:    zipInfo.emailFrom,\n    emailSubject: zipInfo.emailSubject,\n    zipFileName:  fileName\n  },\n  binary: { zipFile: binaryData }\n}];"
+      },
+      "id": "e1a9397d-dfc5-4753-97e3-0a23b5e0d01f",
+      "name": "ZIP Base64 a Binario",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "zipFile"
+      },
+      "id": "84861806-9f13-4e0f-8196-28e0e208e6d0",
+      "name": "Descomprimir ZIP",
+      "type": "n8n-nodes-base.compression",
+      "typeVersion": 1,
+      "position": [
+        976,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "protocol": "sftp",
+        "operation": "upload",
+        "path": "=/uploads/{{ $now.format('yyyy-MM-dd') }}/{{ $binary.data?.fileName || 'archivo' }}",
+        "options": {}
+      },
+      "id": "d1215ced-b8d2-41ff-914d-11c2519420ec",
+      "name": "Subir a Servidor Remoto (SFTP)",
+      "type": "n8n-nodes-base.ftp",
+      "typeVersion": 1,
+      "position": [
+        1216,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Extraer IDs de Adjuntos\"].json.emailFrom }}",
+        "subject": "=RE: {{ $node[\"Extraer IDs de Adjuntos\"].json.emailSubject }} - Archivos ZIP guardados ✔",
+        "message": "=<p>Hola,</p><p>Los archivos del ZIP (<strong>{{ $node[\"Extraer IDs de Adjuntos\"].json.zipFileName }}</strong>) han sido <strong>descomprimidos y guardados</strong> en el servidor remoto.</p><p>Ruta: <code>/uploads/{{ $now.format('yyyy-MM-dd') }}/</code></p><br><p><em>Sistema automatizado de procesamiento de documentos.</em></p>",
+        "options": {}
+      },
+      "id": "6343dc7e-eebb-4044-93d8-a82a6b52f7d0",
+      "name": "Gmail - ZIP Guardado en Servidor",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        560
+      ],
+      "webhookId": "71e1da7f-1c51-4dcb-98ba-31f83f0db5ac",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Hag7LRxhQJ8GjtYl",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "id": "8a02679f-e24f-4050-a84b-337a24aa2195",
+      "name": "Gmail - Recibir Correo",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [
+        -416,
+        400
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Hag7LRxhQJ8GjtYl",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "VJV5HU38nAEVWCEH",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/VJV5HU38nAEVWCEH",
+          "cachedResultName": "Data interpreter"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        -144,
+        400
+      ],
+      "id": "3aea776f-3471-4c53-807b-849ae27c5938",
+      "name": "Call 'Data interpreter'"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "¿Tiene Excel?": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Descargar Excel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Tiene ZIP?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Descargar Excel": {
+      "main": [
+        [
+          {
+            "node": "Excel Base64 a Binario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel Base64 a Binario": {
+      "main": [
+        [
+          {
+            "node": "Leer Excel - Hoja2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer Excel - Hoja2": {
+      "main": [
+        [
+          {
+            "node": "Validar Estructura Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar Estructura Excel": {
+      "main": [
+        [
+          {
+            "node": "¿Excel Válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Excel Válido?": {
+      "main": [
+        [
+          {
+            "node": "Mapear a Plantilla Singular",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail - Excel Inválido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mapear a Plantilla Singular": {
+      "main": [
+        [
+          {
+            "node": "Generar Plantilla Singular XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generar Plantilla Singular XLSX": {
+      "main": [
+        [
+          {
+            "node": "Gmail - Enviar Plantilla Procesada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Tiene ZIP?": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Descargar ZIP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "HTTP - Descargar ZIP": {
+      "main": [
+        [
+          {
+            "node": "ZIP Base64 a Binario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ZIP Base64 a Binario": {
+      "main": [
+        [
+          {
+            "node": "Descomprimir ZIP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descomprimir ZIP": {
+      "main": [
+        [
+          {
+            "node": "Subir a Servidor Remoto (SFTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Subir a Servidor Remoto (SFTP)": {
+      "main": [
+        [
+          {
+            "node": "Gmail - ZIP Guardado en Servidor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail - Recibir Correo": {
+      "main": [
+        [
+          {
+            "node": "Call 'Data interpreter'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call 'Data interpreter'": {
+      "main": [
+        [
+          {
+            "node": "¿Tiene Excel?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "e6273979-b82f-450d-840f-28cd21b8ba59",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f7656dd70f520a71b7ddb63dda74e9cf1a7d19c349853a4306ddd69eb0f83944"
+  },
+  "nodeGroups": [],
+  "id": "YzXRZzv0qfhEJxvd",
+  "tags": [
+    {
+      "name": "automatizacion",
+      "id": "7Aa8GEuGiDu8xAwL",
+      "updatedAt": "2026-09-28T14:11:38.972Z",
+      "createdAt": "2026-09-28T14:11:38.972Z"
+    },
+    {
+      "name": "excel",
+      "id": "J04PzotpW0O0YSFg",
+      "updatedAt": "2026-09-28T14:11:38.979Z",
+      "createdAt": "2026-09-28T14:11:38.979Z"
+    },
+    {
+      "name": "email",
+      "id": "jo4DAoDY9p49pJiE",
+      "updatedAt": "2026-09-28T14:11:38.984Z",
+      "createdAt": "2026-09-28T14:11:38.984Z"
+    }
+  ]
+}
