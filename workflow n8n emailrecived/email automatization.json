@@ -516,7 +516,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Extrae la \"Tabla de Casos\" del cuerpo HTML del correo de Libertador.\n// Colócalo después de \"Es una asignacion?\" (salida true).\nconst meta = $node[\"Call 'Data interpreter'\"].json;      // messageId, emailFrom, subject…\nconst html = $json.emailBodyHtml || meta.emailBodyHtml || '';\nif (!html) throw new Error('El correo no trae parte HTML (emailBodyHtml vacío).');\n\nconst limpiar = (s) => String(s || '')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')\n  .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n  .replace(/\\s+/g, ' ').trim();\n\nconst filasDe = (tabla) =>\n  (tabla.match(/<tr[\\s\\S]*?<\\/tr>/gi) || [])\n    .map(tr => (tr.match(/<t[dh][\\s\\S]*?<\\/t[dh]>/gi) || []).map(limpiar))\n    .filter(r => r.length);\n\nconst tablas = html.match(/<table[\\s\\S]*?<\\/table>/gi) || [];\nlet tabla = tablas.find(t => {\n  const x = limpiar(t).toLowerCase();\n  return x.includes('solicitud') && (x.includes('alistamiento') || x.includes('siniestro'));\n}) || tablas[tablas.length - 1];\nif (!tabla) throw new Error('No se encontró la Tabla de Casos en el HTML.');\n\nconst rows = filasDe(tabla);\nconst hIdx = rows.findIndex(r => r.join(' ').toLowerCase().includes('solicitud'));\nconst header = (rows[hIdx] || []).map(h => h.toLowerCase());\nlet datos = rows.slice(hIdx + 1).filter(r => r.some(c => c));\n// Si una fila trae un número de fila de más al inicio (\"1\"), se descarta.\ndatos = datos.map(r => (r.length === header.length + 1 && /^\\d{1,3}$/.test(r[0])) ? r.slice(1) : r);\n\nconst idx = (...k) => header.findIndex(h => k.some(x => h.includes(x)));\nconst iSol = idx('solicitud'), iTipo = idx('alistamiento','tipo'), iEst = idx('estado','siniestro'),\n      iDeu = idx('deuda'), iCan = idx('canon'), iObs = idx('observ');\nconst num = (s) => Number(String(s || '').replace(/[^\\d]/g, '')) || 0;\n\nconst casos = datos.map(r => {\n  const noSolicitud      = iSol  >= 0 ? r[iSol]  : '';\n  const tipoAlistamiento = iTipo >= 0 ? r[iTipo] : '';\n\n  // --- Clasificación (mixto / conciliación) ---\n  const T = tipoAlistamiento.toUpperCase();\n  const esMixto         = /\\bMIXTO\\b/.test(T);\n  const conConciliacion = /CONCILIAC/.test(T);\n\n  let numFilas = 1;\n  let procesos = [T || 'UNICO'];\n  if (esMixto && conConciliacion) { numFilas = 3; procesos = ['CONCILIACION', 'RESTITUCION', 'EJECUTIVO']; }\n  else if (esMixto)               { numFilas = 2; procesos = ['RESTITUCION', 'EJECUTIVO']; }\n\n  return {\n    messageId:        meta.messageId,\n    emailFrom:        meta.emailFrom,\n    emailSubject:     meta.emailSubject,\n    noSolicitud,\n    tipoAlistamiento,\n    estadoSiniestro:  iEst >= 0 ? r[iEst] : '',\n    valorDeuda:       iDeu >= 0 ? num(r[iDeu]) : 0,\n    valorCanon:       iCan >= 0 ? num(r[iCan]) : 0,\n    observaciones:    iObs >= 0 ? r[iObs] : '',\n    // --- clasificación ---\n    esMixto,\n    conConciliacion,\n    numFilas,\n    procesos,\n  };\n}).filter(c => c.noSolicitud);\n\nif (!casos.length) throw new Error('Se halló la tabla pero no se extrajeron filas.');\nreturn casos.map(c => ({ json: c }));"
+        "jsCode": "// Extrae la \"Tabla de Casos\" del cuerpo HTML del correo de Libertador.\n// Colócalo después de \"Es una asignacion?\" (salida true).\nconst meta = $node[\"Call 'Data interpreter'\"].json;      // messageId, emailFrom, subject…\nconst html = $json.emailBodyHtml || meta.emailBodyHtml || '';\nif (!html) throw new Error('El correo no trae parte HTML (emailBodyHtml vacío).');\n\nconst limpiar = (s) => String(s || '')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')\n  .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n  .replace(/\\s+/g, ' ').trim();\n\nconst filasDe = (tabla) =>\n  (tabla.match(/<tr[\\s\\S]*?<\\/tr>/gi) || [])\n    .map(tr => (tr.match(/<t[dh][\\s\\S]*?<\\/t[dh]>/gi) || []).map(limpiar))\n    .filter(r => r.length);\n\nconst tablas = html.match(/<table[\\s\\S]*?<\\/table>/gi) || [];\nlet tabla = tablas.find(t => {\n  const x = limpiar(t).toLowerCase();\n  return x.includes('solicitud') && (x.includes('alistamiento') || x.includes('siniestro'));\n}) || tablas[tablas.length - 1];\nif (!tabla) throw new Error('No se encontró la Tabla de Casos en el HTML.');\n\nconst rows = filasDe(tabla);\nconst hIdx = rows.findIndex(r => r.join(' ').toLowerCase().includes('solicitud'));\nconst header = (rows[hIdx] || []).map(h => h.toLowerCase());\nlet datos = rows.slice(hIdx + 1).filter(r => r.some(c => c));\n// Si una fila trae un número de fila de más al inicio (\"1\"), se descarta.\ndatos = datos.map(r => (r.length === header.length + 1 && /^\\d{1,3}$/.test(r[0])) ? r.slice(1) : r);\n\nconst idx = (...k) => header.findIndex(h => k.some(x => h.includes(x)));\nconst iSol = idx('solicitud'), iTipo = idx('alistamiento','tipo'), iEst = idx('estado','siniestro'),\n      iDeu = idx('deuda'), iCan = idx('canon'), iObs = idx('observ');\nconst num = (s) => Number(String(s || '').replace(/[^\\d]/g, '')) || 0;\n\nconst casos = datos.map(r => {\n  const noSolicitud      = iSol  >= 0 ? r[iSol]  : '';\n  const tipoAlistamiento = iTipo >= 0 ? r[iTipo] : '';\n\n  // --- Clasificación (mixto / conciliación) ---\n  const T = tipoAlistamiento.toUpperCase();\n  const esMixto         = /\\bMIXTO\\b/.test(T);\n  const conConciliacion = /CONCILIAC/.test(T);\n\n  let numFilas = 1;\n  let procesos = [T || 'UNICO'];\n  if (esMixto && conConciliacion) { numFilas = 3; procesos = ['CONCILIACION', 'RESTITUCION', 'EJECUTIVO']; }\n  else if (esMixto)               { numFilas = 2; procesos = ['RESTITUCION', 'EJECUTIVO']; }\n\n  return {\n    messageId:        meta.messageId,\n    emailFrom:        meta.emailFrom,\n    emailSubject:     meta.emailSubject,\n    noSolicitud,\n    tipoAlistamiento,\n    estadoSiniestro:  iEst >= 0 ? r[iEst] : '',\n    valorDeuda:       iDeu >= 0 ? num(r[iDeu]) : 0,\n    valorCanon:       iCan >= 0 ? num(r[iCan]) : 0,\n    observaciones:    iObs >= 0 ? r[iObs] : '',\n    // --- clasificación ---\n    esMixto,\n    conConciliacion,\n    numFilas,\n    procesos,\n  };\n}).filter(c => c.noSolicitud);\n\nif (!casos.length) throw new Error('Se halló la tabla pero no se extrajeron filas.');\n\n// Fecha de recepción en el formato del cuadro (DD/MM/AAAA).\nconst dd = (n) => String(n).padStart(2, '0');\nconst hoy = new Date();\nconst recibido = `${dd(hoy.getDate())}/${dd(hoy.getMonth() + 1)}/${hoy.getFullYear()}`;\n\n// Un MIXTO no es un caso: son 2 o 3 procesos que van por separado. Se expande\n// aquí para que cada proceso sea SU fila en el cuadro, repitiendo los datos del\n// caso. `procesos` ya trae el desglose calculado arriba.\nconst filas = [];\nfor (const caso of casos) {\n  const { procesos, numFilas, ...base } = caso;\n\n  // El cuadro NO tiene columna para deuda ni para estado del siniestro, así que\n  // van dentro de OBSERVACIONES, con el mismo formato \"fecha TEXTO // TEXTO\"\n  // que ya usa esa columna.\n  const partes = [`${recibido} ASIGNACION ${base.tipoAlistamiento || ''}`.trim()];\n  if (base.estadoSiniestro) partes.push(`ESTADO SINIESTRO: ${base.estadoSiniestro}`);\n  if (base.valorDeuda)      partes.push(`DEUDA: $${base.valorDeuda.toLocaleString('es-CO')}`);\n  if (base.observaciones)   partes.push(base.observaciones);\n  const observacionesSheet = partes.join(' // ');\n\n  procesos.forEach((proceso, i) => {\n    filas.push({\n      ...base,\n      recibido,\n      proceso,\n      procesoIndice:   i + 1,\n      procesosDelCaso: procesos.length,\n      observacionesSheet,\n      claveFila: `${base.noSolicitud}-${proceso}`,\n    });\n  });\n}\n\nreturn filas.map(f => ({ json: f }));\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -526,6 +526,49 @@
       ],
       "id": "4a389b46-fadf-4bae-8945-a3b6dcc6218e",
       "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1k1ui5-ZPcV-j_CyXBFm2vM_bugFE88BCcbDdkJ8JFa4",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "RECIBIDO": "={{ $json.recibido }}",
+            "TIPO DE PROCESO": "={{ $json.proceso }}",
+            "SOLICITUD": "={{ $json.noSolicitud }}",
+            "CANON": "={{ $json.valorCanon }}",
+            "OBSERVACIONES": "={{ $json.observacionesSheet }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-ca5051ib3001",
+      "name": "Sheets - Casos Libertador (PRUEBA)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "HvmmhdVdkKarq07K",
+          "name": "Google Service Account account"
+        }
+      }
     }
   ],
   "pinData": {},
@@ -747,6 +790,17 @@
           }
         ]
       ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Sheets - Casos Libertador (PRUEBA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
@@ -755,7 +809,7 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "931bbe04-e300-4528-9bb9-7a64936ac538",
+  "versionId": "4426fd3b-f5e3-48f0-a480-84f3c25ba5c2",
   "meta": {
     "instanceId": "2086f5604f78ab72178a188953881065520e9b5cb7d84882d04ff1ab9d9a5546"
   },
