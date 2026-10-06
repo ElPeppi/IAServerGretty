@@ -69,12 +69,12 @@ router.post('/generar-poder-libertador', async (req, res) => {
 /**
  * POST /estados-cuenta-libertador
  *   Entra al portal (AgentWeb) y, por cada nº de solicitud, abre el siniestro
- *   Vigente y su pestaña "Estado de Cuenta".
+ *   Vigente o Desocupado y su pestaña "Estado de Cuenta".
  *
  *   Body: { solicitudes: string[] }
  *   Respuesta: { success, total, ok, resultados: [{ solicitud, success, omitido?, motivo?, ... }] }
  *
- *   Un caso sin siniestro Vigente NO es un error: viene con `omitido:true` y su
+ *   Un caso sin siniestro Vigente ni Desocupado NO es un error: viene con `omitido:true` y su
  *   motivo, para que el backend lo notifique y siga con el resto del lote.
  *
  *   PENDIENTE: la lectura de los datos del Estado de Cuenta (`datos` llega null).

@@ -365,10 +365,11 @@ async function buscarSolicitud(page, numero) {
   log('Resultados/ficha cargados; continúo.');
 }
 
-// ─── Abrir el siniestro "Vigente" del grid de resultados ──────────────────────
+// ─── Abrir el siniestro "Vigente" o "Desocupado" del grid de resultados ───────
 // Regla de negocio (definida por la oficina): de los N siniestros que devuelve
-// una solicitud, se abre el que tiene Estado del Siniestro = "Vigente"; si hay
-// varios, el de Fecha de Mora más reciente. El grid es un Oracle JET DataGrid
+// una solicitud, se abre uno con Estado del Siniestro = "Vigente" o "Desocupado"
+// (los dos tienen estado de cuenta). Si hay de los dos, gana el Vigente; dentro
+// del mismo estado, el de Fecha de Mora más reciente. El grid es un Oracle JET DataGrid
 // (celdas div.oj-datagrid-cell[row-id][column-id]); el "Abrir" de cada fila es
 // un span.recordCommandLink en la columna "Acciones".
 /**
@@ -474,14 +475,24 @@ async function esperarGridEstable(page) {
   return previo;
 }
 
+// Estados del siniestro de los que se saca estado de cuenta, en orden de
+// preferencia. Van como texto de regex porque también se usan dentro de
+// page.evaluate, que no recibe RegExp.
+const ESTADOS_CON_ESTADO_CUENTA = ['vigente', 'desocupad'];
+const ESTADOS_TEXTO = '"Vigente" o "Desocupado"';
+const tieneEstadoCuenta = (estado) =>
+  ESTADOS_CON_ESTADO_CUENTA.some((re) => new RegExp(re, 'i').test(estado || ''));
+
 async function abrirSiniestroVigente(page) {
-  log('Seleccionando la fila con Estado del Siniestro = "Vigente"…');
+  log(`Seleccionando la fila con Estado del Siniestro = ${ESTADOS_TEXTO}…`);
   await page.waitForSelector('.oj-datagrid-cell .recordCommandLink', { timeout: NAV_TIMEOUT })
     .catch(() => { throw new Error('No apareció el grid de resultados (recordCommandLink).'); });
   await waitMs(1200);
 
-  const elegido = await page.evaluate(() => {
+  const elegido = await page.evaluate((estadosValidos) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    // Posición en la lista de estados válidos (menor = preferido); -1 = no sirve.
+    const prioridad = (e) => estadosValidos.findIndex((re) => new RegExp(re, 'i').test(e));
     // AgentWeb acumula pestañas: tras recargar restaura la búsqueda anterior y en
     // el DOM conviven VARIOS datagrids. Consultar el documento entero mezclaba sus
     // celdas por row-id (se leían teléfonos como estados). Se acota al grid VISIBLE.
@@ -519,13 +530,14 @@ async function abrirSiniestroVigente(page) {
       id, estado: r.cells[estadoIdx] || '', fecha: r.cells[fechaIdx] || '',
       amparo: r.cells[amparoIdx] || '', abrirCol: r.abrirCol,
     }));
-    const candidatas = filas.filter((f) => /vigente/i.test(f.estado));
-    // Que un caso no tenga siniestro Vigente es NORMAL (se desistió, terminó o
-    // pasó a cartera castigada): no es un fallo del scraping, así que se informa
-    // como omisión y el lote sigue con los demás.
+    const candidatas = filas.filter((f) => prioridad(f.estado) >= 0);
+    // Que un caso no tenga siniestro Vigente ni Desocupado es NORMAL (se desistió,
+    // terminó o pasó a cartera castigada): no es un fallo del scraping, así que se
+    // informa como omisión y el lote sigue con los demás.
     if (!candidatas.length) return { sinVigente: true, filas };
 
-    candidatas.sort((a, b) => (parseFecha(b.fecha) - parseFecha(a.fecha)) || (+b.id - +a.id));
+    candidatas.sort((a, b) => (prioridad(a.estado) - prioridad(b.estado))
+      || (parseFecha(b.fecha) - parseFecha(a.fecha)) || (+b.id - +a.id));
     const sel = candidatas[0];
 
     const cell = grid.querySelector(`.oj-datagrid-cell[row-id="${sel.id}"][column-id="${sel.abrirCol}"] .recordCommandLink`)
@@ -533,7 +545,7 @@ async function abrirSiniestroVigente(page) {
     if (!cell) return { error: `No encontré el "Abrir" de la fila ${sel.id}`, filas };
     cell.setAttribute('data-abrir-target', '1');
     return { rowId: sel.id, amparo: sel.amparo, estado: sel.estado, fecha: sel.fecha, totalFilas: filas.length };
-  });
+  }, ESTADOS_CON_ESTADO_CUENTA);
 
   if (elegido.gridInesperado) {
     throw new Error('El grid en pantalla no es el reporte "Buscar Solicitud" '
@@ -542,7 +554,7 @@ async function abrirSiniestroVigente(page) {
   if (elegido.sinVigente) {
     const estados = [...new Set((elegido.filas || [])
       .map((f) => f.estado).filter((e) => e && e !== 'Sin valor'))];
-    const motivo = `ningún siniestro con Estado = "Vigente"`
+    const motivo = `ningún siniestro con Estado = ${ESTADOS_TEXTO}`
       + (estados.length ? ` (los que hay: ${estados.join(', ')})` : '');
     log(`⊘ Omitida: ${motivo}`);
     return { omitido: true, motivo, estados, filas: elegido.filas || [] };
@@ -717,9 +729,9 @@ async function main() {
       const ficha = await leerFichaSiniestro(page);
       if (ficha && ficha.solicitud === String(solicitud).trim()) {
         log(`El portal abrió la ficha directa (estado: ${ficha.estado || 'desconocido'}).`);
-        seleccion = /vigente/i.test(ficha.estado)
+        seleccion = tieneEstadoCuenta(ficha.estado)
           ? { amparo: ficha.amparo, estado: ficha.estado, fecha: ficha.fechaMora }
-          : { omitido: true, motivo: `el único siniestro está "${ficha.estado}", no "Vigente"`, estados: [ficha.estado] };
+          : { omitido: true, motivo: `el único siniestro está "${ficha.estado}", no ${ESTADOS_TEXTO}`, estados: [ficha.estado] };
         if (!seleccion.omitido) await irAEstadoDeCuenta(page);
       } else if (await page.$('.oj-datagrid-cell .recordCommandLink')) {
         seleccion = await abrirSiniestroVigente(page);
@@ -814,8 +826,8 @@ async function procesarSolicitudes(solicitudes, opts = {}) {
         const ficha = await leerFichaSiniestro(page);
         let sel;
         if (ficha && ficha.solicitud === num) {
-          if (!/vigente/i.test(ficha.estado)) {
-            const motivo = `el único siniestro de la solicitud está "${ficha.estado || 'sin estado'}", no "Vigente"`;
+          if (!tieneEstadoCuenta(ficha.estado)) {
+            const motivo = `el único siniestro de la solicitud está "${ficha.estado || 'sin estado'}", no ${ESTADOS_TEXTO}`;
             resultados.push({ solicitud: num, success: false, omitido: true, motivo, estados: [ficha.estado] });
             log(`⊘ ${num}: ${motivo}.`);
             continue;
