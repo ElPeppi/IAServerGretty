@@ -149,14 +149,202 @@ async function escribirQuickSearch(page, num) {
   log(`Búsqueda rápida con "${valor}".`);
 }
 
+// ─── Formulario de búsqueda avanzada ─────────────────────────────────────────
+// La búsqueda rápida EN LÍNEA corre el reporte que tenga seleccionado, y esa
+// selección vive en el perfil del navegador, no en la cuenta: en una sesión
+// nueva (un servidor recién montado) arranca en otro reporte y devuelve, por
+// ejemplo, un grid de contactos —con sus columnas de teléfonos— sin avisar.
+//
+// El botón de los tres puntos abre #applicationPopup, que es el formulario del
+// reporte con el tipo VISIBLE en #reportTypes|input y el campo "# Solicitud"
+// aparte. Buscar por ahí no depende del estado de la sesión.
+//
+// Los ids de AgentWeb llevan '|', que no es un selector CSS válido: hay que
+// resolverlos con getElementById, no con page.$.
+const REPORTE_SOLICITUD = 'Buscar Solicitud';
+
+/**
+ * Pulsa un elemento. El click de Puppeteer es un click de ratón real sobre unas
+ * coordenadas, y falla ("Node is either not clickable…") si en ese instante algo
+ * lo tapa o mide cero — pasaba en la segunda vuelta de un lote, con el portal
+ * recién recargado. El click del DOM no depende de la geometría, así que sirve
+ * de red: los botones de JET responden igual a los dos.
+ */
+async function pulsar(el) {
+  try {
+    await el.click();
+  } catch (e) {
+    await el.evaluate((n) => n.click());
+  }
+}
+
+/** ElementHandle por id, válido aunque el id lleve caracteres raros. */
+async function porId(page, id) {
+  const h = await page.evaluateHandle((i) => document.getElementById(i), id);
+  const el = h.asElement();
+  if (!el) { await h.dispose(); return null; }
+  return el;
+}
+
+/** Input del popup cuya etiqueta coincide con `re` (las etiquetas no cambian; los ids sí). */
+async function campoPorEtiqueta(page, re) {
+  const h = await page.evaluateHandle((patron) => {
+    const pop = document.getElementById('applicationPopup');
+    if (!pop) return null;
+    const rex = new RegExp(patron, 'i');
+    const etiqueta = (el) => {
+      const lab = el.labels && el.labels[0];
+      if (lab) return lab.innerText;
+      const by = el.getAttribute('aria-labelledby');
+      if (by) { const n = document.getElementById(by.split(' ')[0]); if (n) return n.innerText; }
+      return el.getAttribute('aria-label') || '';
+    };
+    return [...pop.querySelectorAll('input[type="text"]')]
+      .find((el) => el.offsetParent !== null && rex.test(etiqueta(el).trim())) || null;
+  }, re.source || String(re));
+  const el = h.asElement();
+  if (!el) { await h.dispose(); return null; }
+  return el;
+}
+
+/** Escribe en un campo JET y comprueba; si no cuaja, lo fuerza por JS. Lanza si tampoco. */
+async function escribirYVerificar(page, el, valor, queEs) {
+  try {
+    await el.click({ clickCount: 3 });
+  } catch {
+    // Sin click real no hay selección previa: se vacía por JS antes de teclear.
+    await el.evaluate((n) => { n.focus(); n.select && n.select(); });
+  }
+  await page.keyboard.press('Backspace').catch(() => {});
+  await el.type(valor, { delay: 150 });
+  await waitMs(600);
+
+  const leer = () => el.evaluate((n) => n.value);
+  if (await leer() !== valor) {
+    await el.evaluate((n, v) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(n, v);
+      n.dispatchEvent(new Event('input', { bubbles: true }));
+      n.dispatchEvent(new Event('change', { bubbles: true }));
+    }, valor);
+    await waitMs(800);
+  }
+  const final = await leer();
+  if (final !== valor) throw new Error(`No pude escribir ${queEs}: quedó "${final}" en vez de "${valor}".`);
+}
+
+/**
+ * Deja el formulario de búsqueda listo en el reporte "Buscar Solicitud".
+ * Devuelve false si el popup no se puede abrir (entonces se usa la vía en línea).
+ */
+async function prepararFormularioSolicitud(page) {
+  // En un lote, el formulario puede seguir abierto del caso anterior: volver a
+  // pulsar el botón lo cerraría.
+  const yaAbierto = await page.$eval('#applicationPopup', (el) => el.offsetParent !== null).catch(() => false);
+
+  if (!yaAbierto) {
+    // La cabecera de AgentWeb se monta después del login: buscarlo con page.$ nada
+    // más entrar devuelve null aunque el botón acabe apareciendo un segundo después.
+    const boton = await page.waitForSelector('#quickSearchContextMenuButton', { visible: true, timeout: 20000 })
+      .catch(() => null);
+    if (!boton) { log('No hay botón de búsqueda avanzada (#quickSearchContextMenuButton).'); return false; }
+    await pulsar(boton);
+    const ok = await page.waitForSelector('#applicationPopup', { visible: true, timeout: 15000 })
+      .then(() => true).catch(() => false);
+    if (!ok) { log('El botón de búsqueda avanzada no abrió el formulario (#applicationPopup).'); return false; }
+  }
+  await waitMs(1200);
+
+  const tipo = await porId(page, 'reportTypes|input');
+  if (!tipo) { log('El formulario no trae selector de reporte (#reportTypes|input).'); return false; }
+
+  const actual = (await tipo.evaluate((n) => n.value) || '').trim();
+  if (actual.toLowerCase() !== REPORTE_SOLICITUD.toLowerCase()) {
+    log(`El formulario está en el reporte "${actual}"; lo cambio a "${REPORTE_SOLICITUD}".`);
+    await escribirYVerificar(page, tipo, REPORTE_SOLICITUD, 'el tipo de reporte');
+    await page.keyboard.press('Enter').catch(() => {});
+    await waitMs(2000);
+    const tras = (await tipo.evaluate((n) => n.value) || '').trim();
+    if (tras.toLowerCase() !== REPORTE_SOLICITUD.toLowerCase()) {
+      throw new Error(`No pude poner el formulario en "${REPORTE_SOLICITUD}" (quedó en "${tras}"). `
+        + 'Ábrelo a mano una vez en este navegador y vuelve a intentarlo.');
+    }
+  }
+  return true;
+}
+
+/**
+ * Datos de la ficha de siniestro, si es que hay una abierta.
+ *
+ * Cuando la solicitud tiene UN solo siniestro, el portal no muestra el grid de
+ * resultados: abre la ficha directamente. Y esa ficha trae sus propios grids
+ * (p. ej. "Arrendatarios y Terceros"), con enlaces "Abrir" en la columna
+ * Acciones — los mismos `recordCommandLink` por los que antes se decidía que
+ * había resultados. Resultado: se intentaba elegir el siniestro "Vigente" entre
+ * los arrendatarios y se leían teléfonos como estados.
+ *
+ * Por eso se mira la ficha PRIMERO, y se identifica por su propio "# Solicitud":
+ * así se confirma además que es la que se pidió y no una que quedara abierta.
+ */
+async function leerFichaSiniestro(page) {
+  return page.evaluate(() => {
+    const etiquetaDe = (el) => {
+      const lab = el.labels && el.labels[0];
+      if (lab) return lab.innerText.trim();
+      const by = el.getAttribute('aria-labelledby');
+      if (by) { const n = document.getElementById(by.split(' ')[0]); if (n) return n.innerText.trim(); }
+      return (el.getAttribute('aria-label') || '').trim();
+    };
+    const campos = new Map();
+    for (const el of document.querySelectorAll('input')) {
+      if (el.offsetParent === null || !el.value) continue;
+      const et = etiquetaDe(el);
+      if (et && !campos.has(et)) campos.set(et, String(el.value).trim());
+    }
+    const solicitud = campos.get('# Solicitud');
+    if (!solicitud) return null;
+    // Franja verde del encabezado: "Siniestro - Amparo Básico".
+    const banda = [...document.querySelectorAll('div,span')]
+      .map((e) => (e.innerText || '').replace(/\s+/g, ' ').trim())
+      .find((t) => /^Siniestro\s*-\s*\S/.test(t) && t.length < 60);
+    return {
+      solicitud,
+      estado: campos.get('Estado Siniestro') || '',
+      fechaMora: campos.get('Fecha de Mora') || '',
+      arrendatario: campos.get('Arrendatario') || '',
+      amparo: banda ? banda.replace(/^Siniestro\s*-\s*/, '').trim() : '',
+    };
+  });
+}
+
 async function buscarSolicitud(page, numero) {
   const num = String(numero).trim();
   log(`Buscando solicitud ${num}…`);
-  await escribirQuickSearch(page, num);
 
-  const btn = await page.$('#quickSearchSearchButton');
-  if (btn) await btn.click();
-  else await page.keyboard.press('Enter');
+  // Vía preferida: el formulario, donde el reporte es explícito.
+  let porFormulario = false;
+  try {
+    if (await prepararFormularioSolicitud(page)) {
+      const campo = await campoPorEtiqueta(page, /#\s*Solicitud/);
+      if (!campo) log('El formulario no trae campo "# Solicitud".');
+      if (campo) {
+        await escribirYVerificar(page, campo, num, 'el nº de solicitud');
+        const buscar = await page.$('#quickSearchSearch');
+        if (buscar) { await pulsar(buscar); porFormulario = true; }
+      }
+    }
+  } catch (e) {
+    // Un fallo aquí no debe dejar sin buscar: se avisa y se cae a la vía en línea,
+    // que es la que venía funcionando cuando el reporte ya estaba bien elegido.
+    log(`Formulario de búsqueda no utilizable (${e.message}); uso la búsqueda rápida en línea.`);
+  }
+
+  if (!porFormulario) {
+    await escribirQuickSearch(page, num);
+    const btn = await page.$('#quickSearchSearchButton');
+    if (btn) await btn.click();
+    else await page.keyboard.press('Enter');
+  }
 
   // La búsqueda por # Solicitud NO abre la ficha directo: abre un reporte de
   // resultados (grid "Buscar Solicitud") con una fila por siniestro. Esperamos
@@ -382,19 +570,27 @@ async function abrirSiniestroVigente(page) {
 // "Novedades Estado de Cuenta").
 async function irAEstadoDeCuenta(page) {
   log('Abriendo la pestaña "Estado de Cuenta"…');
+  // En un lote, la ficha del caso anterior sigue en el DOM aunque su workspace ya
+  // no se vea, así que hay DOS pestañas "Estado de Cuenta": quedarse con la
+  // primera marcaba la oculta, y clicarla fallaba con "Node is either not
+  // clickable or not an Element". Se filtra por visibles y se toma la última, que
+  // es la del workspace recién abierto.
   const ok = await page.evaluate(() => {
-    const lis = [...document.querySelectorAll('li.ws-tab-item')];
-    const li = lis.find((el) => {
+    for (const el of document.querySelectorAll('[data-eqc-target]')) el.removeAttribute('data-eqc-target');
+    const candidatas = [...document.querySelectorAll('li.ws-tab-item')].filter((el) => {
+      if (el.offsetParent === null) return false;
       const t = el.querySelector('.tab-title');
       return t && t.textContent.replace(/\s+/g, ' ').trim() === 'Estado de Cuenta';
     });
+    const li = candidatas[candidatas.length - 1];
     if (!li) return false;
     li.setAttribute('data-eqc-target', '1');
     return true;
   });
-  if (!ok) throw new Error('No encontré la pestaña "Estado de Cuenta".');
+  if (!ok) throw new Error('No encontré la pestaña "Estado de Cuenta" visible.');
 
-  await page.click('[data-eqc-target="1"]');
+  const pestana = await page.$('[data-eqc-target="1"]');
+  await pulsar(pestana);
   await waitMs(5000); // el contenido del estado de cuenta puede tardar en pintar
   log('Pestaña Estado de Cuenta abierta (o timeout).');
 }
@@ -516,14 +712,21 @@ async function main() {
     let seleccion = null;
     if (solicitud) {
       await buscarSolicitud(page, solicitud);
-      // Si salió el grid de resultados, abrir el siniestro "Vigente".
-      const hayGrid = await page.$('.oj-datagrid-cell .recordCommandLink');
-      if (hayGrid) {
+      // Igual que en el lote: la ficha primero, porque sus grids internos también
+      // tienen enlaces "Abrir" y pasarían por resultados de búsqueda.
+      const ficha = await leerFichaSiniestro(page);
+      if (ficha && ficha.solicitud === String(solicitud).trim()) {
+        log(`El portal abrió la ficha directa (estado: ${ficha.estado || 'desconocido'}).`);
+        seleccion = /vigente/i.test(ficha.estado)
+          ? { amparo: ficha.amparo, estado: ficha.estado, fecha: ficha.fechaMora }
+          : { omitido: true, motivo: `el único siniestro está "${ficha.estado}", no "Vigente"`, estados: [ficha.estado] };
+        if (!seleccion.omitido) await irAEstadoDeCuenta(page);
+      } else if (await page.$('.oj-datagrid-cell .recordCommandLink')) {
         seleccion = await abrirSiniestroVigente(page);
         // Omitida = no hay ficha abierta: no tiene sentido buscar su Estado de Cuenta.
         if (!seleccion.omitido) await irAEstadoDeCuenta(page);
       } else {
-        log('No hubo grid de resultados (¿abrió la ficha directo?); intento ir a Estado de Cuenta.');
+        log('Ni ficha ni grid de resultados; intento ir a Estado de Cuenta de todas formas.');
         await irAEstadoDeCuenta(page).catch((e) => log(e.message));
       }
     }
@@ -606,17 +809,32 @@ async function procesarSolicitudes(solicitudes, opts = {}) {
 
         await buscarSolicitud(page, num);
 
-        const hayGrid = await page.$('.oj-datagrid-cell .recordCommandLink');
-        if (!hayGrid) {
-          resultados.push({ solicitud: num, success: false, motivo: 'la búsqueda no devolvió resultados en el portal' });
-          log(`⊘ ${num}: sin resultados.`);
-          continue;
-        }
+        // La ficha se comprueba ANTES que el grid: si el portal la abrió directa,
+        // sus propios grids tienen "Abrir" y parecerían resultados de búsqueda.
+        const ficha = await leerFichaSiniestro(page);
+        let sel;
+        if (ficha && ficha.solicitud === num) {
+          if (!/vigente/i.test(ficha.estado)) {
+            const motivo = `el único siniestro de la solicitud está "${ficha.estado || 'sin estado'}", no "Vigente"`;
+            resultados.push({ solicitud: num, success: false, omitido: true, motivo, estados: [ficha.estado] });
+            log(`⊘ ${num}: ${motivo}.`);
+            continue;
+          }
+          sel = { amparo: ficha.amparo, estado: ficha.estado, fecha: ficha.fechaMora };
+          log(`${num}: el portal abrió la ficha directa (${ficha.estado}); no hay grid que recorrer.`);
+        } else {
+          const hayGrid = await page.$('.oj-datagrid-cell .recordCommandLink');
+          if (!hayGrid) {
+            resultados.push({ solicitud: num, success: false, motivo: 'la búsqueda no devolvió resultados en el portal' });
+            log(`⊘ ${num}: sin resultados.`);
+            continue;
+          }
 
-        const sel = await abrirSiniestroVigente(page);
-        if (sel.omitido) {
-          resultados.push({ solicitud: num, success: false, omitido: true, motivo: sel.motivo, estados: sel.estados });
-          continue;
+          sel = await abrirSiniestroVigente(page);
+          if (sel.omitido) {
+            resultados.push({ solicitud: num, success: false, omitido: true, motivo: sel.motivo, estados: sel.estados });
+            continue;
+          }
         }
 
         await irAEstadoDeCuenta(page);
@@ -672,7 +890,10 @@ async function procesarSolicitudes(solicitudes, opts = {}) {
   return resultados;
 }
 
-module.exports = { procesarSolicitudes };
+// `login` y `buscarSolicitud` se exportan para poder sondear el portal desde un
+// script suelto cuando algo cambia de sitio: sin ellos, cada diagnóstico tendría
+// que duplicar el login (y el User-Agent, que es lo que evita el 401).
+module.exports = { procesarSolicitudes, login, buscarSolicitud, UA_PORTAL };
 
 // Solo se autoejecuta como CLI; al requerirlo desde el motor, no.
 if (require.main === module) {

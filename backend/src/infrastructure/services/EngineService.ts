@@ -30,6 +30,27 @@ import {
 const XLSX_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
+/**
+ * Mensaje aprovechable de un fallo contra el motor.
+ *
+ * Axios resume cualquier 500 como "Request failed with status code 500" y tira el
+ * cuerpo, que es justo donde el motor pone el motivo (`{ error }`). Sin esto, el
+ * aviso que le llega a la oficina no dice nada y hay que ir a los logs del
+ * servidor para saber si faltó Chrome, la plantilla o las credenciales.
+ */
+function mensajeDeFallo(e: unknown, baseUrl: string): string {
+  if (axios.isAxiosError(e)) {
+    const data = e.response?.data as { error?: string; message?: string } | undefined;
+    if (typeof data?.error === 'string' && data.error) return data.error;
+    if (typeof data?.message === 'string' && data.message) return data.message;
+    if (e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET') {
+      return `El motor no responde en ${baseUrl}. Comprueba que esté arrancado.`;
+    }
+    if (e.code === 'ECONNABORTED') return 'El motor tardó más del tiempo máximo y se canceló la espera.';
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
 export class EngineService implements IEngineService {
   private readonly baseUrl: string;
 
@@ -218,20 +239,24 @@ export class EngineService implements IEngineService {
    * caso), de ahí el timeout largo — se llama desde un proceso en segundo plano.
    */
   async estadosCuentaLibertador(input: EstadosCuentaLibertadorInput): Promise<EstadosCuentaLibertadorOutput> {
-    const { data } = await axios.post<EstadosCuentaLibertadorOutput>(
-      `${this.baseUrl}/estados-cuenta-libertador`,
-      {
-        solicitudes: input.solicitudes,
-        plantillaBase64: input.plantillaBase64,
-        elaboro: input.elaboro,
-      },
-      {
-        timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      }
-    );
-    return data;
+    try {
+      const { data } = await axios.post<EstadosCuentaLibertadorOutput>(
+        `${this.baseUrl}/estados-cuenta-libertador`,
+        {
+          solicitudes: input.solicitudes,
+          plantillaBase64: input.plantillaBase64,
+          elaboro: input.elaboro,
+        },
+        {
+          timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+        }
+      );
+      return data;
+    } catch (e: unknown) {
+      throw new Error(mensajeDeFallo(e, this.baseUrl));
+    }
   }
 
 }
