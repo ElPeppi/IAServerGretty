@@ -19,6 +19,7 @@ export interface LibertadorCaso {
   observaciones: string;
   documentacion: string;           // valor crudo de la columna "DOCUMENTACION COMPLETA"
   documentacionCompleta: boolean;  // normalizado por el backend (hay un "Si" en minúscula en el cuadro)
+  mesGrab: string;                 // columna BD "MES GRAB"; vacía = caso pendiente
   // Fila del cuadro de origen: es la única forma de volver a encontrar el caso
   // a mano cuando algo no cuadra.
   fila: number;
@@ -28,6 +29,7 @@ export interface LibertadorCasosResponse {
   fuente: string; // nombre del cuadro del que se leyeron los casos
   total: number;
   sinDocumentacion: number; // cuántos casos esperan documentación
+  sinMesGrab: number;       // cuántos casos tienen la columna BD "MES GRAB" vacía
   casos: LibertadorCaso[];
 }
 

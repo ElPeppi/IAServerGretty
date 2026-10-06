@@ -9,6 +9,8 @@
  *  - Los encabezados se REPITEN: "FECHA" ×8, "OBSERVACIONES" ×3, "MES GRAB" ×6.
  *    Se resuelve por nombre tomando la PRIMERA aparición, que es la que la
  *    oficina usa (p. ej. OBSERVACIONES = AA, no BJ ni BZ).
+ *    Excepción: MES GRAB, que la oficina lleva en la columna BD y no en la
+ *    primera aparición. Esa se lee por posición, comprobando el encabezado.
  *  - Tiene 19 pestañas de histórico. Solo interesa la de casos activos.
  *
  * Config (env):
@@ -35,6 +37,7 @@ export interface CasoLibertador {
   observaciones: string;
   documentacion: string;           // valor crudo de la columna "DOCUMENTACION COMPLETA"
   documentacionCompleta: boolean;  // normalizado: solo "SI" (en cualquier caja) cuenta
+  mesGrab: string;                 // columna BD "MES GRAB"; vacía = caso pendiente
   fila: number; // nº de fila en el cuadro, para poder ir a verla
 }
 
@@ -66,6 +69,14 @@ function sheets() {
 
 const norm = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
 
+// "MES GRAB" sale 6 veces; la que marca si el caso ya se grabó es la de BD.
+const COL_MES_GRAB = 'BD';
+
+/** "BD" → 55 (índice 0-based de la columna). */
+function idxDeLetra(letra: string): number {
+  return [...letra.toUpperCase()].reduce((n, c) => n * 26 + (c.charCodeAt(0) - 64), 0) - 1;
+}
+
 /** Índice de la PRIMERA columna cuyo encabezado coincide exactamente. */
 function idxDe(headers: string[], nombre: string): number {
   return headers.findIndex((h) => h.toUpperCase() === nombre.toUpperCase());
@@ -75,6 +86,7 @@ export interface CuadroLeido {
   fuente: string;
   total: number;
   sinDocumentacion: number; // casos con "DOCUMENTACION COMPLETA" ≠ SI
+  sinMesGrab: number;       // casos con la columna BD "MES GRAB" vacía
   casos: CasoLibertador[];
 }
 
@@ -99,7 +111,7 @@ export async function leerCasos(): Promise<CuadroLeido> {
     range: `'${HOJA}'!A:CZ`,
   });
   const filas = data.values ?? [];
-  if (filas.length < 2) return { fuente: titulo, total: 0, sinDocumentacion: 0, casos: [] };
+  if (filas.length < 2) return { fuente: titulo, total: 0, sinDocumentacion: 0, sinMesGrab: 0, casos: [] };
 
   const headers = (filas[0] ?? []).map(norm);
   const i = {
@@ -113,9 +125,18 @@ export async function leerCasos(): Promise<CuadroLeido> {
     canon: idxDe(headers, 'CANON'),
     observaciones: idxDe(headers, 'OBSERVACIONES'),
     documentacion: idxDe(headers, 'DOCUMENTACION COMPLETA'),
+    mesGrab: idxDeLetra(COL_MES_GRAB),
   };
   if (i.solicitud < 0) {
     throw new Error(`La pestaña "${HOJA}" no tiene columna SOLICITUD (encabezados en la fila 1).`);
+  }
+  // Se lee por posición, así que si alguien inserta o borra columnas BD pasa a ser
+  // otra cosa. Mejor fallar con un mensaje claro que filtrar por la columna equivocada.
+  const encabezadoMesGrab = headers[i.mesGrab] ?? '';
+  if (encabezadoMesGrab.toUpperCase() !== 'MES GRAB') {
+    throw new Error(
+      `La columna ${COL_MES_GRAB} de "${HOJA}" debería ser "MES GRAB" y es "${encabezadoMesGrab || '(vacía)'}". ¿Se movieron columnas en el cuadro?`,
+    );
   }
 
   const celda = (fila: unknown[], idx: number) => (idx >= 0 ? norm(fila[idx]) : '');
@@ -141,6 +162,7 @@ export async function leerCasos(): Promise<CuadroLeido> {
       // contra 'SI' a secas clasificaría ese último como pendiente. Vacío o
       // cualquier otra cosa = falta documentación.
       documentacionCompleta: documentacion.toUpperCase() === 'SI',
+      mesGrab: celda(fila, i.mesGrab),
       fila: f + 1, // 1-based, como lo numera Sheets
     });
   }
@@ -149,6 +171,7 @@ export async function leerCasos(): Promise<CuadroLeido> {
     fuente: titulo,
     total: casos.length,
     sinDocumentacion: casos.filter((c) => !c.documentacionCompleta).length,
+    sinMesGrab: casos.filter((c) => !c.mesGrab).length,
     casos,
   };
 }

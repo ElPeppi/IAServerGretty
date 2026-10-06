@@ -6,8 +6,8 @@ import { EstadosCuentaModal } from '../components/Libertador/EstadosCuentaModal'
  * Casos de Libertador. A diferencia de Finandina no hay lotes que subir: el
  * cuadro de casos es la fuente y la unidad es la SOLICITUD.
  *
- * La pantalla existe para perseguir documentación: muestra ÚNICAMENTE los casos
- * cuya columna "DOCUMENTACION COMPLETA" no dice SI. No es un filtro que se pueda
+ * La pantalla muestra ÚNICAMENTE los casos cuya columna BD "MES GRAB" está
+ * vacía, es decir, los que aún no se han grabado. No es un filtro que se pueda
  * apagar, es su alcance. El mismo número de solicitud sale en varias filas a
  * propósito: una persona puede tener abiertos un ejecutivo y una restitución a la
  * vez, y son procesos distintos.
@@ -75,9 +75,9 @@ export function LibertadorCasosPage() {
 
   useEffect(() => { void cargar(); }, [cargar]);
 
-  // La pantalla SOLO trata los casos sin documentación: el resto no se muestra ni
-  // se puede pedir. De aquí para abajo "los casos" son estos, no el cuadro entero.
-  const pendientes = useMemo(() => casos.filter((c) => !c.documentacionCompleta), [casos]);
+  // La pantalla SOLO trata los casos con "MES GRAB" (columna BD) vacío: el resto no
+  // se muestra ni se puede pedir. De aquí para abajo "los casos" son estos, no el cuadro entero.
+  const pendientes = useMemo(() => casos.filter((c) => !c.mesGrab), [casos]);
 
   // Los tipos salen de los datos, no de una lista fija: el cuadro va sumando
   // procesos nuevos (residual, reorganización…) y una lista a mano se quedaría corta.
@@ -142,8 +142,8 @@ export function LibertadorCasosPage() {
               : error
                 ? 'Sin datos del cuadro de casos'
                 : filtrados.length !== pendientes.length
-                  ? `${filtrados.length} de ${pendientes.length} sin documentación`
-                  : `${pendientes.length} caso(s) sin documentación`}
+                  ? `${filtrados.length} de ${pendientes.length} sin MES GRAB`
+                  : `${pendientes.length} caso(s) sin MES GRAB`}
             {!error && fuente && ` · ${fuente}`}
           </p>
         </div>
@@ -243,12 +243,12 @@ export function LibertadorCasosPage() {
       ) : !error && pendientes.length === 0 ? (
         <div className="text-center py-16">
           <p className="text-gray-500 font-medium">
-            {casos.length === 0 ? 'No hay casos de Libertador' : 'Ningún caso pendiente de documentación'}
+            {casos.length === 0 ? 'No hay casos de Libertador' : 'Ningún caso con MES GRAB vacío'}
           </p>
           <p className="text-gray-400 text-sm mt-1">
             {casos.length === 0
               ? 'El cuadro de casos está vacío o todavía no tiene filas.'
-              : `Los ${casos.length} casos del cuadro tienen la documentación completa.`}
+              : `Los ${casos.length} casos del cuadro tienen MES GRAB diligenciado.`}
           </p>
         </div>
       ) : !error && filtrados.length === 0 ? (
