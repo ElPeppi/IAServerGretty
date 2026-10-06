@@ -2,7 +2,7 @@
  * libertadorDrive.ts — Acceso a Drive para el flujo de poderes de Libertador.
  *
  * Los casos de Libertador viven SOLO en el Drive de la oficina, bajo:
- *   <ROOT>/DEMANDAS/LIBERTADOR/SINGULAR/<solicitud>
+ *   <ROOT>/DEMANDAS/LIBERTADOR/DOCUMENTOS CLIENTES/<solicitud> [MES AÑO]
  * y la plantilla del poder en:
  *   <ROOT>/DEMANDAS/LIBERTADOR/CREAR PODERES/.../PLANTILLA PODER DE CONCILIACION.docx
  *
@@ -20,6 +20,7 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const GDOC = 'application/vnd.google-apps.document';
 const GSHEET = 'application/vnd.google-apps.spreadsheet';
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const ALL_DRIVES = { supportsAllDrives: true, includeItemsFromAllDrives: true };
 const SCOPE = SHARED_DRIVE_ID ? { corpora: 'drive' as const, driveId: SHARED_DRIVE_ID } : {};
@@ -67,26 +68,42 @@ async function carpetaLibertador(sub: string): Promise<string | null> {
   return p;
 }
 
+// Carpeta que contiene UNA carpeta por caso. Es "DOCUMENTOS CLIENTES" (verificado
+// contra el Drive de la oficina); queda en env por si la renombran.
+const CARPETA_CASOS = process.env.LIBERTADOR_CARPETA_CASOS || 'DOCUMENTOS CLIENTES';
+
 /**
- * Resuelve la carpeta del caso por número de solicitud dentro de LIBERTADOR/SINGULAR.
- * Las carpetas a veces traen sufijo de año ("5761466 - 2025"); se prefiere el match
- * exacto y, si hay varias por año, la de año más reciente.
+ * Resuelve la carpeta del caso por número de solicitud dentro de esa carpeta.
+ * La oficina las nombra de tres formas que conviven: "10030879", "10030879 - 2025"
+ * y "11600892 SEPTIEMBRE 2025". Se prefiere el match exacto y, si hay varias, la
+ * del año más reciente.
+ *
+ * El `name contains` va dentro de la consulta y NO se lista la carpeta entera: hoy
+ * tiene 772 subcarpetas, muy por encima del tamaño de página, y un listado plano
+ * devolvería `null` para las que quedaran fuera — perdiendo el archivo sin que se
+ * note, porque el llamador trata "no la encontré" como un aviso, no como un error.
  */
 export async function resolverCarpetaCaso(
   solicitud: string,
 ): Promise<{ folderId: string; folderName: string } | null> {
-  const singularId = await carpetaLibertador('SINGULAR');
-  if (!singularId) return null;
+  const casosId = await carpetaLibertador(CARPETA_CASOS);
+  if (!casosId) return null;
   const sol = String(solicitud).trim();
+  if (!sol) return null;
 
   const items = await listar(
-    `'${singularId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+    `'${casosId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`
+    + ` and name contains '${sol.replace(/['\\]/g, '\\$&')}'`,
     'files(id,name)',
   );
-  // Candidatas: nombre === solicitud, o empieza por la solicitud (p. ej. "<sol> - 2025").
+  // Candidatas: nombre === solicitud, o empieza por ella y lo que sigue NO es otro
+  // dígito ("11600892 SEPTIEMBRE 2025", "5761466 - 2025"), para no confundir 591854
+  // con 5918543. Sin RegExp: la solicitud sale del cuadro, que trae filas sucias, y
+  // un carácter especial haría que `new RegExp` lanzara en vez de no encontrar nada.
   const cand = items.filter((f) => {
     const n = (f.name || '').trim();
-    return n === sol || new RegExp(`^${sol}\\b`).test(n);
+    if (n === sol) return true;
+    return n.startsWith(sol) && !/[0-9]/.test(n.charAt(sol.length));
   });
   if (!cand.length) return null;
 
@@ -163,6 +180,41 @@ export async function subirPoder(folderId: string, nombre: string, buffer: Buffe
   }
   const r = await drive().files.create({
     requestBody: { name: nombre, parents: [folderId], mimeType: DOCX_MIME },
+    media,
+    ...ALL_DRIVES,
+    fields: 'id',
+  });
+  return r.data.id as string;
+}
+
+/**
+ * Plantilla EN BLANCO del estado de cuenta: LIBERTADOR/PLANTILLAS/ESTADO DE
+ * CUENTA IA.xls. Se busca la "IA" a propósito: al lado está "ESTADO DE CUENTA.xls",
+ * que es una copia diligenciada y arrastraría los datos de otro caso.
+ */
+export async function bajarPlantillaEstadoCuenta(): Promise<Buffer | null> {
+  const plantillasId = await carpetaLibertador('PLANTILLAS');
+  if (!plantillasId) return null;
+  const items = await listar(`'${plantillasId}' in parents and trashed=false`);
+  const f = items.find((x) => /estado de cuenta ia/i.test(x.name || '') && x.mimeType !== FOLDER_MIME);
+  return f ? bajarArchivo(f) : null;
+}
+
+/** Sube (o reemplaza) un archivo de hoja de cálculo en la carpeta de un caso. */
+export async function subirArchivoCaso(folderId: string, nombre: string, buffer: Buffer): Promise<string> {
+  const { Readable } = await import('stream');
+  const media = { mimeType: XLSX_MIME, body: Readable.from(buffer) };
+
+  const existentes = await listar(
+    `'${folderId}' in parents and name='${nombre.replace(/'/g, "\'")}' and trashed=false`,
+    'files(id,name)',
+  );
+  if (existentes.length) {
+    const r = await drive().files.update({ fileId: existentes[0].id as string, media, ...ALL_DRIVES, fields: 'id' });
+    return r.data.id as string;
+  }
+  const r = await drive().files.create({
+    requestBody: { name: nombre, parents: [folderId], mimeType: XLSX_MIME },
     media,
     ...ALL_DRIVES,
     fields: 'id',

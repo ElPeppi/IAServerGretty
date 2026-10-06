@@ -20,9 +20,11 @@
 
 const express = require('express');
 const fs = require('fs');
+const path = require('path');
 
 const config = require('../config');
 const { generarDesdeBuffers } = require('../services/libertador/poderes');
+const { procesarSolicitudes } = require('../../libertador_puppeteer');
 
 const router = express.Router();
 
@@ -61,6 +63,59 @@ router.post('/generar-poder-libertador', async (req, res) => {
   } catch (e) {
     console.error(`[LIB-PODER] ✗ ${solicitud}: ${e.message}`);
     return res.status(500).json({ success: false, solicitud, error: e.message });
+  }
+});
+
+/**
+ * POST /estados-cuenta-libertador
+ *   Entra al portal (AgentWeb) y, por cada nº de solicitud, abre el siniestro
+ *   Vigente y su pestaña "Estado de Cuenta".
+ *
+ *   Body: { solicitudes: string[] }
+ *   Respuesta: { success, total, ok, resultados: [{ solicitud, success, omitido?, motivo?, ... }] }
+ *
+ *   Un caso sin siniestro Vigente NO es un error: viene con `omitido:true` y su
+ *   motivo, para que el backend lo notifique y siga con el resto del lote.
+ *
+ *   PENDIENTE: la lectura de los datos del Estado de Cuenta (`datos` llega null).
+ *   Falta mapear ese datagrid al contrato de `generarEstadoCuenta`.
+ */
+router.post('/estados-cuenta-libertador', async (req, res) => {
+  const solicitudes = Array.isArray(req.body.solicitudes)
+    ? req.body.solicitudes
+    : String(req.body.solicitudes || '').split(/[\s,;-]+/);
+  const lista = solicitudes.map((x) => String(x || '').trim()).filter(Boolean);
+
+  if (!lista.length) {
+    return res.status(400).json({ success: false, error: 'No se recibió ninguna solicitud (campo: solicitudes).' });
+  }
+
+  console.error(`[LIB-ESTCTA] ${lista.length} solicitud(es): ${lista.join(', ')}`);
+
+  // La plantilla viaja desde el backend (es quien habla con Drive). Se deja en
+  // un temporal porque el escritor trabaja contra un archivo, no un buffer.
+  let plantillaPath = null;
+  let temporal = null;
+  if (req.body.plantillaBase64) {
+    temporal = path.join(config.TEMP_DIR, `plantilla_estado_cuenta_${Date.now()}.xls`);
+    fs.mkdirSync(config.TEMP_DIR, { recursive: true });
+    fs.writeFileSync(temporal, Buffer.from(String(req.body.plantillaBase64), 'base64'));
+    plantillaPath = temporal;
+  } else {
+    console.error('[LIB-ESTCTA] sin plantilla: se devolverán los datos sin armar el Excel');
+  }
+
+  try {
+    const resultados = await procesarSolicitudes(lista, { plantillaPath, elaboro: req.body.elaboro });
+    const ok = resultados.filter((r) => r.success).length;
+    console.error(`[LIB-ESTCTA] ✓ ${ok}/${lista.length}`);
+    return res.json({ success: true, total: lista.length, ok, resultados });
+  } catch (e) {
+    // Fallo global (no se pudo ni abrir sesión): el lote entero no corrió.
+    console.error(`[LIB-ESTCTA] ERROR global: ${e.message}`);
+    return res.status(500).json({ success: false, error: e.message, total: lista.length, ok: 0, resultados: [] });
+  } finally {
+    if (temporal) { try { fs.unlinkSync(temporal); } catch { /* da igual */ } }
   }
 });
 

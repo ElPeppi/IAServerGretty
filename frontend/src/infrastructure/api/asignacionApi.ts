@@ -109,6 +109,16 @@ export const asignacionApi = {
       )
       .then((r) => r.data),
 
+  // Libertador: pide los estados de cuenta al portal. Responde 202 enseguida;
+  // el resultado llega por notificación porque el portal tarda minutos.
+  estadosCuentaLibertador: (id: string, solicitudes?: string[]) =>
+    apiClient
+      .post<{ success: boolean; started: boolean; total: number; message: string }>(
+        `/asignaciones/${id}/estados-cuenta-libertador`,
+        solicitudes && solicitudes.length ? { solicitudes } : {},
+      )
+      .then((r) => r.data),
+
   // Escanea el servidor y agrega las asignaciones que falten en la DB.
   actualizar: () =>
     apiClient

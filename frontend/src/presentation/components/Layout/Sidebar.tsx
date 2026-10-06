@@ -1,10 +1,24 @@
 import { useState, type ReactNode } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../application/context/AuthContext';
 import { ChangePasswordModal } from '../Profile/ChangePasswordModal';
 import { getTheme, applyTheme } from '../../../application/theme';
 
-type NavItem = { to: string; label: string; icon: ReactNode; adminOnly?: boolean };
+type NavLeaf = { to: string; label: string; icon: ReactNode; adminOnly?: boolean };
+
+// Grupo desplegable. `base` es el prefijo del que cuelgan los hijos: con él se
+// sabe si el grupo contiene la ruta activa, sin repetir las rutas de los hijos.
+type NavGroup = {
+  base: string;
+  label: string;
+  icon: ReactNode;
+  adminOnly?: boolean;
+  children: Array<{ to: string; label: string }>;
+};
+
+type NavItem = NavLeaf | NavGroup;
+
+const esGrupo = (item: NavItem): item is NavGroup => 'children' in item;
 
 const navItems: NavItem[] = [
   {
@@ -18,7 +32,10 @@ const navItems: NavItem[] = [
     ),
   },
   {
-    to: '/asignaciones',
+    // Finandina y Libertador comparten el nombre "asignación" pero no el flujo:
+    // Finandina llega por lotes y Libertador caso a caso, así que cada cliente
+    // tiene su propia pantalla y el menú se abre por cliente.
+    base: '/asignaciones',
     label: 'Asignaciones',
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -26,6 +43,10 @@ const navItems: NavItem[] = [
           d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
       </svg>
     ),
+    children: [
+      { to: '/asignaciones/finandina', label: 'Finandina' },
+      { to: '/asignaciones/libertador', label: 'Libertador' },
+    ],
   },
   {
     to: '/expedientes',
@@ -77,6 +98,76 @@ const navItems: NavItem[] = [
 export const SIDEBAR_RAIL_PX = 64; // w-16
 
 const PIN_KEY = 'sidebarPinned';
+
+/**
+ * Item de menú con sub-items. `txt` y `pinned` llegan del Sidebar porque el
+ * desplegable tiene que desvanecerse con el resto del texto cuando el riel está
+ * colapsado.
+ */
+function NavGrupo({ item, txt, pinned }: { item: NavGroup; txt: string; pinned: boolean }) {
+  const { pathname } = useLocation();
+  // El grupo contiene la ruta activa: entrar por URL (o por un enlace viejo que
+  // redirige) tiene que dejarlo ya desplegado, o el usuario vería la página
+  // activa sin saber de qué cliente es.
+  const enGrupo = pathname === item.base || pathname.startsWith(`${item.base}/`);
+
+  // El clic del usuario manda solo mientras siga en la misma ruta: al navegar
+  // vuelve a decidir la ruta, así que entrar a un hijo despliega el grupo aunque
+  // se hubiera plegado a mano, y salir del grupo lo pliega otra vez.
+  const [clic, setClic] = useState<{ ruta: string; abierto: boolean } | null>(null);
+  const abierto = clic?.ruta === pathname ? clic.abierto : enGrupo;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setClic({ ruta: pathname, abierto: !abierto })}
+        title={item.label}
+        aria-expanded={abierto}
+        className={`w-full flex items-center gap-3 px-2.5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+          // Con el riel colapsado solo se ve el icono: resaltarlo es la única
+          // pista de que la página actual cuelga de este grupo.
+          enGrupo ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+        }`}
+      >
+        <span className="flex-shrink-0">{item.icon}</span>
+        <span className={`flex-1 text-left whitespace-nowrap transition-opacity duration-200 ${txt}`}>
+          {item.label}
+        </span>
+        <svg
+          className={`w-4 h-4 flex-shrink-0 transition-all duration-200 ${txt} ${abierto ? 'rotate-180' : ''}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* En el riel colapsado los sub-items serían filas vacías —su texto está a
+          opacidad 0—, así que se ocultan del todo hasta que el menú se expande. */}
+      <div
+        className={`mt-1 space-y-1 ${
+          !abierto ? 'hidden' : pinned ? 'block' : 'hidden group-hover:block group-focus-within:block'
+        }`}
+      >
+        {item.children.map((sub) => (
+          <NavLink
+            key={sub.to}
+            to={sub.to}
+            className={({ isActive }) =>
+              `block pl-11 pr-2.5 py-2 rounded-lg text-sm transition-colors ${
+                isActive
+                  ? 'bg-purple-600 text-white font-medium'
+                  : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+              }`
+            }
+          >
+            <span className="whitespace-nowrap">{sub.label}</span>
+          </NavLink>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function Sidebar() {
   const { user, logout } = useAuth();
@@ -151,21 +242,25 @@ export function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden">
         {navItems.filter((item) => !item.adminOnly || user?.role === 'ADMIN').map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            title={item.label}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-2.5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                isActive
-                  ? 'bg-purple-600 text-white'
-                  : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-              }`
-            }
-          >
-            <span className="flex-shrink-0">{item.icon}</span>
-            <span className={`whitespace-nowrap transition-opacity duration-200 ${txt}`}>{item.label}</span>
-          </NavLink>
+          esGrupo(item) ? (
+            <NavGrupo key={item.base} item={item} txt={txt} pinned={pinned} />
+          ) : (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              title={item.label}
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-2.5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-purple-600 text-white'
+                    : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+                }`
+              }
+            >
+              <span className="flex-shrink-0">{item.icon}</span>
+              <span className={`whitespace-nowrap transition-opacity duration-200 ${txt}`}>{item.label}</span>
+            </NavLink>
+          )
         ))}
       </nav>
 

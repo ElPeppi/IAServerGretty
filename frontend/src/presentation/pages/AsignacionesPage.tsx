@@ -13,7 +13,12 @@ function fmtFecha(s: string | null): string {
   return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export function AsignacionesPage() {
+/**
+ * `soloBanco` lo fija la ruta (/asignaciones/finandina). Con un cliente por
+ * pantalla el selector de demandante sobra: dejarlo permitiría salirse del
+ * cliente de la ruta sin que la URL lo refleje.
+ */
+export function AsignacionesPage({ soloBanco }: { soloBanco?: string }) {
   const { asignaciones, isLoading, error, refetch } = useAsignaciones();
 
   // La generación corre en segundo plano y responde 202 al instante, así que la
@@ -30,8 +35,9 @@ export function AsignacionesPage() {
   const [actualizando, setActualizando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const [fechaAsc, setFechaAsc] = useState(false); // false = más recientes primero
-  const [demandante, setDemandante] = useState('');  // '' = todos
+  const [demandante, setDemandante] = useState(soloBanco ?? '');  // '' = todos
   const [generandoLib, setGenerandoLib] = useState<string | null>(null); // id de asignación Libertador en curso
+  const [pidiendoEstados, setPidiendoEstados] = useState<string | null>(null); // id de asignación con estados de cuenta en curso
 
   // Demandantes que hay DE VERDAD en la lista, no una lista fija de bancos: así
   // el filtro crece solo cuando entre un banco nuevo y nunca ofrece uno vacío.
@@ -97,6 +103,23 @@ export function AsignacionesPage() {
     setDemandasTarget(a);
   };
 
+  // Libertador: pide al portal los estados de cuenta del lote. No espera al
+  // resultado —el portal tarda minutos—: el backend responde 202 y avisa luego
+  // por notificación, incluidos los casos omitidos por no tener siniestro Vigente.
+  const handleEstadosCuenta = async (a: AsignacionResumen) => {
+    setPidiendoEstados(a.id);
+    setAviso(null);
+    try {
+      const res = await asignacionApi.estadosCuentaLibertador(a.id);
+      setAviso(res.message);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
+      setAviso(msg ?? (err instanceof Error ? err.message : 'Error al pedir los estados de cuenta'));
+    } finally {
+      setPidiendoEstados(null);
+    }
+  };
+
   // Libertador: genera los poderes de conciliación de toda la asignación (un poder
   // por caso, subido a la carpeta del caso en Drive). No usa el modal cédula-céntrico.
   const handleGenerarPoderesLibertador = async (a: AsignacionResumen) => {
@@ -122,23 +145,29 @@ export function AsignacionesPage() {
     <div className="p-6 lg:p-8 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Asignaciones</h1>
+          <h1 className="text-2xl font-bold text-gray-900">
+            {soloBanco ? `Asignaciones · ${soloBanco}` : 'Asignaciones'}
+          </h1>
           <p className="text-gray-500 text-sm mt-0.5">
             {ordenadas.length} asignación(es)
             {demandante ? ` de ${demandante}` : ' cacheada(s)'}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <label className="sr-only" htmlFor="filtro-demandante">Demandante</label>
-          <select
-            id="filtro-demandante"
-            value={demandante}
-            onChange={(e) => setDemandante(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-xl text-sm text-gray-700 bg-white hover:bg-gray-50 transition-colors"
-          >
-            <option value="">Todos los demandantes</option>
-            {demandantes.map((b) => <option key={b} value={b}>{b}</option>)}
-          </select>
+          {!soloBanco && (
+            <>
+              <label className="sr-only" htmlFor="filtro-demandante">Demandante</label>
+              <select
+                id="filtro-demandante"
+                value={demandante}
+                onChange={(e) => setDemandante(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-xl text-sm text-gray-700 bg-white hover:bg-gray-50 transition-colors"
+              >
+                <option value="">Todos los demandantes</option>
+                {demandantes.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </>
+          )}
           <button onClick={handleActualizar} disabled={actualizando}
             className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-xl text-sm font-medium transition-colors disabled:opacity-50">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -171,13 +200,19 @@ export function AsignacionesPage() {
           {demandante ? (
             <>
               <p className="text-gray-500 font-medium">No hay asignaciones de {demandante}</p>
-              <button
-                type="button"
-                onClick={() => setDemandante('')}
-                className="text-blue-600 hover:underline text-sm mt-1"
-              >
-                Ver todos los demandantes
-              </button>
+              {/* Con el demandante fijado por la ruta no hay "todos" al que volver:
+                  el enlace solo tiene sentido cuando el filtro lo eligió el usuario. */}
+              {soloBanco ? (
+                <p className="text-gray-400 text-sm mt-1">Sube el Excel de asignación o pulsa "Actualizar asignaciones".</p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setDemandante('')}
+                  className="text-blue-600 hover:underline text-sm mt-1"
+                >
+                  Ver todos los demandantes
+                </button>
+              )}
             </>
           ) : (
             <>
@@ -246,10 +281,16 @@ export function AsignacionesPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       {a.banco === 'LIBERTADOR' ? (
-                        <button onClick={() => handleGenerarPoderesLibertador(a)} disabled={generandoLib === a.id}
-                          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
-                          {generandoLib === a.id ? 'Generando…' : 'Generar poderes conciliación'}
-                        </button>
+                        <>
+                          <button onClick={() => handleEstadosCuenta(a)} disabled={pidiendoEstados === a.id}
+                            className="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+                            {pidiendoEstados === a.id ? 'Consultando…' : 'Solicitar estados de cuenta'}
+                          </button>
+                          <button onClick={() => handleGenerarPoderesLibertador(a)} disabled={generandoLib === a.id}
+                            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+                            {generandoLib === a.id ? 'Generando…' : 'Generar poderes conciliación'}
+                          </button>
+                        </>
                       ) : (
                         <>
                           <button onClick={() => setPoderTarget(a)}

@@ -23,6 +23,8 @@ import {
   SubirInsumoInput,
   GenerateGarantiasInput,
   GenerateGarantiasOutput,
+  EstadosCuentaLibertadorInput,
+  EstadosCuentaLibertadorOutput,
 } from '../../application/services/IEngineService';
 
 const XLSX_MIME =
@@ -209,4 +211,27 @@ export class EngineService implements IEngineService {
       maxBodyLength: Infinity,
     });
   }
+
+  /**
+   * Estados de cuenta de Libertador: el motor entra al portal una sola vez y
+   * recorre todas las solicitudes. Puede tardar minutos (login + navegación por
+   * caso), de ahí el timeout largo — se llama desde un proceso en segundo plano.
+   */
+  async estadosCuentaLibertador(input: EstadosCuentaLibertadorInput): Promise<EstadosCuentaLibertadorOutput> {
+    const { data } = await axios.post<EstadosCuentaLibertadorOutput>(
+      `${this.baseUrl}/estados-cuenta-libertador`,
+      {
+        solicitudes: input.solicitudes,
+        plantillaBase64: input.plantillaBase64,
+        elaboro: input.elaboro,
+      },
+      {
+        timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+    return data;
+  }
+
 }

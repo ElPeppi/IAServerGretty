@@ -251,12 +251,51 @@ export interface GenerateGarantiasOutput {
   errores?: Array<{ cedula: string; error: string }>;
 }
 
+// ─── Estados de cuenta de Libertador (portal Oracle AgentWeb, alias "Huella") ───
+// El motor abre el portal, busca cada nº de solicitud y entra al siniestro Vigente.
+// Un caso sin siniestro Vigente NO es un fallo: viene con `omitido` y su motivo.
+export interface EstadoCuentaLibertadorItem {
+  solicitud: string;
+  success: boolean;
+  omitido?: boolean;
+  motivo?: string;
+  estados?: string[];                 // estados hallados, cuando se omite
+  siniestro?: { amparo?: string; estado?: string; fechaMora?: string };
+  datos?: unknown | null;             // movimientos crudos leídos del portal
+  // Movimientos ya convertidos a meses, con los abonos aplicados.
+  cuadro?: {
+    meses: Array<{ mes: string; deuda: Record<string, number>; abono: Record<string, number>; saldo: Record<string, number> }>;
+    totales: Record<string, Record<string, number>>;
+    avisos: string[];
+  };
+  archivoBase64?: string | null;      // el .xlsx armado, si se mandó plantilla
+  nombreArchivo?: string;
+  error?: string;
+}
+
+export interface EstadosCuentaLibertadorInput {
+  solicitudes: string[];
+  // Plantilla EN BLANCO del estado de cuenta. El motor no habla con Drive, así
+  // que se la manda el backend; sin ella devuelve los datos pero no el archivo.
+  plantillaBase64?: string;
+  elaboro?: string;
+}
+
+export interface EstadosCuentaLibertadorOutput {
+  success: boolean;
+  total: number;
+  ok: number;
+  resultados: EstadoCuentaLibertadorItem[];
+  error?: string;
+}
+
 export interface IEngineService {
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
   descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
   generarPoderes(input: GenerarPoderesInput): Promise<GenerarPoderesOutput>;
   generarPoderLibertador(input: GenerarPoderLibertadorInput): Promise<GenerarPoderLibertadorOutput>;
   mapearColumnas(input: MapearColumnasInput): Promise<MapearColumnasOutput>;
+  estadosCuentaLibertador(input: EstadosCuentaLibertadorInput): Promise<EstadosCuentaLibertadorOutput>;
   listarPlantillas(): Promise<PlantillaInfo[]>;
   restaurarPlantilla(clave: string, archivo: string): Promise<PlantillaResult>;
   generateGarantias(input: GenerateGarantiasInput): Promise<GenerateGarantiasOutput>;

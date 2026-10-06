@@ -7,6 +7,7 @@ import { LoginPage } from './presentation/pages/LoginPage';
 import { DashboardPage } from './presentation/pages/DashboardPage';
 import { DocumentsPage } from './presentation/pages/DocumentsPage';
 import { AsignacionesPage } from './presentation/pages/AsignacionesPage';
+import { LibertadorCasosPage } from './presentation/pages/LibertadorCasosPage';
 import { ExpedientesPage } from './presentation/pages/ExpedientesPage';
 import { DocumentDetailPage } from './presentation/pages/DocumentDetailPage';
 import { UsersPage } from './presentation/pages/UsersPage';
@@ -32,7 +33,13 @@ function App() {
           >
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
-            <Route path="asignaciones" element={<AsignacionesPage />} />
+            {/* Una pantalla por cliente: Finandina sigue siendo la de siempre
+                (acotada a su demandante) y Libertador tiene la suya porque sus
+                casos no llegan en lotes. /asignaciones a secas se redirige para
+                no romper enlaces ni marcadores anteriores al desglose. */}
+            <Route path="asignaciones" element={<Navigate to="/asignaciones/finandina" replace />} />
+            <Route path="asignaciones/finandina" element={<AsignacionesPage soloBanco="FINANDINA" />} />
+            <Route path="asignaciones/libertador" element={<LibertadorCasosPage />} />
             <Route path="expedientes" element={<ExpedientesPage />} />
             <Route path="documents" element={<DocumentsPage />} />
             <Route path="documents/:id" element={<DocumentDetailPage />} />

@@ -1453,7 +1453,23 @@ export class AsignacionController {
       const hoy = new Date();
       const nombre = String(req.body?.nombre || '').trim()
         || `LIBERTADOR CONCILIACION ${hoy.toISOString().slice(0, 10)}`;
-      const filas = solicitudes.map((s) => ({ SOLICITUD: s, TIPO: 'CONCILIACION' }));
+
+      // Los casos de Libertador NO llegan en lote: entran de uno en uno. Como el
+      // nombre por defecto es la fecha, el segundo caso del día cae en la misma
+      // asignación — y el `update` ANTERIOR reemplazaba `filas`, borrando los
+      // casos ya cargados ese día sin avisar. Se fusiona: lo que ya estaba se
+      // conserva y solo se agregan las solicitudes nuevas.
+      const previa = await prisma.asignacion.findUnique({ where: { nombre }, select: { filas: true } });
+      const porSolicitud = new Map<string, Record<string, unknown>>();
+      for (const f of ((previa?.filas as unknown as Array<Record<string, unknown>>) ?? [])) {
+        const s = String(f?.SOLICITUD ?? '').trim();
+        if (s) porSolicitud.set(s, f);
+      }
+      const yaEstaban = solicitudes.filter((s) => porSolicitud.has(s));
+      for (const s of solicitudes) {
+        if (!porSolicitud.has(s)) porSolicitud.set(s, { SOLICITUD: s, TIPO: 'CONCILIACION' });
+      }
+      const filas = [...porSolicitud.values()];
 
       const asignacion = await prisma.asignacion.upsert({
         where: { nombre },
@@ -1462,16 +1478,22 @@ export class AsignacionController {
           banco: 'LIBERTADOR',
           fechaAsignacion: hoy,
           filas: filas as unknown as Prisma.InputJsonValue,
-          totalFilas: solicitudes.length,
+          totalFilas: filas.length,
           lawyerId: req.user!.userId,
         },
         update: {
           banco: 'LIBERTADOR',
           filas: filas as unknown as Prisma.InputJsonValue,
-          totalFilas: solicitudes.length,
+          totalFilas: filas.length,
         },
       });
-      res.status(201).json({ success: true, asignacion: this.resumen(asignacion) });
+      res.status(201).json({
+        success: true,
+        asignacion: this.resumen(asignacion),
+        agregadas: solicitudes.length - yaEstaban.length,
+        yaEstaban,
+        total: filas.length,
+      });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error al crear la asignación Libertador';
       res.status(500).json({ message });
@@ -1481,6 +1503,96 @@ export class AsignacionController {
   // POST /api/asignaciones/:id/generar-poderes-libertador → por cada solicitud:
   // ubica la carpeta del caso en Drive, baja la DECLARACION DE PAGOS, pide el poder
   // al motor y lo sube a esa misma carpeta. `solicitudes` opcional acota el lote.
+  /**
+   * POST /asignaciones/:id/estados-cuenta-libertador
+   * Pide al motor los estados de cuenta de las solicitudes de la asignación.
+   *
+   * Responde 202 de inmediato: el motor entra al portal Oracle (AgentWeb) y eso
+   * tarda minutos — login + navegación por caso —, muy por encima del timeout del
+   * navegador. El avance llega por notificación, una por caso omitido y una final.
+   */
+  async estadosCuentaLibertador(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params['id'] as string;
+      const asig = await prisma.asignacion.findUnique({ where: { id } });
+      if (!asig) { res.status(404).json({ message: 'Asignación no encontrada' }); return; }
+
+      const filas = (asig.filas as unknown as Array<Record<string, unknown>>) || [];
+      let solicitudes = filas.map((f) => String(f.SOLICITUD || '').trim()).filter(Boolean);
+      const subset = Array.isArray(req.body?.solicitudes)
+        ? (req.body.solicitudes as unknown[]).map((x) => String(x).trim()) : [];
+      if (subset.length) { const set = new Set(subset); solicitudes = solicitudes.filter((x) => set.has(x)); }
+      if (!solicitudes.length) { res.status(400).json({ message: 'La asignación no tiene solicitudes.' }); return; }
+
+      res.status(202).json({
+        success: true,
+        started: true,
+        total: solicitudes.length,
+        message: `Consultando ${solicitudes.length} estado(s) de cuenta en el portal. Te aviso al terminar.`,
+      });
+
+      void this.estadosCuentaLibertadorBg({ asignacionId: id, nombre: asig.nombre, solicitudes });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error al pedir los estados de cuenta';
+      res.status(500).json({ message });
+    }
+  }
+
+  /** Corre el lote contra el motor y reporta por notificación. No lanza. */
+  private async estadosCuentaLibertadorBg(input: {
+    asignacionId: string; nombre: string; solicitudes: string[];
+  }): Promise<void> {
+    const t0 = Date.now();
+    notificationHub.broadcast({
+      type: 'generacion', level: 'info', title: 'Estados de cuenta',
+      message: `Consultando ${input.solicitudes.length} solicitud(es) de "${input.nombre}" en el portal…`,
+      meta: { asignacionId: input.asignacionId, total: input.solicitudes.length },
+    });
+
+    try {
+      const r = await engineService.estadosCuentaLibertador({ solicitudes: input.solicitudes });
+
+      // Un caso sin siniestro Vigente se avisa uno a uno: es la razón por la que
+      // la oficina no verá su estado de cuenta, y hay que poder actuar sobre él.
+      for (const item of r.resultados ?? []) {
+        if (item.omitido) {
+          notificationHub.broadcast({
+            type: 'generacion', level: 'warning', title: 'Solicitud omitida',
+            message: `${item.solicitud}: ${item.motivo}.`,
+            meta: { asignacionId: input.asignacionId, solicitud: item.solicitud, motivo: item.motivo },
+          });
+        } else if (!item.success) {
+          notificationHub.broadcast({
+            type: 'generacion', level: 'warning', title: 'Solicitud fallida',
+            message: `${item.solicitud}: ${item.error || item.motivo || 'el motor no pudo abrirla'}.`,
+            meta: { asignacionId: input.asignacionId, solicitud: item.solicitud },
+          });
+        }
+      }
+
+      const ok = r.ok ?? 0;
+      const omitidas = (r.resultados ?? []).filter((x) => x.omitido).length;
+      const fallidas = (r.resultados ?? []).filter((x) => !x.success && !x.omitido).length;
+      notificationHub.broadcast({
+        type: 'generacion',
+        level: ok ? 'success' : 'warning',
+        title: 'Estados de cuenta',
+        message: `"${input.nombre}": ${ok} abierta(s)`
+          + (omitidas ? `, ${omitidas} omitida(s)` : '')
+          + (fallidas ? `, ${fallidas} con error` : '') + '.',
+        meta: { asignacionId: input.asignacionId, ok, omitidas, fallidas },
+      });
+      console.error(`[LIB-ESTCTA] ${input.nombre}: ${ok}/${input.solicitudes.length} en ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Error desconocido';
+      notificationHub.broadcast({
+        type: 'generacion', level: 'error', title: 'Fallaron los estados de cuenta',
+        message: `"${input.nombre}": ${msg}`,
+        meta: { asignacionId: input.asignacionId },
+      });
+    }
+  }
+
   async generarPoderesLibertador(req: AuthRequest, res: Response): Promise<void> {
     try {
       const id = req.params['id'] as string;
