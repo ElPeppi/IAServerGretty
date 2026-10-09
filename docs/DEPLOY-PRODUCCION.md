@@ -59,6 +59,10 @@ FIRMA_PATH=\\10.0.10.10\compartida\...\PLANTILLAS\Firma.png
 
 # Notificaciones SSE motor→backend (mismo secreto en ambos)
 ENGINE_NOTIFY_SECRET=un-secreto-largo
+
+# n8n → backend (POST /api/libertador/carpetas). En n8n va como credencial
+# "Header Auth": Name = x-n8n-secret, Value = este mismo valor. Sin él, se rechaza.
+N8N_SECRET=otro-secreto-largo
 ```
 
 ### sac_scripts/.env

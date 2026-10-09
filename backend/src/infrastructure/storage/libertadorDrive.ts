@@ -6,6 +6,10 @@
  * y la plantilla del poder en:
  *   <ROOT>/DEMANDAS/LIBERTADOR/CREAR PODERES/.../PLANTILLA PODER DE CONCILIACION.docx
  *
+ * Una sola carpeta por solicitud para todos sus procesos, con una subcarpeta por
+ * proceso (EJECUTIVO, RESTITUCION, CONCILIACION, RESIDUAL). Lo común a todos
+ * (contrato, reconocimientos, estado de cuenta) queda en la raíz de la carpeta.
+ *
  * Reusa la misma auth (service account + delegación) y env que DriveStorage.
  * Se mantiene aparte para NO tocar el storage {cedula}/ de producción.
  */
@@ -90,7 +94,13 @@ export async function resolverCarpetaCaso(
   if (!casosId) return null;
   const sol = String(solicitud).trim();
   if (!sol) return null;
+  return buscarCarpetaCaso(casosId, sol);
+}
 
+async function buscarCarpetaCaso(
+  casosId: string,
+  sol: string,
+): Promise<{ folderId: string; folderName: string } | null> {
   const items = await listar(
     `'${casosId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`
     + ` and name contains '${sol.replace(/['\\]/g, '\\$&')}'`,
@@ -115,6 +125,89 @@ export async function resolverCarpetaCaso(
     return anio(b.name || '') - anio(a.name || ''); // luego año más reciente
   });
   return { folderId: cand[0].id as string, folderName: cand[0].name as string };
+}
+
+// Procesos que puede traer una solicitud; cada uno es una subcarpeta del caso.
+export const PROCESOS_LIBERTADOR = ['EJECUTIVO', 'RESTITUCION', 'CONCILIACION', 'RESIDUAL'] as const;
+export type ProcesoLibertador = (typeof PROCESOS_LIBERTADOR)[number];
+
+// Sin tildes y en mayúsculas: "Restitución" y "RESTITUCION" son la misma carpeta.
+const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toUpperCase();
+
+/** "Restitución" → 'RESTITUCION'; lo que no es un proceso conocido → null. */
+export function normalizarProceso(valor: unknown): ProcesoLibertador | null {
+  const v = sinTildes(String(valor ?? ''));
+  return (PROCESOS_LIBERTADOR as readonly string[]).includes(v) ? (v as ProcesoLibertador) : null;
+}
+
+const MESES = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO',
+  'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
+
+/** "5918543 AGOSTO 2026": la solicitud con el mes y año (hora de Colombia) en que llegó. */
+export function nombreCarpetaCaso(solicitud: string, fecha = new Date()): string {
+  const partes = new Intl.DateTimeFormat('es-CO', { timeZone: 'America/Bogota', year: 'numeric', month: 'numeric' })
+    .formatToParts(fecha);
+  const mes = Number(partes.find((p) => p.type === 'month')?.value);
+  const anio = partes.find((p) => p.type === 'year')?.value;
+  return `${solicitud} ${MESES[mes - 1]} ${anio}`;
+}
+
+async function crearCarpeta(parentId: string, nombre: string): Promise<string> {
+  const r = await drive().files.create({
+    requestBody: { name: nombre, parents: [parentId], mimeType: FOLDER_MIME },
+    ...ALL_DRIVES,
+    fields: 'id',
+  });
+  return r.data.id as string;
+}
+
+export interface CarpetaCasoAsegurada {
+  folderId: string;
+  folderName: string;
+  creada: boolean;              // false = ya existía y se reutilizó
+  subcarpetasCreadas: string[];
+}
+
+/**
+ * Deja lista la carpeta de una solicitud en DOCUMENTOS CLIENTES y le agrega la
+ * subcarpeta de cada proceso que le falte. Idempotente: correrla otra vez no
+ * duplica nada.
+ *
+ * Si la solicitud ya tiene carpeta (de cualquier mes, o con el nombre viejo) se
+ * reutiliza en vez de crear otra: es una sola carpeta para todos los procesos de
+ * la solicitud, y además una segunda carpeta haría que `resolverCarpetaCaso`
+ * eligiera entre las dos al guardar el estado de cuenta o el poder. Se busca con
+ * esa misma función para que ambos lados coincidan siempre en cuál es "la" carpeta.
+ */
+export async function asegurarCarpetaCaso(
+  solicitud: string,
+  procesos: ProcesoLibertador[],
+): Promise<CarpetaCasoAsegurada> {
+  const casosId = await carpetaLibertador(CARPETA_CASOS);
+  if (!casosId) throw new Error(`No encontré DEMANDAS/LIBERTADOR/${CARPETA_CASOS} en el Drive.`);
+  const sol = String(solicitud).trim();
+  if (!sol) throw new Error('Solicitud vacía.');
+
+  let carpeta = await buscarCarpetaCaso(casosId, sol);
+  const creada = !carpeta;
+  if (!carpeta) {
+    const nombre = nombreCarpetaCaso(sol);
+    carpeta = { folderId: await crearCarpeta(casosId, nombre), folderName: nombre };
+  }
+
+  const hijas = await listar(
+    `'${carpeta.folderId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+    'files(id,name)',
+  );
+  const existentes = new Set(hijas.map((f) => sinTildes(f.name || '')));
+  const subcarpetasCreadas: string[] = [];
+  for (const p of procesos) {
+    if (existentes.has(p)) continue;
+    await crearCarpeta(carpeta.folderId, p);
+    existentes.add(p);
+    subcarpetasCreadas.push(p);
+  }
+  return { ...carpeta, creada, subcarpetasCreadas };
 }
 
 // Descarga (o exporta) un archivo de Drive a Buffer.

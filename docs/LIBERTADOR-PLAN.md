@@ -284,3 +284,41 @@ end-to-end (motor+backend+DB+Drive juntos) y un botón en la UI para disparar
 `generarPoderesLibertador` sobre una asignación Libertador (hoy solo existe el API).
 
 Nota: la plantilla del poder la baja el backend desde Drive (no requiere sync local).
+
+## 13. Carpetas del caso en Drive — estructura nueva (oct-2026)
+
+Desde ahora cada solicitud tiene **una sola carpeta** para todos sus procesos:
+
+```
+DEMANDAS/LIBERTADOR/DOCUMENTOS CLIENTES/
+└── 5918543 AGOSTO 2026            ← <solicitud> <MES> <AÑO> (mes en que llegó)
+    ├── EJECUTIVO/                 ← una subcarpeta por proceso
+    ├── RESTITUCION/
+    ├── (CONCILIACION/, RESIDUAL/)
+    ├── 5918543 ESTADO DE CUENTA.xls   ← lo común a todos los procesos va en la raíz:
+    ├── rodrigo.png                     estado de cuenta, captura de la huella,
+    └── contrato, reconocimientos…      contrato, reconocimientos
+```
+
+| Tipo de alistamiento del correo | Subcarpetas |
+|---|---|
+| EJECUTIVO / RESTITUCION / RESIDUAL | solo esa |
+| MIXTO (sin conciliación) | RESTITUCION + EJECUTIVO |
+| MIXTO CON CONCILIACION | CONCILIACION + RESTITUCION + EJECUTIVO |
+| EJECUTIVO CON CONCILIACION | CONCILIACION + EJECUTIVO |
+| RESTITUCION CON CONCILIACION | CONCILIACION + RESTITUCION |
+
+Quién la crea: el workflow n8n **email automatization**. Al llegar un correo de
+ASIGNACION, clasifica cada solicitud (nodo "Code in JavaScript", la misma lista
+que llena el cuadro), las agrupa ("Agrupar por Solicitud") y llama a
+`POST /api/libertador/carpetas` del backend (header `x-n8n-secret` = `N8N_SECRET`).
+El backend (`asegurarCarpetaCaso` en libertadorDrive.ts):
+- Si la solicitud ya tiene carpeta (cualquier mes, o con nombre viejo) la
+  **reutiliza** — la busca con la misma regla que `resolverCarpetaCaso`, para que
+  el estado de cuenta y el poder caigan siempre en la misma carpeta.
+- Si no, la crea como `<solicitud> <MES> <AÑO>` (hora de Colombia).
+- Crea solo las subcarpetas que falten (compara sin tildes). Es idempotente.
+- Un tipo no reconocido crea la carpeta sin subcarpetas y vuelve en `ignorados`.
+
+Pendiente: la captura de la huella (png) al hacer el estado de cuenta; siguiente
+paso del flujo: solicitar documentos.

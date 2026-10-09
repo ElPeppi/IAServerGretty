@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import { LibertadorController } from '../controllers/LibertadorController';
-import { authenticate } from '../middlewares/authMiddleware';
+import { authenticate, authenticateN8n } from '../middlewares/authMiddleware';
 
 const router = Router();
 const controller = new LibertadorController();
+
+// Lo llama n8n al recibir una asignación por correo: va ANTES del router.use(authenticate)
+// porque n8n no tiene JWT, se autoriza con N8N_SECRET.
+router.post('/carpetas', authenticateN8n, (req, res) => controller.carpetas(req, res));
 
 router.use(authenticate);
 

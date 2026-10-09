@@ -286,7 +286,11 @@ export function LibertadorCasosPage() {
                 // histórico…): no cabe en una columna, así que va como tooltip de
                 // la fila completa.
                 <tr key={`${c.solicitud}-${c.fila}`} className="hover:bg-gray-50 align-top" title={c.observaciones || undefined}>
-                  <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{c.solicitud}</td>
+                  {/* El tope va en un div: los navegadores no respetan max-width
+                      directo en un <td>. Lo que pase del ancho baja de línea. */}
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    <div className="max-w-[10rem] break-words">{c.solicitud}</div>
+                  </td>
                   <td className="px-4 py-3 text-gray-600">{c.demandante || '—'}</td>
                   {/* El cuadro mete varios demandados en una sola celda separados
                       por "/": se parten para que se lean como la lista que son. */}

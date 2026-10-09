@@ -1,13 +1,24 @@
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { leerCasos, cuadroDisponible, motivoNoDisponible } from '../../infrastructure/libertador/cuadroJuridico';
 import { EngineService } from '../../infrastructure/services/EngineService';
 import {
   libertadorDriveDisponible, bajarPlantillaEstadoCuenta, resolverCarpetaCaso, subirArchivoCaso,
+  asegurarCarpetaCaso, normalizarProceso, ProcesoLibertador, CarpetaCasoAsegurada,
 } from '../../infrastructure/storage/libertadorDrive';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
 const engineService = new EngineService();
+
+// Las peticiones de carpetas se atienden de a una: si llegan juntos dos correos
+// con la misma solicitud, el segundo tiene que ver la carpeta que creó el primero
+// en vez de crear otra.
+let colaCarpetas: Promise<unknown> = Promise.resolve();
+function enCola<T>(fn: () => Promise<T>): Promise<T> {
+  const p = colaCarpetas.then(fn, fn);
+  colaCarpetas = p.catch(() => undefined);
+  return p;
+}
 
 /**
  * LibertadorController — los casos de Libertador.
@@ -33,6 +44,75 @@ export class LibertadorController {
       const message = error instanceof Error ? error.message : 'Error al leer el cuadro jurídico';
       res.status(502).json({ message });
     }
+  }
+
+  /**
+   * POST /api/libertador/carpetas   (lo llama n8n; header x-n8n-secret)
+   * body: { casos: [{ solicitud: string, procesos: string[] }] }
+   *
+   * Al llegar una asignación por correo, deja lista en Drive la carpeta de cada
+   * solicitud ("<solicitud> <MES> <AÑO>" en DOCUMENTOS CLIENTES) con una
+   * subcarpeta por proceso. Un proceso que no se reconoce no frena el caso: la
+   * carpeta se crea igual y el proceso vuelve en `ignorados`.
+   *
+   * Responde 502 si falló alguna solicitud, para que la ejecución de n8n quede
+   * en rojo; repetirla es seguro porque no duplica carpetas.
+   */
+  async carpetas(req: Request, res: Response): Promise<void> {
+    if (!libertadorDriveDisponible()) {
+      res.status(503).json({ message: 'Drive no está configurado en el backend (DRIVE_SA_KEY / DRIVE_IMPERSONATE_USER).' });
+      return;
+    }
+
+    // Agrupado por solicitud: n8n manda una fila por proceso y un MIXTO trae la
+    // misma solicitud dos o tres veces.
+    const crudos = Array.isArray(req.body?.casos) ? (req.body.casos as unknown[]) : [];
+    const porSolicitud = new Map<string, Set<ProcesoLibertador>>();
+    const ignorados: { solicitud: string; proceso: string }[] = [];
+    for (const c of crudos as { solicitud?: unknown; procesos?: unknown }[]) {
+      const solicitud = String(c?.solicitud ?? '').trim();
+      if (!solicitud) continue;
+      const procesos = porSolicitud.get(solicitud) ?? new Set<ProcesoLibertador>();
+      for (const p of Array.isArray(c.procesos) ? c.procesos : []) {
+        const n = normalizarProceso(p);
+        if (n) procesos.add(n);
+        else ignorados.push({ solicitud, proceso: String(p ?? '') });
+      }
+      porSolicitud.set(solicitud, procesos);
+    }
+    if (!porSolicitud.size) {
+      res.status(400).json({ message: 'No se recibió ninguna solicitud.' });
+      return;
+    }
+
+    type Resultado = { solicitud: string; success: boolean; error?: string } & Partial<CarpetaCasoAsegurada>;
+    const resultados = await enCola(async () => {
+      const out: Resultado[] = [];
+      for (const [solicitud, procesos] of porSolicitud) {
+        try {
+          out.push({ solicitud, success: true, ...(await asegurarCarpetaCaso(solicitud, [...procesos])) });
+        } catch (e: unknown) {
+          out.push({ solicitud, success: false, error: e instanceof Error ? e.message : 'error de Drive' });
+        }
+      }
+      return out;
+    });
+
+    const creadas = resultados.filter((r) => r.creada).length;
+    const fallidas = resultados.filter((r) => !r.success);
+    if (creadas || fallidas.length) {
+      notificationHub.broadcast({
+        type: 'generacion',
+        level: fallidas.length ? 'warning' : 'success',
+        title: 'Asignación Libertador',
+        message: `${creadas} carpeta(s) nueva(s) en DOCUMENTOS CLIENTES`
+          + (resultados.length - creadas - fallidas.length ? `, ${resultados.length - creadas - fallidas.length} ya existía(n)` : '')
+          + (fallidas.length ? `. Fallaron: ${fallidas.map((r) => `${r.solicitud} (${r.error})`).join(', ')}` : '') + '.',
+        meta: { solicitudes: resultados.map((r) => r.solicitud) },
+      });
+    }
+
+    res.status(fallidas.length ? 502 : 200).json({ success: !fallidas.length, resultados, ignorados });
   }
 
   /**
