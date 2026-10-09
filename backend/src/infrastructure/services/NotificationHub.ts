@@ -26,7 +26,9 @@ class NotificationHub {
   addClient(res: Response): void {
     this.clients.add(res);
     // Reenviar las recientes al conectar (para no perder lo que pasó hace un momento).
-    for (const n of this.recent) this.write(res, n);
+    // Van marcadas `replay` para que el navegador no las repita como notificación
+    // de Windows cada vez que alguien abre la página.
+    for (const n of this.recent) this.write(res, { ...n, replay: true });
   }
 
   removeClient(res: Response): void {
@@ -54,7 +56,7 @@ class NotificationHub {
     return n;
   }
 
-  private write(res: Response, n: Notification): void {
+  private write(res: Response, n: Notification & { replay?: boolean }): void {
     try {
       res.write(`data: ${JSON.stringify(n)}\n\n`);
     } catch {

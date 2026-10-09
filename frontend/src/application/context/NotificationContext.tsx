@@ -12,6 +12,31 @@ export interface AppNotification {
   at: string;
   meta?: Record<string, unknown>;
   read?: boolean;
+  replay?: boolean; // reenviada por el backend al conectar (no es nueva)
+}
+
+/**
+ * Estado de las notificaciones de Windows (API Notification del navegador).
+ * 'inseguro' → la página se abrió por http://IP: el navegador solo las permite
+ * con HTTPS o en localhost.
+ */
+export type EstadoEscritorio = NotificationPermission | 'no-soportado' | 'inseguro';
+
+function leerEstadoEscritorio(): EstadoEscritorio {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'no-soportado';
+  if (!window.isSecureContext) return 'inseguro';
+  return Notification.permission;
+}
+
+/** Notificación del sistema (centro de notificaciones de Windows). */
+function mostrarEnEscritorio(title: string, body: string, tag?: string) {
+  try {
+    // `tag` = id → si hay varias pestañas abiertas, Windows muestra UNA sola.
+    const nota = new Notification(title, { body, tag, lang: 'es' });
+    nota.onclick = () => { window.focus(); nota.close(); };
+  } catch {
+    /* algunos navegadores (Chrome Android) solo notifican vía service worker */
+  }
 }
 
 interface NotificationContextValue {
@@ -20,6 +45,8 @@ interface NotificationContextValue {
   connected: boolean;
   markAllRead: () => void;
   clearAll: () => void;
+  escritorio: EstadoEscritorio;
+  activarEscritorio: () => Promise<void>;
 }
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
@@ -28,6 +55,8 @@ const NotificationContext = createContext<NotificationContextValue | null>(null)
  * Escucha el canal SSE del backend (/api/notifications/stream) y reparte a la
  * página las notificaciones de tareas en segundo plano (generación de demandas,
  * extracción de ZIPs). Muestra toasts y mantiene la lista para la campana.
+ * Si la pestaña no está en primer plano (minimizada, otra pestaña u otro
+ * programa) y el usuario dio permiso, además lanza una notificación de Windows.
  * Se conecta a TODOS los logueados (cada pestaña abre su propia conexión).
  */
 export function NotificationProvider({ children }: { children: ReactNode }) {
@@ -35,11 +64,29 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [toasts, setToasts] = useState<AppNotification[]>([]);
   const [connected, setConnected] = useState(false);
+  const [escritorio, setEscritorio] = useState<EstadoEscritorio>(leerEstadoEscritorio);
   const esRef = useRef<EventSource | null>(null);
   const seen = useRef<Set<string>>(new Set());
 
   const dismissToast = useCallback((id: string) => {
     setToasts((t) => t.filter((x) => x.id !== id));
+  }, []);
+
+  // El permiso se puede cambiar desde el candado del navegador → releerlo al volver.
+  useEffect(() => {
+    const releer = () => setEscritorio(leerEstadoEscritorio());
+    window.addEventListener('focus', releer);
+    return () => window.removeEventListener('focus', releer);
+  }, []);
+
+  // Debe llamarse desde un clic: los navegadores bloquean la petición si no.
+  const activarEscritorio = useCallback(async () => {
+    if (leerEstadoEscritorio() !== 'default') return;
+    const permiso = await Notification.requestPermission();
+    setEscritorio(permiso);
+    if (permiso === 'granted') {
+      mostrarEnEscritorio('Notificaciones activadas', 'Te avisaremos aquí aunque no estés en la página.');
+    }
   }, []);
 
   // Si pasa este tiempo sin recibir NADA (ni latido), la conexión se da por muerta
@@ -59,6 +106,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     let es: EventSource | null = null;
     let ultimaSenal = Date.now();
     let reintentos = 0;
+    let huboConexion = false;          // ya se abrió el canal al menos una vez en esta pestaña
 
     const conectar = () => {
       if (cerrado) return;
@@ -67,8 +115,15 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       es = new EventSource(`/api/notifications/stream?token=${encodeURIComponent(token)}`);
       esRef.current = es;
       ultimaSenal = Date.now();
+      // En la PRIMERA conexión el backlog (`replay`) es historia vieja: no se manda
+      // a Windows. En una reconexión sí, porque lo no visto pasó mientras se caía.
+      let esPrimera = false;
 
-      es.onopen = () => { reintentos = 0; ultimaSenal = Date.now(); setConnected(true); };
+      es.onopen = () => {
+        esPrimera = !huboConexion;
+        huboConexion = true;
+        reintentos = 0; ultimaSenal = Date.now(); setConnected(true);
+      };
 
       es.onerror = () => {
         setConnected(false);
@@ -89,6 +144,11 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
           setItems((prev) => [{ ...n, read: false }, ...prev].slice(0, 100));
           setToasts((prev) => [n, ...prev].slice(0, 4));
           window.setTimeout(() => dismissToast(n.id), 6000);
+
+          const fueraDeLaPagina = document.visibilityState !== 'visible' || !document.hasFocus();
+          if (fueraDeLaPagina && !(n.replay && esPrimera) && leerEstadoEscritorio() === 'granted') {
+            mostrarEnEscritorio(n.title, n.message, n.id);
+          }
         } catch {
           /* mensaje no-JSON: ignorar */
         }
@@ -130,7 +190,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const clearAll = () => setItems([]);
 
   return (
-    <NotificationContext.Provider value={{ items, unread, connected, markAllRead, clearAll }}>
+    <NotificationContext.Provider value={{ items, unread, connected, markAllRead, clearAll, escritorio, activarEscritorio }}>
       {children}
       <ToastStack toasts={toasts} onClose={dismissToast} />
     </NotificationContext.Provider>

@@ -13,7 +13,7 @@ function tiempoRelativo(iso: string): string {
 }
 
 export function NotificationBell() {
-  const { items, unread, connected, markAllRead, clearAll } = useNotifications();
+  const { items, unread, connected, markAllRead, clearAll, escritorio, activarEscritorio } = useNotifications();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -61,6 +61,24 @@ export function NotificationBell() {
               <button onClick={clearAll} className="text-xs text-gray-400 hover:text-gray-600">Limpiar</button>
             )}
           </div>
+          {escritorio === 'default' && (
+            <button
+              onClick={() => void activarEscritorio()}
+              className="w-full px-4 py-2 text-left text-xs font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border-b border-gray-100"
+            >
+              Activar notificaciones de Windows
+            </button>
+          )}
+          {escritorio === 'denied' && (
+            <p className="px-4 py-2 text-[11px] text-gray-500 bg-gray-50 border-b border-gray-100">
+              Las notificaciones de Windows están bloqueadas. Actívalas desde el candado de la barra de direcciones.
+            </p>
+          )}
+          {escritorio === 'inseguro' && (
+            <p className="px-4 py-2 text-[11px] text-gray-500 bg-gray-50 border-b border-gray-100">
+              Las notificaciones de Windows solo funcionan si la página se abre con HTTPS.
+            </p>
+          )}
           <div className="max-h-96 overflow-y-auto">
             {items.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-gray-400">Sin notificaciones</p>
