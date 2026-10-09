@@ -98,19 +98,29 @@ export class LibertadorController {
       return out;
     });
 
-    const creadas = resultados.filter((r) => r.creada).length;
+    // Se avisa siempre: cada llamada es una asignación que llegó por correo, y la
+    // oficina tiene que enterarse aunque las carpetas ya estuvieran listas.
+    const ok = resultados.filter((r) => r.success);
     const fallidas = resultados.filter((r) => !r.success);
-    if (creadas || fallidas.length) {
-      notificationHub.broadcast({
-        type: 'generacion',
-        level: fallidas.length ? 'warning' : 'success',
-        title: 'Asignación Libertador',
-        message: `${creadas} carpeta(s) nueva(s) en DOCUMENTOS CLIENTES`
-          + (resultados.length - creadas - fallidas.length ? `, ${resultados.length - creadas - fallidas.length} ya existía(n)` : '')
-          + (fallidas.length ? `. Fallaron: ${fallidas.map((r) => `${r.solicitud} (${r.error})`).join(', ')}` : '') + '.',
-        meta: { solicitudes: resultados.map((r) => r.solicitud) },
-      });
-    }
+    const nuevas = ok.filter((r) => r.creada).length;
+    const completadas = ok.filter((r) => !r.creada && r.subcarpetasCreadas?.length).length;
+    const listas = ok.length - nuevas - completadas;
+    const sols = resultados.map((r) => r.solicitud);
+    const partes = [
+      nuevas ? `${nuevas} carpeta(s) nueva(s)` : '',
+      completadas ? `${completadas} con subcarpetas agregadas` : '',
+      listas ? `${listas} ya estaba(n) lista(s)` : '',
+    ].filter(Boolean);
+    notificationHub.broadcast({
+      type: 'generacion',
+      level: fallidas.length || ignorados.length ? 'warning' : 'success',
+      title: 'Asignación Libertador',
+      message: `Llegó ${sols.length <= 5 ? `la solicitud ${sols.join(', ')}` : `${sols.length} solicitudes`}`
+        + (partes.length ? `: ${partes.join(', ')}` : '')
+        + (ignorados.length ? `. Tipo de proceso sin reconocer: ${ignorados.map((x) => `${x.solicitud} (${x.proceso})`).join(', ')}` : '')
+        + (fallidas.length ? `. Fallaron: ${fallidas.map((r) => `${r.solicitud} (${r.error})`).join(', ')}` : '') + '.',
+      meta: { solicitudes: sols },
+    });
 
     res.status(fallidas.length ? 502 : 200).json({ success: !fallidas.length, resultados, ignorados });
   }
