@@ -47,6 +47,7 @@ const { generarDemandasWord }          = require('./demandas');
 const { generarAntecedentes }          = require('./antecedentes');
 const { generarAnexos }                = require('./anexos');
 const { generarPoderes }               = require('./poderes');
+const { obligacionesSacEnDisco, agregarObligacionesSac } = require('./obligacionesSac');
 const { determinarLocalidad }          = require('../../comun/localidadBarranquilla');
 const { consultarPlacaRunt, cerrarWorker } = require('../../runt');
 const { cerrarOcr }                        = require('../../ocr');
@@ -237,7 +238,9 @@ async function procesarSingular(excelBuffer, options = {}) {
         }
 
         // ── Financieros (fallback desde SAC PDF si Excel no los tiene) ──
-        const f = cliente.financieros || { capital: 0, interes: 0, total: 0, obligacion: '' };
+        // Obligaciones: las del Excel más las del SAC que el Excel no trae
+        // (solo números: no suman a la cuantía).
+        const f = agregarObligacionesSac(cliente.financieros, obligacionesSacEnDisco(sacDocsDir, cedula));
         if (!f.capital && sacPdf.capital) f.capital = sacPdf.capital;
         if (!f.interes && sacPdf.interes) f.interes = sacPdf.interes;
         if (!f.total   && sacPdf.total)   f.total   = sacPdf.total;
@@ -477,6 +480,14 @@ async function procesarSingular(excelBuffer, options = {}) {
         notas.push({ campo: 'cuantia',         nivel: 'info', mensaje: `Cuantía: ${cuantiaLbl} — total ${cop(totalCuant)} (umbrales con SMMV ${cop(smmv || 1750905)})` });
         notas.push({ campo: 'juzgado',         nivel: 'info', mensaje: `Juzgado: ${main['TIPO DE JUZGADO']} de ${ciudadJuzgado}` });
         notas.push({ campo: 'financieros',     nivel: 'info', mensaje: `Capital ${cop(f.capital)} · interés ${cop(f.interes)}` });
+        if (f.obligacionesSac.length) {
+          notas.push({
+            campo: 'obligaciones',
+            nivel: 'warning',
+            mensaje: `Obligaciones del SAC que no trae el Excel: ${f.obligacionesSac.join(', ')} — van en la demanda, `
+              + 'pero sus montos no están en el Excel: el capital, el interés y la cuantía son solo los del Excel',
+          });
+        }
         notas.push({ campo: 'fechaAsignacion', nivel: 'info', mensaje: `Fecha de asignación: ${fechaAsig}` });
         const fechaSuscrFinal = manual.fechaSuscripcion || decevalPdf.fechaSuscripcion;
         notas.push({

@@ -328,6 +328,34 @@ módulo en desarrollo— no borra la búsqueda, y el enlace se puede compartir.
   El `relPath` debe caer dentro de una carpeta DE ESA cédula; si no, 403 (probado con
   rutas de otra carpeta y con `../`).
 
+## 6.g Excel de asignación de Finandina — formatos y de dónde sale cada dato
+
+El banco cambia el Excel sin avisar. El motor (`sac_scripts/src/services/comun/excelEntrada.js`)
+**no lee las hojas por posición**:
+
+- **Hoja maestra** = la primera (cliente, ciudad, vehículos, fechas, proceso).
+- **Hoja financiera** = la que, por sus encabezados, trae cédula + nº de obligación
+  (+ capital). Se reconocen sin importar tildes ni signos (`claveEncabezado`).
+
+| Asignación | Hojas | Financiera | Intereses |
+|---|---|---|---|
+| hasta sept-2026 | `BASE`/`Hoja1` + `OBLIGACIONES`/`Hoja2` | la 2ª | `TOTAL INTERES` (o `MORA`, o `INTERES`) |
+| 10 jul 2026 | `BASE`, `Hoja1` (solo NIT/empresa), `LIQUIDACIONES` | la 3ª | igual |
+| **desde 13 oct 2026** | `REPARTO`, `CONSOLIDADO DEUDOR` (totales sin nº de obligación), `OBLIGACIONES LIQUIDADAS` | la 3ª | **corriente + moratorio** (regla del despacho) |
+
+**Tipo de proceso:** columna `POSIBLE PROCESO`; si no está, la primera con "PROCESO" que
+no sea de estado/conteo (`EST PROCESO ACT`, `Estados_Procesos`, `No_Procesos_…`,
+`Consolidado_…`). Desde octubre `EST PROCESO ACT` va antes y antes se colaba.
+
+**Obligaciones del poder y la demanda singular** = las del Excel **+ las del SAC que el
+Excel no trae**. El SAC baja un PDF por obligación VIGENTE (`SAC_{cedula}_OBL{nº}.pdf`) y
+el número se toma del nombre (`services/finandina/singular/obligacionesSac.js`). Para el
+poder, el backend lista esos nombres en Drive (`obligacionesSacPorCedula`); la demanda los
+lee de la carpeta hidratada. Solo se suman los **números**: capital, intereses y cuantía
+siguen siendo los del Excel (la demanda lo avisa en sus notas).
+
+> El poder de pago directo no usa la hoja financiera (solo placa, marca, modelo, ciudad).
+
 ## 7. Pendientes (TODO)
 
 - [ ] **Generar demanda e2e** con el motor (validar prefijo GARANTIAS, firma y editor en Drive).

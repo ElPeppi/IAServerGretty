@@ -25,8 +25,18 @@ const path = require('path');
 const config = require('../config');
 const { generarDesdeBuffers } = require('../services/libertador/poderes');
 const { procesarSolicitudes } = require('../../libertador_puppeteer');
+const { descargarDocumentos } = require('../../libertador_documentos');
 
 const router = express.Router();
+
+// Lo que entra al Huella va de a uno: estados de cuenta y documentos usan la misma
+// cuenta, y dos sesiones a la vez de un mismo agente se pueden tumbar entre sí.
+let colaPortal = Promise.resolve();
+function enColaPortal(fn) {
+  const p = colaPortal.then(fn, fn);
+  colaPortal = p.catch(() => undefined);
+  return p;
+}
 
 router.post('/generar-poder-libertador', async (req, res) => {
   const solicitud = String(req.body.solicitud || '').trim() || '(sin solicitud)';
@@ -106,7 +116,7 @@ router.post('/estados-cuenta-libertador', async (req, res) => {
   }
 
   try {
-    const resultados = await procesarSolicitudes(lista, { plantillaPath, elaboro: req.body.elaboro });
+    const resultados = await enColaPortal(() => procesarSolicitudes(lista, { plantillaPath, elaboro: req.body.elaboro }));
     const ok = resultados.filter((r) => r.success).length;
     console.error(`[LIB-ESTCTA] ✓ ${ok}/${lista.length}`);
     return res.json({ success: true, total: lista.length, ok, resultados });
@@ -116,6 +126,45 @@ router.post('/estados-cuenta-libertador', async (req, res) => {
     return res.status(500).json({ success: false, error: e.message, total: lista.length, ok: 0, resultados: [] });
   } finally {
     if (temporal) { try { fs.unlinkSync(temporal); } catch { /* da igual */ } }
+  }
+});
+
+/**
+ * POST /documentos-libertador
+ *   Baja los anexos de cada solicitud (contrato, reconocimientos…) del portal de
+ *   documentos de Bolívar. El NIT de la inmobiliaria, que el portal pide, se lee
+ *   antes en el Huella (ver libertador_documentos.js).
+ *
+ *   Body: { solicitudes: string[] }
+ *   Respuesta: { success, total, ok, resultados: [{ solicitud, success, nit?, inmobiliaria?,
+ *                archivos?: [{ nombre, base64 }], motivo?, error? }] }
+ *   Una solicitud sin anexos viene con success:true, archivos vacío y su `motivo`.
+ */
+router.post('/documentos-libertador', async (req, res) => {
+  const solicitudes = Array.isArray(req.body.solicitudes) ? req.body.solicitudes : [];
+  const lista = [...new Set(solicitudes.map((x) => String(x || '').trim()).filter(Boolean))];
+  if (!lista.length) {
+    return res.status(400).json({ success: false, error: 'No se recibió ninguna solicitud (campo: solicitudes).' });
+  }
+
+  console.error(`[LIB-DOCS] ${lista.length} solicitud(es): ${lista.join(', ')}`);
+  try {
+    const resultados = await enColaPortal(() => descargarDocumentos(lista));
+    const ok = resultados.filter((r) => r.success).length;
+    console.error(`[LIB-DOCS] ✓ ${ok}/${lista.length}`);
+    return res.json({
+      success: true,
+      total: lista.length,
+      ok,
+      resultados: resultados.map((r) => ({
+        ...r,
+        archivos: r.archivos && r.archivos.map((a) => ({ nombre: a.nombre, base64: a.buffer.toString('base64') })),
+      })),
+    });
+  } catch (e) {
+    // Fallo global (p. ej. faltan credenciales): no se intentó ningún caso.
+    console.error(`[LIB-DOCS] ERROR global: ${e.message}`);
+    return res.status(500).json({ success: false, error: e.message, total: lista.length, ok: 0, resultados: [] });
   }
 });
 

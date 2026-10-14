@@ -10,6 +10,7 @@
  *   calculan con el MISMO pipeline de la demanda (parsearExcelEntrada + construirFilas),
  *   no leyendo las columnas crudas del Excel. Así el poder queda idéntico al que la
  *   demanda genera por cliente (nombre mapeado, todas las obligaciones).
+ *   OBLIGACIONES = las del Excel + las del SAC que el Excel no trae (obligacionesSac.js).
  *
  *   TIPO/CIUDAD DE JUZGADO: se consulta la RAMA JUDICIAL (Puppeteer) por ciudad para
  *   saber si hay PEQUEÑAS CAUSAS o PROMISCUO (cuantía mínima/menor). Regla: pequeñas
@@ -40,6 +41,7 @@ const { construirFilas }          = require('../services/finandina/singular/plan
 const { calcularCuantia, tipoCuantia, tipoJuzgadoPagoDirecto, normalizarTipoJuzgado } = require('../domain/cuantia');
 const { parseAnyDate, todayString }    = require('../utils/fechas');
 const { leerDatosDeDeceval } = require('../services/finandina/singular/carpetaCliente');
+const { obligacionesSacEnDisco, agregarObligacionesSac } = require('../services/finandina/singular/obligacionesSac');
 const { loadRamaCache, buscarCorreoJuzgado, necesitaConsultaRama } = require('../services/comun/ramaJudicial');
 const { determinarLocalidad } = require('../services/comun/localidadBarranquilla');
 const { resolverCarpetaLectura, mkdirpSync } = require('../utils/carpetas');
@@ -67,9 +69,13 @@ function docsDelCliente(outBase, cedula) {
 }
 
 // ─── POST /generar-poderes ────────────────────────────────────────────────────
-// Body: { excelBase64, tipo?, docsEnServidor?, fechaAsignacion?, nombre?, soloCedulas?, smmv?, outputBaseDir? }
-// excelBase64 = Excel ORIGINAL de la asignación (Hoja1 + Hoja2). Se requiere Hoja2:
-// de ahí salen capital/interés (→ cuantía → tipo de juzgado) y TODAS las obligaciones.
+// Body: { excelBase64, tipo?, docsEnServidor?, fechaAsignacion?, nombre?, soloCedulas?, smmv?, outputBaseDir?, obligacionesSac? }
+// excelBase64 = Excel ORIGINAL de la asignación. Se requiere la hoja financiera
+// (ver excelEntrada.js): de ahí salen capital/interés (→ cuantía → tipo de juzgado)
+// y las obligaciones.
+// obligacionesSac = { [cedula]: ['nº', …] }: obligaciones VIGENTES que el SAC tiene
+// en Drive (las lista el backend). Las que el Excel no trae se suman al poder. Para
+// una cédula que no venga ahí, se miran los SAC de su carpeta en disco.
 //
 // tipo: 'singular' (por defecto) → PODER EJECUTIVO SINGULAR.
 //       'pago_directo'           → PODER DE TRÁMITE DE PAGO DIRECTO (garantía
@@ -99,6 +105,8 @@ router.post('/generar-poderes', async (req, res) => {
     ? req.body.correcciones : {};
   // Tipo de poder. Cualquier valor desconocido cae a 'singular' (comportamiento previo).
   const esPagoDirecto  = String(req.body.tipo || '').toLowerCase() === 'pago_directo';
+  const obligacionesSac = (req.body.obligacionesSac && typeof req.body.obligacionesSac === 'object')
+    ? req.body.obligacionesSac : {};
 
   console.log(`[${new Date().toISOString()}] /generar-poderes: Excel ${excelBuffer.length} bytes, tipo=${esPagoDirecto ? 'pago_directo' : 'singular'}, docsEnServidor=${docsEnServidor}`);
 
@@ -241,9 +249,19 @@ router.post('/generar-poderes', async (req, res) => {
         continue;
       }
 
+      // Obligaciones: las del Excel más las del SAC que el Excel no trae. Solo
+      // números; la cuantía sigue siendo la del Excel.
+      const delSac = Array.isArray(obligacionesSac[cedula])
+        ? obligacionesSac[cedula]
+        : obligacionesSacEnDisco(outBase, cedula);
+      const fConSac = agregarObligacionesSac(cliente.financieros, delSac);
+      if (fConSac.obligacionesSac.length) {
+        console.log(`[/generar-poderes] ${cedula}: obligaciones del SAC que no trae el Excel → ${fConSac.obligacionesSac.join(', ')}`);
+      }
+
       // Fila canónica (misma que la demanda): TIPO/CIUDAD DE JUZGADO, NOMBRE, CUANTIA,
       // OBLIGACION (nº pagaré) y OBLIGACIONES (todas).
-      const clienteJuzgado = { ...cliente, ciudad: ciudadJuzgado };
+      const clienteJuzgado = { ...cliente, ciudad: ciudadJuzgado, financieros: fConSac };
       const { main } = construirFilas(
         clienteJuzgado, [{}], {}, '', fechaAsigTexto, cuantiaLbl, numeroPagare, courtInfo, ''
       );
@@ -255,6 +273,7 @@ router.post('/generar-poderes', async (req, res) => {
         tipoJuzgado:   String(main['TIPO DE JUZGADO']   || '').trim(),
         numeroPagare,
         pagareDesdeDocs,
+        obligacionesSac: fConSac.obligacionesSac,
       });
     }
   } finally {

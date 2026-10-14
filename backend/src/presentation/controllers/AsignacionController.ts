@@ -557,19 +557,25 @@ export class AsignacionController {
       await sincronizarInsumos();
       // Subconjunto de personas (vacío/omitido = todas las de proceso singular).
       const soloCedulas = parseCedulas(req.body.cedulas);
+      const filas = (asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [];
+      const banco = detectarBanco(filas);
+      const objetivo = soloCedulas.length
+        ? soloCedulas
+        : personasDeFilas(filas, mapeoDe(asignacion)).filter((p) => p.tipo === tipoProceso).map((p) => p.cedula);
 
       // docsEnServidor: el motor lee el Nº de pagaré del DECEVAL/pagaré en la carpeta
       // del cliente EN SU DISCO. Con Drive como fuente, hay que BAJAR (hidratar) los
       // docs de cada cédula objetivo de Drive → local antes de correr el motor; si no,
       // el motor no los encuentra y excluye a todos ("sin documentos en el servidor").
       if (docsEnServidor && storage.enabled) {
-        const filas = (asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [];
-        const banco = detectarBanco(filas);
-        const objetivo = soloCedulas.length
-          ? soloCedulas
-          : personasDeFilas(filas, mapeoDe(asignacion)).filter((p) => p.tipo === tipoProceso).map((p) => p.cedula);
         for (const ced of objetivo) await hidratarCedula(ced, banco);
       }
+
+      // Obligaciones que el SAC tiene en Drive: el motor suma al poder las que el
+      // Excel no trae. Solo el poder ejecutivo singular cita obligaciones.
+      const obligacionesSac = tipo === 'singular' && storage.enabled
+        ? await this.obligacionesSacPorCedula(objetivo, banco)
+        : undefined;
 
       const result = await engineService.generarPoderes({
         excel,
@@ -580,12 +586,8 @@ export class AsignacionController {
         smmv: getSettings().smmv,
         soloCedulas: soloCedulas.length ? soloCedulas : undefined,
         // Nº de pagaré capturado a mano: manda sobre el que lea el motor.
-        correcciones: await correccionesDeCedulas(
-          soloCedulas.length
-            ? soloCedulas
-            : personasDeFilas((asignacion.filas as unknown as Array<Record<string, unknown>>) ?? [], mapeoDe(asignacion))
-                .filter((p) => p.tipo === tipoProceso).map((p) => p.cedula)
-        ),
+        correcciones: await correccionesDeCedulas(objetivo),
+        obligacionesSac,
       });
 
       if (!result.success) {
@@ -1272,6 +1274,33 @@ export class AsignacionController {
     } catch {
       return { sac: false, pagare: false };
     }
+  }
+
+  /**
+   * Nº de las obligaciones VIGENTES que el SAC tiene de cada cédula, sacados del
+   * NOMBRE de sus PDF en Drive (SAC_{cedula}_OBL{nº}.pdf, en cualquiera de las
+   * carpetas del cliente): no baja nada. Mismo patrón que obligacionesSac.js del
+   * motor. Una cédula sin SAC descargado queda con lista vacía; si falla la
+   * consulta, se omite y el motor mira su disco.
+   */
+  private async obligacionesSacPorCedula(cedulas: string[], banco: string): Promise<Record<string, string[]>> {
+    const out: Record<string, string[]> = {};
+    const sinCeros = (s: string) => s.replace(/^0+/, '');
+    await enParalelo(cedulas, async (cedula) => {
+      try {
+        const nums = new Set<string>();
+        for (const c of await carpetasDeCedula(cedula, banco)) {
+          for (const f of await storage.list(c.relPath)) {
+            const m = f.match(/^SAC_(\d+)_OBL_?(\d{4,})\.pdf$/i);
+            if (m && sinCeros(m[1]!) === sinCeros(cedula)) nums.add(m[2]!);
+          }
+        }
+        out[cedula] = [...nums];
+      } catch (e) {
+        console.error(`[poderes] ${cedula}: no se pudieron listar los SAC en Drive:`, e instanceof Error ? e.message : e);
+      }
+    });
+    return out;
   }
 
   // Persiste (crea o sobreescribe) el Document de una demanda. Una por (persona,

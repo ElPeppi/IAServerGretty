@@ -82,6 +82,12 @@ SAC_PASS=clave
 # Notificaciones al backend (mismo secreto que ENGINE_NOTIFY_SECRET)
 SAC_NOTIFY_URL=http://localhost:3001/api/notifications/engine
 SAC_NOTIFY_SECRET=un-secreto-largo
+
+# Libertador: Huella (AgentWeb) y portal de documentos de Bolívar (anexos)
+LIBERTADOR_SAC_USER=usuario
+LIBERTADOR_SAC_PASS=clave
+BOLIVAR_DOCS_USER=usuario
+BOLIVAR_DOCS_PASS=clave
 ```
 
 > `DOCS_DIR` (backend) y `SAC_OUT_DIR` (motor) **deben ser idénticos**.

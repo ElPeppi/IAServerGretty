@@ -293,13 +293,37 @@ export async function bajarPlantillaEstadoCuenta(): Promise<Buffer | null> {
   return f ? bajarArchivo(f) : null;
 }
 
-/** Sube (o reemplaza) un archivo de hoja de cálculo en la carpeta de un caso. */
-export async function subirArchivoCaso(folderId: string, nombre: string, buffer: Buffer): Promise<string> {
+const MIME_POR_EXT: Record<string, string> = {
+  pdf: 'application/pdf',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+  doc: 'application/msword',
+  docx: DOCX_MIME,
+  xls: 'application/vnd.ms-excel',
+  xlsx: XLSX_MIME,
+};
+
+/** Tipo MIME por la extensión del nombre; lo desconocido va como binario. */
+export function mimeDeArchivo(nombre: string): string {
+  const ext = (nombre.match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase();
+  return MIME_POR_EXT[ext] || 'application/octet-stream';
+}
+
+/** Sube (o reemplaza, si ya hay uno con ese nombre) un archivo en la carpeta de un caso. */
+export async function subirArchivoCaso(
+  folderId: string,
+  nombre: string,
+  buffer: Buffer,
+  mimeType = XLSX_MIME,
+): Promise<string> {
   const { Readable } = await import('stream');
-  const media = { mimeType: XLSX_MIME, body: Readable.from(buffer) };
+  const media = { mimeType, body: Readable.from(buffer) };
 
   const existentes = await listar(
-    `'${folderId}' in parents and name='${nombre.replace(/'/g, "\'")}' and trashed=false`,
+    `'${folderId}' in parents and name='${nombre.replace(/['\\]/g, '\\$&')}' and trashed=false`,
     'files(id,name)',
   );
   if (existentes.length) {
@@ -307,7 +331,7 @@ export async function subirArchivoCaso(folderId: string, nombre: string, buffer:
     return r.data.id as string;
   }
   const r = await drive().files.create({
-    requestBody: { name: nombre, parents: [folderId], mimeType: XLSX_MIME },
+    requestBody: { name: nombre, parents: [folderId], mimeType },
     media,
     ...ALL_DRIVES,
     fields: 'id',

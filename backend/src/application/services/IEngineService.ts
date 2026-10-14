@@ -118,6 +118,9 @@ export interface GenerarPoderesInput {
   smmv?: number;                          // salario mínimo (umbrales de cuantía → tipo de juzgado)
   soloCedulas?: string[];                 // subconjunto a generar; vacío/omitido = todas (singular)
   correcciones?: CorreccionesPorCedula;   // nº de pagaré capturado a mano (manda sobre docs/Excel)
+  // Nº de las obligaciones VIGENTES que el SAC tiene en Drive, por cédula (de los
+  // nombres SAC_{cedula}_OBL{nº}.pdf). El motor suma al poder las que el Excel no trae.
+  obligacionesSac?: Record<string, string[]>;
 }
 
 export interface PoderClienteOut {
@@ -128,6 +131,7 @@ export interface PoderClienteOut {
   numeroPagare?: string;
   pagare?: string;
   pagareDesdeDocs?: boolean;
+  obligacionesSac?: string[];   // obligaciones del SAC que el Excel no traía (ya van en el poder)
   // Solo en 'pago_directo': el vehículo dado en garantía que se va a aprehender.
   placa?: string;
   marca?: string;
@@ -289,6 +293,28 @@ export interface EstadosCuentaLibertadorOutput {
   error?: string;
 }
 
+// ─── Documentos anexos de Libertador (portal de documentos de Bolívar) ─────────
+// El motor lee el NIT de la inmobiliaria en el Huella y con él baja los anexos
+// (contrato, reconocimientos…). Una solicitud sin anexos viene con success:true,
+// archivos vacío y `motivo`.
+export interface DocumentosLibertadorItem {
+  solicitud: string;
+  success: boolean;
+  nit?: string;
+  inmobiliaria?: string;
+  archivos?: Array<{ nombre: string; base64: string }>;
+  motivo?: string;
+  error?: string;
+}
+
+export interface DocumentosLibertadorOutput {
+  success: boolean;
+  total: number;
+  ok: number;
+  resultados: DocumentosLibertadorItem[];
+  error?: string;
+}
+
 export interface IEngineService {
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
   descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
@@ -296,6 +322,7 @@ export interface IEngineService {
   generarPoderLibertador(input: GenerarPoderLibertadorInput): Promise<GenerarPoderLibertadorOutput>;
   mapearColumnas(input: MapearColumnasInput): Promise<MapearColumnasOutput>;
   estadosCuentaLibertador(input: EstadosCuentaLibertadorInput): Promise<EstadosCuentaLibertadorOutput>;
+  documentosLibertador(solicitudes: string[]): Promise<DocumentosLibertadorOutput>;
   listarPlantillas(): Promise<PlantillaInfo[]>;
   restaurarPlantilla(clave: string, archivo: string): Promise<PlantillaResult>;
   generateGarantias(input: GenerateGarantiasInput): Promise<GenerateGarantiasOutput>;

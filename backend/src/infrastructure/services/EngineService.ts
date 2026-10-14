@@ -25,6 +25,7 @@ import {
   GenerateGarantiasOutput,
   EstadosCuentaLibertadorInput,
   EstadosCuentaLibertadorOutput,
+  DocumentosLibertadorOutput,
 } from '../../application/services/IEngineService';
 
 const XLSX_MIME =
@@ -150,6 +151,7 @@ export class EngineService implements IEngineService {
         soloCedulas: input.soloCedulas?.length ? input.soloCedulas : undefined,
         correcciones: input.correcciones && Object.keys(input.correcciones).length
           ? input.correcciones : undefined,
+        obligacionesSac: input.obligacionesSac,
       },
       {
         timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
@@ -248,6 +250,24 @@ export class EngineService implements IEngineService {
           elaboro: input.elaboro,
         },
         {
+          timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+        }
+      );
+      return data;
+    } catch (e: unknown) {
+      throw new Error(mensajeDeFallo(e, this.baseUrl));
+    }
+  }
+
+  async documentosLibertador(solicitudes: string[]): Promise<DocumentosLibertadorOutput> {
+    try {
+      const { data } = await axios.post<DocumentosLibertadorOutput>(
+        `${this.baseUrl}/documentos-libertador`,
+        { solicitudes },
+        {
+          // Dos portales con login cada uno, y los PDF viajan en base64.
           timeout: Number(process.env.ENGINE_TIMEOUT_MS) || 3600000,
           maxContentLength: Infinity,
           maxBodyLength: Infinity,

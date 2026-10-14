@@ -3,7 +3,7 @@ import { leerCasos, cuadroDisponible, motivoNoDisponible } from '../../infrastru
 import { EngineService } from '../../infrastructure/services/EngineService';
 import {
   libertadorDriveDisponible, bajarPlantillaEstadoCuenta, resolverCarpetaCaso, subirArchivoCaso,
-  asegurarCarpetaCaso, normalizarProceso, ProcesoLibertador, CarpetaCasoAsegurada,
+  asegurarCarpetaCaso, normalizarProceso, ProcesoLibertador, CarpetaCasoAsegurada, mimeDeArchivo,
 } from '../../infrastructure/storage/libertadorDrive';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { AuthRequest } from '../middlewares/authMiddleware';
@@ -123,6 +123,68 @@ export class LibertadorController {
     });
 
     res.status(fallidas.length ? 502 : 200).json({ success: !fallidas.length, resultados, ignorados });
+
+    // Con la carpeta lista se bajan sus anexos (contrato, reconocimientos…) del
+    // portal de Bolívar. Son minutos (dos portales, cada uno con su login): va
+    // después de responder, para que n8n no se quede esperando, y avisa al terminar.
+    const carpetasListas = new Map(ok.map((r) => [r.solicitud, r.folderId as string]));
+    if (carpetasListas.size) void this.documentosBg(carpetasListas);
+  }
+
+  /** Baja los anexos de cada solicitud y los deja en la raíz de su carpeta. No lanza. */
+  private async documentosBg(carpetas: Map<string, string>): Promise<void> {
+    const solicitudes = [...carpetas.keys()];
+    notificationHub.broadcast({
+      type: 'generacion', level: 'info', title: 'Documentos Libertador',
+      message: `Bajando los anexos de ${solicitudes.length <= 5 ? solicitudes.join(', ') : `${solicitudes.length} solicitudes`} del portal de Bolívar…`,
+      meta: { solicitudes },
+    });
+
+    try {
+      const r = await engineService.documentosLibertador(solicitudes);
+      const resumen: string[] = [];
+      for (const item of r.resultados ?? []) {
+        const folderId = carpetas.get(item.solicitud);
+        if (!item.success || !folderId) {
+          notificationHub.broadcast({
+            type: 'generacion', level: 'warning', title: 'Documentos sin bajar',
+            message: `${item.solicitud}: ${item.error || 'el motor no pudo bajarlos'}.`,
+            meta: { solicitud: item.solicitud },
+          });
+          continue;
+        }
+
+        // Van a la raíz de la carpeta: son comunes a todos los procesos de la solicitud.
+        let subidos = 0;
+        for (const a of item.archivos ?? []) {
+          try {
+            await subirArchivoCaso(folderId, a.nombre, Buffer.from(a.base64, 'base64'), mimeDeArchivo(a.nombre));
+            subidos++;
+          } catch (e: unknown) {
+            notificationHub.broadcast({
+              type: 'generacion', level: 'warning', title: 'No se pudo guardar',
+              message: `${item.solicitud} / ${a.nombre}: ${e instanceof Error ? e.message : 'error al subir a Drive'}.`,
+              meta: { solicitud: item.solicitud },
+            });
+          }
+        }
+        resumen.push(`${item.solicitud}: ${item.archivos?.length ? `${subidos} documento(s)` : 'el portal no tiene anexos'}`);
+      }
+
+      if (resumen.length) {
+        notificationHub.broadcast({
+          type: 'generacion', level: 'success', title: 'Documentos Libertador',
+          message: `Guardados en Drive — ${resumen.join('; ')}.`,
+          meta: { solicitudes },
+        });
+      }
+    } catch (e: unknown) {
+      notificationHub.broadcast({
+        type: 'generacion', level: 'error', title: 'Fallaron los documentos de Libertador',
+        message: e instanceof Error ? e.message : 'Error desconocido',
+        meta: { solicitudes },
+      });
+    }
   }
 
   /**

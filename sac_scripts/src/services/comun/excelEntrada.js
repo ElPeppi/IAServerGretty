@@ -1,11 +1,15 @@
 /**
  * services/comun/excelEntrada.js — Parseo del Excel de entrada
  *
- * El Excel trae dos hojas:
+ * El Excel trae:
  *   Hoja1 → datos maestros (cliente, ciudad, vehículos, fechas)
- *   Hoja2 → datos financieros (capital, intereses, obligaciones)
- * Se filtran los clientes con APLICATIVO = DECEVAL y se consolidan
- * los financieros de Hoja2 agrupados por cédula.
+ *   otra hoja → datos financieros por OBLIGACIÓN (capital, intereses), que se
+ *               consolidan por cédula. Cuál es se decide por sus encabezados
+ *               (ver hojaFinanciera): hasta sept-2026 era la Hoja2
+ *               "OBLIGACIONES"; desde oct-2026 la Hoja2 es un consolidado por
+ *               deudor sin nº de obligación y el detalle va en la Hoja3
+ *               "OBLIGACIONES LIQUIDADAS".
+ * Se filtran los clientes por tipo de proceso (ver columnaProceso).
  */
 
 'use strict';
@@ -51,10 +55,10 @@ function extraerCiudad(ciudadStr) {
 // ─── Información laboral (empresa + NIT) ─────────────────────────────────────
 
 // Placeholders habituales de celdas "vacías" en los Excel de Finandina:
-// "----", "#N/A", "#N/D", "N/A", "0"
+// "----", "#N/A", "#N/D", "N/A", "0", y desde oct-2026 el texto "NULL"
 function limpiarPlaceholder(v) {
   const s = String(v ?? '').trim();
-  if (!s || /^[#\-–—\s.]*$/.test(s) || /^#?N\/?[AD]$/i.test(s) || s === '0') return '';
+  if (!s || /^[#\-–—\s.]*$/.test(s) || /^#?N\/?[AD]$/i.test(s) || s === '0' || /^NULL$/i.test(s)) return '';
   return s;
 }
 
@@ -92,6 +96,152 @@ function extraerNitEmpresa(row, idx, canon = {}) {
   }
   // 4) Alias conocido: "SALARIO" trae el NIT en algunos archivos
   return limpiarNit(getCol(row, idx, 'SALARIO'));
+}
+
+// ─── Hoja financiera ──────────────────────────────────────────────────────────
+
+// Encabezado reducido a letras y dígitos sin tildes, para reconocerlo aunque el
+// banco cambie mayúsculas, tildes o signos: "N° Obligación" → "N OBLIGACION",
+// "Cédula/NIT" → "CEDULA NIT".
+function claveEncabezado(h) {
+  return String(h ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+
+// Columnas de la hoja financiera (sobre claveEncabezado). Cada campo es una lista
+// EN ORDEN DE PREFERENCIA: gana la primera que exista aunque venga vacía en una
+// fila, igual que getCol con los alias del formato viejo.
+const COLS_FIN = {
+  cedula:     [/^CEDULA$/, /^IDENTIFICACION$/, /^ID$/, /^ID CLIENTE$/, /^CEDULA NIT$/],
+  obligacion: [/^OBLIGACION$/, /^(N|NO|NRO|NUMERO) OBLIGACION$/],
+  nombre:     [/^NOMBRE$/, /^NOMBRE CLIENTE$/, /^NOMBRBE CLIENTE$/, /^NOMBRE TITULAR$/],
+  capital:    [/^CAPITAL$/, /^CAPITAL EXIGIBLE$/],
+  total:      [/^TOTAL$/, /^TOTAL OBLIGACION\b/],
+  abogado:    [/^ABOGADOS?$/, /^ABOG$/],
+  fechaMora:  [/^FECHA INICIO MORA$/],
+  // Formato viejo: TOTAL_INTERES = intereses de mora acumulados (monto real a
+  // cobrar); MORA puede estar en $0 cuando van bajo TOTAL_INTERES; INTERES a
+  // veces es la tasa nominal (~$1), NO el monto → va de último.
+  interes:    [/^TOTAL INTERES$/, /^MORA$/, /^INTERES$/],
+  mora:       [/^MORA$/],
+  // Formato oct-2026: los intereses vienen partidos y se SUMAN. Regla del
+  // despacho: interés = corriente + moratorio.
+  interesCorriente: [/^INTERES(ES)? CORRIENTES?$/],
+  interesMora:      [/^(SUBTOTAL )?INTERES(ES)? MORATORIOS?\b/],
+};
+
+function indiceCol(claves, patrones) {
+  for (const re of patrones) {
+    const i = claves.findIndex(k => re.test(k));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Hoja con el detalle financiero POR OBLIGACIÓN. Se busca por encabezados entre
+ * las hojas que siguen a la maestra, no por posición: en oct-2026 el banco puso
+ * en la Hoja2 un consolidado por deudor (sin nº de obligación) y movió el
+ * detalle a la Hoja3. Exige cédula y (obligación o capital); si hay varias, gana
+ * la que trae nº de obligación.
+ */
+function hojaFinanciera(wb) {
+  let mejor = null;
+  for (let i = 1; i < wb.SheetNames.length; i++) {
+    const filas  = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[i]], { header: 1, raw: true, defval: '' });
+    const claves = (filas[0] || []).map(claveEncabezado);
+    const col = {};
+    for (const [campo, patrones] of Object.entries(COLS_FIN)) col[campo] = indiceCol(claves, patrones);
+    if (col.cedula < 0 || (col.obligacion < 0 && col.capital < 0)) continue;
+    const puntaje = (col.obligacion >= 0 ? 2 : 0) + (col.capital >= 0 ? 1 : 0);
+    if (!mejor || puntaje > mejor.puntaje) mejor = { nombre: wb.SheetNames[i], filas, col, puntaje };
+  }
+  return mejor;
+}
+
+/**
+ * Financieros agrupados por cédula, de la hoja financiera:
+ *   fin[cedula] = { obligacion, obligaciones[], capital, interes, total, abogado,
+ *                   nombre, maxMoraObl, maxMoraVal }
+ * y fechaPorObligacion[obligacion] = fecha de inicio de mora, si la hoja la trae.
+ */
+function leerFinancieros(wb) {
+  const fin = {};
+  const fechaPorObligacion = {};
+  const hoja = hojaFinanciera(wb);
+  if (!hoja) {
+    console.error('[EXCEL] Ninguna hoja trae el detalle financiero (cédula + obligación/capital): sin capital, intereses ni obligaciones');
+    return { fin, fechaPorObligacion };
+  }
+
+  const { col } = hoja;
+  const val = (row, campo) => (col[campo] >= 0 ? row[col[campo]] : undefined);
+  const interesPartido = col.interesCorriente >= 0 || col.interesMora >= 0;
+  console.error(`[EXCEL] Hoja financiera: "${hoja.nombre}"${interesPartido ? ' (interés = corriente + moratorio)' : ''}`);
+
+  for (let r = 1; r < hoja.filas.length; r++) {
+    const row    = hoja.filas[r];
+    const cedula = String(val(row, 'cedula') ?? '').trim();
+    if (!cedula) continue;
+
+    const nombre  = String(val(row, 'nombre') ?? '').trim();
+    const cap     = toNum(val(row, 'capital'));
+    const int     = interesPartido
+      ? toNum(val(row, 'interesCorriente')) + toNum(val(row, 'interesMora'))
+      : toNum(val(row, 'interes'));
+    const total   = toNum(val(row, 'total'));
+    const obl     = String(val(row, 'obligacion') ?? '').trim();
+    const abo     = String(val(row, 'abogado') ?? '').trim();
+    // Monto de mora de esta obligación, para saber cuál lleva más (→ FECHA MORA)
+    const moraAmt = toNum(val(row, interesPartido ? 'interesMora' : 'mora'));
+    const fechaMora = val(row, 'fechaMora');
+    if (obl && fechaMora !== undefined && fechaMora !== '') fechaPorObligacion[obl] = fechaMora;
+
+    if (!fin[cedula]) {
+      fin[cedula] = {
+        obligacion: obl, obligaciones: obl ? [obl] : [], capital: cap, interes: int, total, abogado: abo, nombre,
+        // obligación con mayor mora (para calcular FECHA MORA)
+        maxMoraObl: obl, maxMoraVal: moraAmt,
+      };
+    } else {
+      // Múltiples obligaciones → acumular
+      fin[cedula].capital  += cap;
+      fin[cedula].interes  += int;
+      fin[cedula].total    += total;
+      if (!fin[cedula].nombre && nombre) fin[cedula].nombre = nombre;
+      // Agregar obligación al listado (sin duplicados)
+      if (obl && !fin[cedula].obligaciones.includes(obl)) fin[cedula].obligaciones.push(obl);
+      // Actualizar obligación con mayor mora
+      if (moraAmt > fin[cedula].maxMoraVal) {
+        fin[cedula].maxMoraVal = moraAmt;
+        fin[cedula].maxMoraObl = obl;
+      }
+    }
+  }
+  return { fin, fechaPorObligacion };
+}
+
+// ─── Tipo de proceso ──────────────────────────────────────────────────────────
+
+// Encabezados con "PROCESO" que NO dicen el proceso de la asignación: estados y
+// conteos de procesos anteriores ("EST PROCESO ACT", "Estados_Procesos",
+// "No_Procesos_Activos", "Consolidado_Procesos", "MACRO PROCESO FUTURE",
+// "PROCESOS ACTIVOS"…).
+const NO_ES_PROCESO = /^EST[\s_]|ESTADO|^NO[\s_]|CONSOLIDADO|MACRO|ACTIVOS|INACTIVOS/i;
+
+/**
+ * Columna del tipo de proceso de la asignación. El encabezado cambia entre
+ * envíos ("POSIBLE PROCESO", "PROCESO INICIAL", "PROCESO MAYO"…): "POSIBLE
+ * PROCESO" si está; si no, la primera con "PROCESO" que no sea de estado/conteo.
+ * Antes se tomaba la primera con "PROCESO" a secas, y desde oct-2026 esa es
+ * "EST PROCESO ACT" (con "TERMINAdo"): excluía a esos clientes y dejaba de
+ * separar singular de pago directo. Devuelve -1 si no hay.
+ */
+function columnaProceso(encabezados) {
+  const hs = (encabezados || []).map(h => String(h || '').trim().toUpperCase());
+  const posible = hs.indexOf('POSIBLE PROCESO');
+  if (posible >= 0) return posible;
+  return hs.findIndex(h => /PROCESO/.test(h) && !NO_ES_PROCESO.test(h));
 }
 
 // ─── Parseo principal ─────────────────────────────────────────────────────────
@@ -141,58 +291,15 @@ async function parsearExcelEntrada(buffer, opts = {}) {
     return getCol(row, h1, ...aliases);
   };
 
-  // ── Hoja2: datos financieros ──────────────────────────────────────────────
-  const ws2   = wb.Sheets[wb.SheetNames[1]];
-  const hoja2 = XLSX.utils.sheet_to_json(ws2, { header: 1, raw: true, defval: '' });
-
-  const h2 = buildIndex(hoja2[0] || []);
-
-  // Agrupar Hoja2 por cédula
-  const fin = {};
-  for (let r = 1; r < hoja2.length; r++) {
-    const row    = hoja2[r];
-    // La cédula en Hoja2 (LIQUIDACIONES) a veces viene como "ID" (no CEDULA/IDENTIFICACION).
-    const cedula = String(getCol(row, h2, 'CEDULA', 'IDENTIFICACION', 'ID', 'ID_CLIENTE') ?? '').trim();
-    if (!cedula) continue;
-
-    const nombre  = String(getCol(row, h2, 'NOMBRE', 'NOMBRE_CLIENTE', 'NOMBRBE_CLIENTE') ?? '').trim();
-    const cap     = toNum(getCol(row, h2, 'CAPITAL'));
-    // TOTAL_INTERES = intereses de mora acumulados (monto real a cobrar).
-    // MORA puede estar en $0 cuando los intereses van bajo TOTAL_INTERES.
-    // INTERES en Hoja2 a veces es la tasa nominal (~$1 o un número pequeño), NO el monto.
-    const int     = toNum(getCol(row, h2, 'TOTAL_INTERES', 'MORA', 'INTERES'));
-    const total   = toNum(getCol(row, h2, 'TOTAL'));
-    const obl     = String(getCol(row, h2, 'OBLIGACION') ?? '').trim();
-    const abo     = String(getCol(row, h2, 'ABOGADO', 'ABOGADOS', 'ABOG') ?? '').trim();
-    // MORA pura (sin TOTAL_INTERES) para determinar cuál obligación tiene más mora
-    const moraAmt = toNum(getCol(row, h2, 'MORA'));
-
-    if (!fin[cedula]) {
-      fin[cedula] = {
-        obligacion: obl, obligaciones: obl ? [obl] : [], capital: cap, interes: int, total, abogado: abo, nombre,
-        // obligación con mayor mora (para calcular FECHA MORA)
-        maxMoraObl: obl, maxMoraVal: moraAmt,
-      };
-    } else {
-      // Múltiples obligaciones → acumular
-      fin[cedula].capital  += cap;
-      fin[cedula].interes  += int;
-      fin[cedula].total    += total;
-      if (!fin[cedula].nombre && nombre) fin[cedula].nombre = nombre;
-      // Agregar obligación al listado (sin duplicados)
-      if (obl && !fin[cedula].obligaciones.includes(obl)) fin[cedula].obligaciones.push(obl);
-      // Actualizar obligación con mayor mora
-      if (moraAmt > fin[cedula].maxMoraVal) {
-        fin[cedula].maxMoraVal = moraAmt;
-        fin[cedula].maxMoraObl = obl;
-      }
-    }
-  }
+  // ── Hoja financiera: capital, intereses y obligaciones por cédula ─────────
+  const { fin, fechaPorObligacion } = leerFinancieros(wb);
 
   // ── Construir mapa obligacion → FECHA_INI_MORA_ACT desde Hoja1 ──────────
   // Permite encontrar la fecha de mora de la obligación con mayor mora.
   // Clave: numero de obligación (string). Valor: raw fecha (número serial o string).
-  const oblFechaMap = {};
+  // Base: la fecha de inicio de mora de la hoja financiera (formato oct-2026);
+  // la de Hoja1 manda cuando están las dos.
+  const oblFechaMap = { ...fechaPorObligacion };
   for (let r = 1; r < hoja1.length; r++) {
     const row = hoja1[r];
     const obl = String(getCanon(row, 'OBLIGACION', 'OBLIGACION', 'NUMERO_OBLIGACION', 'NRO_OBLIGACION') ?? '').trim();
@@ -204,11 +311,11 @@ async function parsearExcelEntrada(buffer, opts = {}) {
   }
 
   // ── Filtro por tipo de proceso ────────────────────────────────────────────
-  // El encabezado varía entre envíos ("POSIBLE PROCESO", "PROCESO", "TIPO DE
-  // PROCESO"…) → se localiza la columna por contener "PROCESO". Una cédula pasa
-  // si AL MENOS una de sus filas es del proceso pedido; se excluye si todas son
-  // de otro. Si no hay columna de proceso, no se filtra (compat).
-  const procesoIdx = (hoja1[0] || []).findIndex(h => /proceso/i.test(String(h || '')));
+  // Columna: ver columnaProceso. Una cédula pasa si AL MENOS una de sus filas es
+  // del proceso pedido; se excluye si todas son de otro. Celda vacía, placeholder
+  // ("NULL", "----") o "SIN PROCESO" = neutral. Si no hay columna de proceso, no
+  // se filtra (compat).
+  const procesoIdx = columnaProceso(hoja1[0]);
   const omitidosProceso = [];
   const excluidasProceso = new Set();
   if (procesoIdx >= 0) {
@@ -217,8 +324,8 @@ async function parsearExcelEntrada(buffer, opts = {}) {
     for (let r = 1; r < hoja1.length; r++) {
       const ced = String(getCanon(hoja1[r], 'IDENTIFICACION', 'IDENTIFICACION', 'CEDULA') ?? '').trim();
       if (!/^\d{5,12}$/.test(ced)) continue;
-      const proc = String(hoja1[r][procesoIdx] ?? '').trim();
-      if (!proc) continue;                       // celda vacía → neutral
+      const proc = limpiarPlaceholder(hoja1[r][procesoIdx]);
+      if (!proc || /^SIN PROCESO$/i.test(proc)) continue;   // vacío → neutral
       if (PROC.re.test(proc)) conProceso.add(ced);
       else if (!conOtro.has(ced)) conOtro.set(ced, proc);
     }

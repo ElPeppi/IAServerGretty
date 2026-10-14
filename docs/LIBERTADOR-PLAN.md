@@ -322,3 +322,42 @@ El backend (`asegurarCarpetaCaso` en libertadorDrive.ts):
 
 Pendiente: la captura de la huella (png) al hacer el estado de cuenta; siguiente
 paso del flujo: solicitar documentos.
+
+## 14. Documentos anexos (contrato, reconocimientos) — portal de Bolívar
+
+Después de dejar lista la carpeta (sección 13), el backend baja en segundo plano
+los anexos de cada solicitud y los guarda en la **raíz** de su carpeta (son comunes
+a todos los procesos). Avisa al terminar con una notificación.
+
+Flujo (definido por la oficina):
+1. **Huella** (AgentWeb): buscar la solicitud → abrir el siniestro → campo
+   *Inmobiliaria* → ⋮ → *Abrir* → leer el **NIT** ("Número de Identificación").
+   `nitsDeSolicitudes` + `leerNitInmobiliaria` en `libertador_puppeteer.js`.
+   Comprueba que el "Nombre" de la ficha abierta sea la inmobiliaria del siniestro.
+2. **Portal de documentos** (`registro.segurosbolivar.com` → `indemnizaciones-web`):
+   login → menú *Solicitar documentos* → NIT + solicitud → *BUSCAR* → *Ver Anexos* →
+   *Descargar Documento* de cada fila, pasando por todas las páginas del modal.
+   `libertador_documentos.js`. Cada "Descargar Documento" es un submit JSF (PrimeFaces,
+   ajax=false): se repite ese POST con fetch (ViewState + name del botón) y se lee el
+   archivo; el clic con captura de descargas queda de respaldo. Los archivos con los
+   MISMOS bytes se guardan una vez (el portal a veces tiene uno cargado dos veces); uno
+   distinto con el mismo nombre se guarda como "… (2).pdf".
+
+Piezas: motor `POST /documentos-libertador` (en cola con los estados de cuenta:
+el Huella no admite bien dos sesiones del mismo agente) → backend
+`EngineService.documentosLibertador` → `LibertadorController.documentosBg` →
+`subirArchivoCaso` (reemplaza si ya hay un archivo con ese nombre).
+
+Credenciales en `sac_scripts/.env`: `BOLIVAR_DOCS_USER` / `BOLIVAR_DOCS_PASS`.
+
+**Estado (2026-10-09):** probado de punta a punta en el motor con la solicitud
+11752770: el Huella da el NIT 900504995 y el portal entrega el mismo PDF que se baja a
+mano (comparado byte a byte). Falta la corrida en producción (n8n → backend → Drive).
+Para depurar:
+```
+cd sac_scripts
+HEADLESS=false LIBERTADOR_DOCS_EXPLORE=1 node libertador_documentos.js 11752770
+node libertador_documentos.js 11752770 900504995    # con el NIT, salta el Huella
+```
+Si un paso falla deja pantallazo + HTML en `SAC_TEMP_DIR/bolivar_docs/`; si falla
+el ⋮ de la inmobiliaria, en `SAC_TEMP_DIR/libertador_inmobiliaria_*.html`.

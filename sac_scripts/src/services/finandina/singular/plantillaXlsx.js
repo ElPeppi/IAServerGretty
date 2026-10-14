@@ -82,8 +82,9 @@ function construirFilas(cliente, vehiculos, contactos, correoJuzgado, fechaAsig,
     tipoJuzgado(cuantiaLabel, courtInfo.hasSmallClaims, courtInfo.hasPromiscuo)
   );
 
-  // OBLIGACIONES: todas las del Excel separadas por coma, o la única repetida
-  const obligacionesStr = (f.obligaciones && f.obligaciones.length > 1)
+  // OBLIGACIONES: todas (las del Excel y las del SAC que el Excel no trae, ver
+  // obligacionesSac.js) separadas por coma; sin lista, la OBLIGACION del Excel.
+  const obligacionesStr = (f.obligaciones && f.obligaciones.length)
     ? f.obligaciones.join(', ')
     : (f.obligacion || '');
 

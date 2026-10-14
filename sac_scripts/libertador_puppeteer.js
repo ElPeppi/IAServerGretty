@@ -31,9 +31,13 @@ const fs   = require('fs');
 // quiet: true → dotenv v17 imprime un banner en stdout que contaminaría el JSON.
 try { require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true }); } catch (_) {}
 
-const AGENTWEB_URL = process.argv[2] || process.env.LIBERTADOR_SAC_URL || 'https://ellibertador.custhelp.com/AgentWeb/';
-const USER = process.argv[3] || process.env.LIBERTADOR_SAC_USER || '';
-const PASS = process.argv[4] || process.env.LIBERTADOR_SAC_PASS || '';
+// Los argumentos solo cuentan cuando este archivo ES el comando. Requerido desde
+// otro CLI (libertador_documentos.js <solicitud>), argv[2] es la solicitud de ese
+// otro comando y se tomaba como URL del portal.
+const argv = require.main === module ? process.argv : [];
+const AGENTWEB_URL = argv[2] || process.env.LIBERTADOR_SAC_URL || 'https://ellibertador.custhelp.com/AgentWeb/';
+const USER = argv[3] || process.env.LIBERTADOR_SAC_USER || '';
+const PASS = argv[4] || process.env.LIBERTADOR_SAC_PASS || '';
 
 const TEMP_DIR = process.env.SAC_TEMP_DIR || 'C:/temp/sac_temp';
 const NAV_TIMEOUT = Number(process.env.LIBERTADOR_NAV_TIMEOUT_MS) || 120000;
@@ -483,13 +487,15 @@ const ESTADOS_TEXTO = '"Vigente" o "Desocupado"';
 const tieneEstadoCuenta = (estado) =>
   ESTADOS_CON_ESTADO_CUENTA.some((re) => new RegExp(re, 'i').test(estado || ''));
 
-async function abrirSiniestroVigente(page) {
+// `cualquiera`: para lo que no depende del estado (leer la inmobiliaria), si no
+// hay Vigente ni Desocupado se abre igual el siniestro de mora más reciente.
+async function abrirSiniestroVigente(page, opts = {}) {
   log(`Seleccionando la fila con Estado del Siniestro = ${ESTADOS_TEXTO}…`);
   await page.waitForSelector('.oj-datagrid-cell .recordCommandLink', { timeout: NAV_TIMEOUT })
     .catch(() => { throw new Error('No apareció el grid de resultados (recordCommandLink).'); });
   await waitMs(1200);
 
-  const elegido = await page.evaluate((estadosValidos) => {
+  const elegido = await page.evaluate((estadosValidos, cualquiera) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
     // Posición en la lista de estados válidos (menor = preferido); -1 = no sirve.
     const prioridad = (e) => estadosValidos.findIndex((re) => new RegExp(re, 'i').test(e));
@@ -530,7 +536,8 @@ async function abrirSiniestroVigente(page) {
       id, estado: r.cells[estadoIdx] || '', fecha: r.cells[fechaIdx] || '',
       amparo: r.cells[amparoIdx] || '', abrirCol: r.abrirCol,
     }));
-    const candidatas = filas.filter((f) => prioridad(f.estado) >= 0);
+    let candidatas = filas.filter((f) => prioridad(f.estado) >= 0);
+    if (!candidatas.length && cualquiera) candidatas = filas.filter((f) => f.abrirCol !== null);
     // Que un caso no tenga siniestro Vigente ni Desocupado es NORMAL (se desistió,
     // terminó o pasó a cartera castigada): no es un fallo del scraping, así que se
     // informa como omisión y el lote sigue con los demás.
@@ -545,7 +552,7 @@ async function abrirSiniestroVigente(page) {
     if (!cell) return { error: `No encontré el "Abrir" de la fila ${sel.id}`, filas };
     cell.setAttribute('data-abrir-target', '1');
     return { rowId: sel.id, amparo: sel.amparo, estado: sel.estado, fecha: sel.fecha, totalFilas: filas.length };
-  }, ESTADOS_CON_ESTADO_CUENTA);
+  }, ESTADOS_CON_ESTADO_CUENTA, !!opts.cualquiera);
 
   if (elegido.gridInesperado) {
     throw new Error('El grid en pantalla no es el reporte "Buscar Solicitud" '
@@ -605,6 +612,134 @@ async function irAEstadoDeCuenta(page) {
   await pulsar(pestana);
   await waitMs(5000); // el contenido del estado de cuenta puede tardar en pintar
   log('Pestaña Estado de Cuenta abierta (o timeout).');
+}
+
+// ─── NIT de la inmobiliaria ───────────────────────────────────────────────────
+// Lo pide el portal de documentos de Bolívar (busca por NIT + solicitud). En la
+// ficha del siniestro, el campo "Inmobiliaria" tiene al lado un botón ⋮ cuyo
+// menú trae "Abrir": abre la ficha de la inmobiliaria en una sub-pestaña, con el
+// NIT en "Número de Identificación".
+// Ojo: la ficha del siniestro tiene su propio "# Identificación", que es el del
+// ARRENDATARIO. Por eso las etiquetas se comparan exactas y no por "contiene".
+
+/** Vuelca el HTML que rodea un elemento marcado, para ajustar selectores sin adivinar. */
+async function volcarAlrededor(page, marca, nombre) {
+  const html = await page.evaluate((m) => {
+    const el = document.querySelector(`[${m}]`);
+    let c = el;
+    for (let i = 0; i < 6 && c && c.parentElement; i++) c = c.parentElement;
+    return c ? c.outerHTML : null;
+  }, marca).catch(() => null);
+  if (!html) return null;
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+  const archivo = path.join(TEMP_DIR, nombre);
+  fs.writeFileSync(archivo, html);
+  await page.screenshot({ path: archivo.replace(/\.html$/, '.png') }).catch(() => {});
+  return archivo;
+}
+
+async function leerNitInmobiliaria(page) {
+  // 1) El botón ⋮ del campo "Inmobiliaria" de la ficha visible.
+  const campo = await page.evaluate(() => {
+    for (const m of ['data-inmob-campo', 'data-inmob-menu']) {
+      for (const el of document.querySelectorAll(`[${m}]`)) el.removeAttribute(m);
+    }
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const etiquetaDe = (el) => {
+      const lab = el.labels && el.labels[0];
+      if (lab) return norm(lab.innerText);
+      const by = el.getAttribute('aria-labelledby');
+      if (by) { const n = document.getElementById(by.split(' ')[0]); if (n) return norm(n.innerText); }
+      return norm(el.getAttribute('aria-label'));
+    };
+    const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    const inputs = [...document.querySelectorAll('input')].filter((el) => visible(el) && /^inmobiliaria$/i.test(etiquetaDe(el)));
+    const input = inputs[inputs.length - 1];   // la del workspace recién abierto
+    if (!input) return { error: 'No encontré el campo "Inmobiliaria" en la ficha del siniestro.' };
+    input.setAttribute('data-inmob-campo', '1');
+
+    // Se sube por los contenedores hasta encontrar botones, sin pasarse a uno que
+    // ya incluya OTRO campo con etiqueta (sería el botón de otro campo).
+    const pista = (b) => norm(`${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''} ${b.className || ''} ${b.id || ''}`);
+    let cont = input.parentElement;
+    for (let i = 0; i < 8 && cont; i++, cont = cont.parentElement) {
+      const ajenos = [...cont.querySelectorAll('input')].some((x) => x !== input && visible(x) && etiquetaDe(x) && !/^inmobiliaria$/i.test(etiquetaDe(x)));
+      if (ajenos) break;
+      const botones = [...cont.querySelectorAll('button,[role="button"],a,oj-button')].filter((b) => visible(b) && !b.contains(input));
+      if (!botones.length) continue;
+      const menu = botones.find((b) => /men[uú]|more|m[aá]s|acci[oó]n|context|kebab|ellipsis|overflow|dots|options|opciones/i.test(pista(b)))
+        || botones.find((b) => !/arrow|flecha|open|desplegar|dropdown|clear|borrar|search|buscar/i.test(pista(b)));
+      if (menu) {
+        menu.setAttribute('data-inmob-menu', '1');
+        return { nombre: norm(input.value), pista: pista(menu).slice(0, 120) };
+      }
+    }
+    return { error: 'No encontré el botón ⋮ junto al campo "Inmobiliaria".' };
+  });
+  if (campo.error) {
+    const dump = await volcarAlrededor(page, 'data-inmob-campo', 'libertador_inmobiliaria_campo.html');
+    throw new Error(campo.error + (dump ? ` HTML del campo en ${dump}` : ''));
+  }
+  log(`Inmobiliaria "${campo.nombre}"; abriendo su menú (${campo.pista || 'sin pista'})…`);
+  await pulsar(await page.$('[data-inmob-menu="1"]'));
+
+  // 2) "Abrir" del menú. Se busca DENTRO de un menú: la ficha tiene otros "Abrir"
+  //    a la vista (los enlaces de sus grids).
+  const hayAbrir = await page.waitForFunction(() => {
+    for (const el of document.querySelectorAll('[data-inmob-abrir]')) el.removeAttribute('data-inmob-abrir');
+    const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    const items = [...document.querySelectorAll('[role="menuitem"], [role="menu"] *, .oj-menu *, oj-menu *')]
+      .filter((el) => visible(el) && (el.textContent || '').replace(/\s+/g, ' ').trim() === 'Abrir');
+    const it = items.find((el) => !items.some((o) => o !== el && el.contains(o)));   // el más interno
+    if (!it) return false;
+    it.setAttribute('data-inmob-abrir', '1');
+    return true;
+  }, { timeout: 15000 }).then(() => true).catch(() => false);
+  if (!hayAbrir) {
+    const dump = await volcarAlrededor(page, 'data-inmob-menu', 'libertador_inmobiliaria_menu.html');
+    throw new Error('El botón ⋮ de "Inmobiliaria" no mostró la opción "Abrir".' + (dump ? ` HTML en ${dump}` : ''));
+  }
+  await pulsar(await page.$('[data-inmob-abrir="1"]'));
+
+  // 3) La ficha de la inmobiliaria: "Número de Identificación" (y su "Nombre").
+  const leer = () => page.evaluate(() => {
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const sinTildes = (s) => norm(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const etiquetaDe = (el) => {
+      const lab = el.labels && el.labels[0];
+      if (lab) return lab.innerText;
+      const by = el.getAttribute('aria-labelledby');
+      if (by) { const n = document.getElementById(by.split(' ')[0]); if (n) return n.innerText; }
+      return el.getAttribute('aria-label') || '';
+    };
+    const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    const valor = (etq) => {
+      const hits = [...document.querySelectorAll('input')].filter((el) => visible(el) && el.value && sinTildes(etiquetaDe(el)) === etq);
+      return hits.length ? norm(hits[hits.length - 1].value) : '';
+    };
+    return { nit: valor('numero de identificacion'), nombre: valor('nombre') };
+  });
+  let datos = { nit: '', nombre: '' };
+  const hasta = Date.now() + 45000;
+  while (Date.now() < hasta) {
+    datos = await leer().catch(() => datos);
+    if (datos.nit) break;
+    await waitMs(1000);
+  }
+  if (!datos.nit) {
+    const shot = path.join(TEMP_DIR, 'libertador_inmobiliaria_ficha.png');
+    await page.screenshot({ path: shot }).catch(() => {});
+    throw new Error(`Abrí la inmobiliaria pero no apareció "Número de Identificación" (pantallazo en ${shot}).`);
+  }
+  // Si la ficha que quedó a la vista es de OTRA inmobiliaria (una pestaña vieja
+  // restaurada, un clic que no abrió nada), su NIT traería documentos ajenos.
+  if (datos.nombre && campo.nombre && datos.nombre.toUpperCase() !== campo.nombre.toUpperCase()) {
+    throw new Error(`La ficha abierta es de "${datos.nombre}" y el siniestro dice "${campo.nombre}": no uso ese NIT.`);
+  }
+  // "900504995-1" → "900504995": el portal de documentos pide el NIT sin dígito de verificación.
+  const nit = datos.nit.split('-')[0].replace(/\D/g, '');
+  if (!nit) throw new Error(`"Número de Identificación" de la inmobiliaria no es un NIT: "${datos.nit}".`);
+  return { nit, inmobiliaria: datos.nombre || campo.nombre };
 }
 
 // ─── Modo exploración ─────────────────────────────────────────────────────────
@@ -902,10 +1037,82 @@ async function procesarSolicitudes(solicitudes, opts = {}) {
   return resultados;
 }
 
+/**
+ * NIT de la inmobiliaria de cada solicitud, con un solo login. Cualquier
+ * siniestro de la solicitud sirve: la inmobiliaria es la misma en todos.
+ * Nunca lanza por un caso suelto.
+ *
+ * Devuelve [{ solicitud, success, nit?, inmobiliaria?, error? }]
+ */
+async function nitsDeSolicitudes(solicitudes, opts = {}) {
+  if (!USER || !PASS) {
+    throw new Error('Faltan credenciales: LIBERTADOR_SAC_USER / LIBERTADOR_SAC_PASS en sac_scripts/.env');
+  }
+  const lista = (Array.isArray(solicitudes) ? solicitudes : [solicitudes])
+    .map((x) => String(x || '').trim()).filter(Boolean);
+  if (!lista.length) return [];
+
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+  const browser = await puppeteer.launch({
+    headless: opts.headless === false || process.env.HEADLESS === 'false' ? false : 'shell',
+    args: [
+      '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--window-size=1920,1080', '--ignore-certificate-errors',
+    ],
+  });
+
+  const resultados = [];
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent(UA_PORTAL);   // sin esto el portal responde 401 (ver nota en main)
+    page.setDefaultTimeout(NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(NAV_TIMEOUT);
+
+    await login(page);
+    log(`Sesión abierta; leyendo la inmobiliaria de ${lista.length} solicitud(es).`);
+
+    let primera = true;
+    for (const num of lista) {
+      try {
+        if (!primera) {   // workspace limpio, igual que en procesarSolicitudes
+          await page.goto(AGENTWEB_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+          await waitMs(3000);
+        }
+        primera = false;
+
+        await buscarSolicitud(page, num);
+        const ficha = await leerFichaSiniestro(page);
+        if (!(ficha && ficha.solicitud === num)) {
+          if (!await page.$('.oj-datagrid-cell .recordCommandLink')) {
+            resultados.push({ solicitud: num, success: false, error: 'la búsqueda no devolvió resultados en el portal' });
+            continue;
+          }
+          const sel = await abrirSiniestroVigente(page, { cualquiera: true });
+          if (sel.omitido) {
+            resultados.push({ solicitud: num, success: false, error: 'la solicitud no tiene siniestros que abrir' });
+            continue;
+          }
+        }
+
+        const { nit, inmobiliaria } = await leerNitInmobiliaria(page);
+        resultados.push({ solicitud: num, success: true, nit, inmobiliaria });
+        log(`✓ ${num}: ${inmobiliaria} — NIT ${nit}`);
+      } catch (e) {
+        resultados.push({ solicitud: num, success: false, error: e.message });
+        log(`✗ ${num}: ${e.message}`);
+      }
+    }
+  } finally {
+    await browser.close().catch(() => {});
+  }
+  return resultados;
+}
+
 // `login` y `buscarSolicitud` se exportan para poder sondear el portal desde un
 // script suelto cuando algo cambia de sitio: sin ellos, cada diagnóstico tendría
 // que duplicar el login (y el User-Agent, que es lo que evita el 401).
-module.exports = { procesarSolicitudes, login, buscarSolicitud, UA_PORTAL };
+module.exports = { procesarSolicitudes, nitsDeSolicitudes, login, buscarSolicitud, UA_PORTAL };
 
 // Solo se autoejecuta como CLI; al requerirlo desde el motor, no.
 if (require.main === module) {
