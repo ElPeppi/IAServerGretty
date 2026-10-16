@@ -78,7 +78,10 @@ router.post('/engine', (req, res) => {
     // cualquier otra cosa → ejecutivas singulares. Sin esto, el SAC de pago
     // directo caía siempre en singular.
     const proceso = meta.proceso === 'pago_directo' ? 'pago_directo' : 'singular';
-    void subirSacDeCedula(String(meta.cedula), undefined, proceso);
+    // Fecha de la asignación (si la descarga se pidió desde una): el motor solo
+    // la devuelve tal cual. Da el mes de la carpeta si el cliente no tiene ninguna.
+    const fecha = meta.fechaAsignacion ? new Date(String(meta.fechaAsignacion)) : null;
+    void subirSacDeCedula(String(meta.cedula), undefined, proceso, fecha);
   }
 
   res.json({ ok: true, id: n.id, clients: notificationHub.clientCount() });

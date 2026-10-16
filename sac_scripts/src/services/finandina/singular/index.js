@@ -568,16 +568,20 @@ async function procesarSingular(excelBuffer, options = {}) {
   }
 
   // 4. Generar un DOCX de demanda por cliente (guarda en {SAC_OUT_DIR}/{cedula}/)
+  // Los fallos van a `errores`: sin eso, el cliente salía con anexos y
+  // antecedentes pero sin demanda, y el backend lo daba por generado.
   let demandasGeneradas = [];
   if (fs.existsSync(demandaTemplate)) {
     try {
-      demandasGeneradas = await generarDemandasWord(demandaItems, sacDocsDir, demandaTemplate);
+      demandasGeneradas = await generarDemandasWord(demandaItems, sacDocsDir, demandaTemplate, errores);
       console.error(`[DEMANDA] ${demandasGeneradas.length} documento(s) Word generado(s)`);
     } catch (e) {
       console.error(`[DEMANDA] Error generando documentos Word: ${e.message}`);
+      for (const c of clientesSalida) errores.push({ cedula: c.cedula, error: `no se pudo armar el Word de la demanda: ${e.message}` });
     }
   } else {
     console.error(`[DEMANDA] Plantilla DOCX no encontrada, se omite: ${demandaTemplate}`);
+    for (const c of clientesSalida) errores.push({ cedula: c.cedula, error: `no se encontró la plantilla de la demanda (${path.basename(demandaTemplate)})` });
   }
 
   // 4-bis. Generar el PODER por cliente (mismos datos de la demanda)

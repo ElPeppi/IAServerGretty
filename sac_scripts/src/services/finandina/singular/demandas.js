@@ -27,7 +27,7 @@ const config = require('../../../config');
 const { fmtCOP } = require('../../../utils/numeros');
 const { resolverCarpetaCedula } = require('../../../utils/carpetas');
 const {
-  estamparFirma, xmlEscape, getParagraphs, textoDe, reemplazarCampos,
+  estamparFirma, xmlEscape, getParagraphs, textoDe, reemplazarCampos, placaCorta,
   ORDINAL_RE, ORDINALES,
 } = require('../../comun/docx');
 
@@ -334,7 +334,9 @@ function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmuebl
 
 // items: [{ fila, vehiculos }] — fila de la Plantilla Singular + vehículos REALES
 // del cliente (array vacío si no tiene).
-async function generarDemandasWord(items, sacDocsDir, templateDocxPath) {
+// fallos: si se pasa, recibe { cedula, error } por cada cliente cuyo Word no se
+// pudo armar. Un fallo de uno no detiene a los demás.
+async function generarDemandasWord(items, sacDocsDir, templateDocxPath, fallos = []) {
   if (!fs.existsSync(templateDocxPath)) {
     throw new Error(`Plantilla DOCX no encontrada: ${templateDocxPath}`);
   }
@@ -364,6 +366,7 @@ async function generarDemandasWord(items, sacDocsDir, templateDocxPath) {
       console.error(`[DEMANDA] ✓ ${cedula} → ${path.basename(outFile)} (${vehiculos.length} vehículo(s))`);
     } catch (e) {
       console.error(`[DEMANDA] ✗ ${cedula}: ${e.message}`);
+      fallos.push({ cedula, error: `no se pudo armar el Word de la demanda: ${e.message}` });
     }
   }
   return generados;

@@ -5,7 +5,8 @@
  * motor) es solo un caché EFÍMERO.
  *
  *   - Al DESCARGAR el SAC: el motor lo deja en `DOCS_DIR/{cedula}/`. El backend lo
- *     SUBE a Drive (`GARANTIAS/{cedula}/`) y BORRA la copia local (`subirSacDeCedula`).
+ *     SUBE a la carpeta del cliente en Drive (la que ya tenga o, si no, una nueva
+ *     `GARANTIAS/{cedula} {MES} {AÑO}`) y BORRA la copia local (`subirSacDeCedula`).
  *   - Al GENERAR la demanda: el backend DESCARGA de Drive a `DOCS_DIR/{cedula}/`
  *     (`hidratarCedula`) para que el motor lea los SAC del disco, y al terminar
  *     BORRA la carpeta local (`limpiarLocalCedula`).
@@ -83,19 +84,22 @@ export async function enParalelo<T>(items: T[], tarea: (item: T) => Promise<void
  * y BORRA la copia local (Drive queda como única fuente). Destino en Drive:
  * `{carpetaGarantias(banco)}/{carpeta}/{archivo}`. Idempotente (overwrite). Devuelve
  * cuántos subió. `banco` = FINANDINA por defecto (en la descarga no se conoce el banco).
+ * `fecha` = la de la asignación, si se conoce: da el mes de la carpeta nueva.
  */
 export async function subirSacDeCedula(
   cedula: string,
   banco: string = BANCO_DEFAULT,
   proceso: Proceso = 'singular',
+  fecha?: Date | null,
 ): Promise<number> {
   const root = raizUtilizable('subida del SAC a Drive', true);
   if (!root) return 0;
   let subidos = 0;
   // Destino: la carpeta que YA tenga el cliente en Drive (aunque se llame
   // "1143152167-AGOSTO 2026" o "CC 9306310"), no una nueva con el nombre local.
-  // Así el SAC cae junto al pagaré en vez de crear un expediente paralelo.
-  const destino = await carpetaDestino(cedula, banco, proceso);
+  // Así el SAC cae junto al pagaré en vez de crear un expediente paralelo. Si no
+  // tiene ninguna, se crea "{cedula} {MES} {AÑO}", como las crea la oficina.
+  const destino = await carpetaDestino(cedula, banco, proceso, fecha);
   for (const carpeta of carpetasLocalesDeCedula(root, cedula)) {
     const absDir = path.join(root, carpeta);
     let archivos: string[];

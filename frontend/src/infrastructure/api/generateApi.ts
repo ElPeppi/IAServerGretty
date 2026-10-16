@@ -74,11 +74,19 @@ export const generateApi = {
    */
   // `proceso` = 'pago_directo' hace que el SAC caiga en el árbol de garantía
   // mobiliaria (la carpeta que lee la generación de garantías). Default 'singular'.
-  descargarSac: (cedulas: string, excel?: File | null, proceso: 'singular' | 'pago_directo' = 'singular') => {
+  // `asignacionId`: su fecha da el mes de la carpeta que se cree para quien no
+  // tenga ("{cedula} OCTUBRE 2026"); sin ella, el mes actual.
+  descargarSac: (
+    cedulas: string,
+    excel?: File | null,
+    proceso: 'singular' | 'pago_directo' = 'singular',
+    asignacionId?: string,
+  ) => {
     const form = new FormData();
     if (cedulas) form.append('cedulas', cedulas);
     if (excel)   form.append('excelFile', excel);
     form.append('proceso', proceso);
+    if (asignacionId) form.append('asignacionId', asignacionId);
     return apiClient
       .post<DescargarSacResult>('/generate/descargar-sac', form, {
         headers: { 'Content-Type': 'multipart/form-data' },

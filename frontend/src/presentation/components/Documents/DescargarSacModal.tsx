@@ -85,7 +85,7 @@ export function DescargarSacModal({ onClose }: Props) {
     try {
       // Unir cédulas pegadas + las de la asignación (el motor deduplica/normaliza).
       const todas = [cedulas, ...cedulasAsig].filter(Boolean).join(' ');
-      const res = await generateApi.descargarSac(todas, null, proceso);
+      const res = await generateApi.descargarSac(todas, null, proceso, asignacionId || undefined);
       setResult(res);
     } catch (err: unknown) {
       const axiosMsg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;

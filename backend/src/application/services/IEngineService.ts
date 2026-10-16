@@ -79,6 +79,9 @@ export interface DescargarSacInput {
   // 'pago_directo' → el SAC cae en la base de garantía mobiliaria (misma carpeta
   // que lee la generación de garantías). Por defecto, 'singular'.
   proceso?: 'singular' | 'pago_directo';
+  // Fecha (ISO) de la asignación desde la que se pidió. El motor no la usa: la
+  // devuelve en el aviso por cédula y el backend nombra con ella la carpeta nueva.
+  fechaAsignacion?: string;
 }
 
 export interface DescargarSacItem {

@@ -340,6 +340,7 @@ module.exports = {
   aplanarCamposWord,
   desactivarMailMerge,
   quitarFuentesEmbebidas,
+  placaCorta,
   ORDINALES,
   ORDINAL_RE,
 };

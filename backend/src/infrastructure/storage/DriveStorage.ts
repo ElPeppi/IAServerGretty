@@ -208,10 +208,35 @@ export class DriveStorage implements IStorage {
     const dir = parts.join('/');
     const parentId = await this.resolveFolder(dir, createFolders);
     if (!parentId) throw new Error(`Carpeta no encontrada para: ${relPath}`);
-    const cached = await this.idxGet(clean);
+    const cached = await this.vigenteEnIndice(clean, name);
     const fileId = cached ?? (await this.findChild(parentId, name, false));
     if (fileId && !cached) await this.idxSet(clean, fileId);
     return { parentId, name, fileId };
+  }
+
+  /**
+   * fileId del índice para `relPath`, solo si ese archivo SIGUE llamándose `name`.
+   *
+   * La oficina trabaja directo en Drive: toma el ANEXOS.pdf, le pega la demanda
+   * adelante y lo renombra al nombre de radicación. El fileId es el mismo, así
+   * que el índice seguía tratándolo como "ANEXOS.pdf": el visor mostraba la
+   * demanda dentro de los anexos y "Regenerar" pisaba el PDF final de la
+   * oficina. Un archivo renombrado ya es otro documento → se suelta del índice y
+   * se busca por nombre. Si ya no existe (404), igual.
+   */
+  private async vigenteEnIndice(relPath: string, name: string): Promise<string | null> {
+    const cached = await this.idxGet(relPath);
+    if (!cached) return null;
+    try {
+      const res = await this.drive.files.get({ fileId: cached, fields: 'name', supportsAllDrives: true });
+      if (res.data.name === name) return cached;
+      console.error(`[DriveStorage] "${relPath}" fue renombrado en Drive a "${res.data.name}" → se suelta del índice`);
+    } catch (e) {
+      const status = (e as { code?: number; status?: number })?.code ?? (e as { status?: number })?.status;
+      if (status !== 404) throw e;
+    }
+    await this.idxDel(relPath);
+    return null;
   }
 
   // ── IStorage ─────────────────────────────────────────────────────────────────

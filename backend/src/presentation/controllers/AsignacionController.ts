@@ -907,6 +907,20 @@ export class AsignacionController {
           });
           continue;
         }
+        if (!doc.archivos?.demanda) {
+          // El motor procesó a la persona (anexos, antecedentes) pero no pudo armar
+          // el Word. Antes se guardaba igual y se avisaba "Demanda lista" sin demanda.
+          fallidas++;
+          const motivo = (result.errores ?? []).find((e) => e.cedula === persona.cedula)?.error
+            || 'el motor no devolvió el Word de la demanda';
+          console.error(`[asignaciones/demandas] ${persona.cedula} SIN DEMANDA: ${motivo}`);
+          notificationHub.broadcast({
+            type: 'generacion', level: 'warning', title: 'Falló una demanda',
+            message: `${quien}: ${motivo}.`,
+            meta: { asignacionId: input.asignacionId, cedula: persona.cedula },
+          });
+          continue;
+        }
 
         const info = (result.clientes ?? []).find((c) => c.cedula === doc.cedula);
         await this.persistirDemanda(doc, info, input, fechaDMYStr, banco);
@@ -1309,7 +1323,7 @@ export class AsignacionController {
   private async persistirDemanda(
     doc: EngineDocument,
     info: EngineClientInfo | undefined,
-    input: { asignacionId: string; excelUrl: string | null; lawyerId: string },
+    input: { asignacionId: string; excelUrl: string | null; lawyerId: string; fechaAsignacion?: Date | null },
     fechaDMYStr: string | undefined,
     banco: string,
   ): Promise<void> {
@@ -1320,7 +1334,7 @@ export class AsignacionController {
     const subir = async (f?: EngineFile | null): Promise<{ url?: string; rel?: string }> => {
       if (!f) return {};
       if (storage.enabled && f.relPath) {
-        const rel = await relEnCarpetaCedula(f.relPath, banco);
+        const rel = await relEnCarpetaCedula(f.relPath, banco, 'singular', input.fechaAsignacion);
         if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
         return { url: storage.urlFor(rel), rel };
       }

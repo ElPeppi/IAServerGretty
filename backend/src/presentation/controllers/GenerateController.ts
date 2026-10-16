@@ -14,6 +14,7 @@ import { hidratarCedula, limpiarLocalCedula } from '../../infrastructure/storage
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { EngineFile } from '../../application/services/IEngineService';
 import { correccionesDeCedulas } from '../../application/services/datosManuales';
+import { fechaDesdeNombre } from '../../infrastructure/services/fechaAsignacion';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
 const documentRepository = new PrismaDocumentRepository();
@@ -57,6 +58,19 @@ function extraerCedulasDeExcel(buffer: Buffer): string[] {
     }
   }
   return [...out];
+}
+
+// Fecha de una asignación: la guardada o, si no hay, la del nombre del Excel.
+// null si no se pidió desde una asignación (o no existe). No lanza.
+async function fechaDeAsignacion(id: string): Promise<Date | null> {
+  if (!id) return null;
+  try {
+    const a = await prisma.asignacion.findUnique({ where: { id }, select: { fechaAsignacion: true, nombre: true } });
+    if (!a) return null;
+    return a.fechaAsignacion ?? fechaDesdeNombre(a.nombre);
+  } catch {
+    return null;
+  }
 }
 
 export class GenerateController {
@@ -229,7 +243,12 @@ export class GenerateController {
       // (misma carpeta que lee la generación de garantías). Default 'singular'.
       const proceso = String(req.body?.proceso || '').toLowerCase() === 'pago_directo'
         ? 'pago_directo' as const : 'singular' as const;
-      const result = await engineService.descargarSac({ cedulas, proceso });
+      // Si se pidió desde una asignación, su fecha da el mes de la carpeta que se
+      // cree para quien aún no tenga ("{cedula} OCTUBRE 2026"). Sin ella, el de hoy.
+      const fechaAsignacion = await fechaDeAsignacion(String(req.body?.asignacionId ?? ''));
+      const result = await engineService.descargarSac({
+        cedulas, proceso, fechaAsignacion: fechaAsignacion?.toISOString(),
+      });
       res.status(202).json(result);
     } catch (error: unknown) {
       const axiosCode = (error as { code?: string }).code;
@@ -418,9 +437,11 @@ export class GenerateController {
           });
 
       const doc = (result.documentos ?? []).find((d) => d.cedula === input.cedula);
-      if (!doc) {
-        // El motor no la generó esta vez (p. ej. pagaré ya no válido): avisar y dejar el doc como estaba.
+      if (!doc || !doc.archivos?.demanda) {
+        // El motor no la generó esta vez (p. ej. pagaré ya no válido, o no pudo
+        // armar el Word): avisar y dejar el doc como estaba.
         const motivo = (result.omitidos ?? []).find((o) => o.cedula === input.cedula)?.motivo
+          || (result.errores ?? []).find((e) => e.cedula === input.cedula)?.error
           || 'el motor no devolvió la demanda';
         notificationHub.broadcast({
           type: 'generacion',

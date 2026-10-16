@@ -102,20 +102,40 @@ export async function carpetasDeCedula(
   return out;
 }
 
+const MESES_NOMBRE = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO',
+  'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
+
+/**
+ * Nombre de una carpeta de cliente NUEVA, con la convención que usa hoy la
+ * oficina: "{cedula} {MES} {AÑO}" ("24954924 OCTUBRE 2026"). El mes es el de la
+ * asignación si se conoce y, si no, el de hoy. Se mide en hora de Colombia: el
+ * servidor corre en UTC y, el último día del mes por la noche, ya sería el
+ * mes siguiente.
+ */
+export function nombreCarpetaNueva(cedula: string, fecha?: Date | null): string {
+  const f = fecha && !isNaN(fecha.getTime()) ? fecha : new Date();
+  const partes = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Bogota', year: 'numeric', month: 'numeric' })
+    .formatToParts(f);
+  const mes = Number(partes.find((p) => p.type === 'month')?.value);
+  const anio = partes.find((p) => p.type === 'year')?.value;
+  return `${String(cedula).replace(/\D/g, '')} ${MESES_NOMBRE[mes - 1]} ${anio}`;
+}
+
 /**
  * Carpeta donde ESCRIBIR los documentos de una cédula: la más reciente que ya
  * exista (para no partir en dos el expediente del cliente) o, si no hay ninguna,
- * `GARANTIAS/{cedula}`.
+ * una nueva `GARANTIAS/{cedula} {MES} {AÑO}` (ver `nombreCarpetaNueva`).
  */
 export async function carpetaDestino(
   cedula: string,
   banco: string,
   proceso: Proceso = 'singular',
+  fecha?: Date | null,
 ): Promise<string> {
   const existentes = await carpetasDeCedula(cedula, banco, proceso);
   if (existentes.length) return existentes[0].relPath;
   invalidarCache(); // se va a crear una carpeta nueva
-  return unir(carpetaGarantias(banco, proceso), String(cedula).replace(/\D/g, ''));
+  return unir(carpetaGarantias(banco, proceso), nombreCarpetaNueva(cedula, fecha));
 }
 
 /**
@@ -129,6 +149,7 @@ export async function relEnCarpetaCedula(
   relPathMotor: string,
   banco: string,
   proceso: Proceso = 'singular',
+  fecha?: Date | null,
 ): Promise<string> {
   const partes = String(relPathMotor).replace(/\\/g, '/').split('/').filter(Boolean);
   const info = partes.length > 1 ? analizarCarpeta(partes[0]) : null;
@@ -136,5 +157,5 @@ export async function relEnCarpetaCedula(
     // Sin carpeta de cliente reconocible (o archivo suelto) → tal cual bajo GARANTIAS.
     return unir(carpetaGarantias(banco, proceso), relPathMotor);
   }
-  return unir(await carpetaDestino(info.cedula, banco, proceso), ...partes.slice(1));
+  return unir(await carpetaDestino(info.cedula, banco, proceso, fecha), ...partes.slice(1));
 }
