@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import * as XLSX from 'xlsx';
+import { Prisma } from '@prisma/client';
 import { PrismaDocumentRepository } from '../../infrastructure/database/prisma/DocumentRepository';
 import { PrismaUserRepository } from '../../infrastructure/database/prisma/UserRepository';
 import { prisma } from '../../infrastructure/database/prisma/client';
@@ -475,8 +476,8 @@ export class GenerateController {
         return;
       }
 
-      const fileRef = async (f?: EngineFile | null): Promise<string | undefined> => {
-        if (!f) return undefined;
+      const fileRef = async (f?: EngineFile | null): Promise<{ url?: string; rel?: string }> => {
+        if (!f) return {};
         if (storage.enabled && f.relPath) {
           // El motor escribe en SU disco y devuelve base64+relPath ({cedula}/...).
           // `relEnCarpetaCedula` lo lleva a la carpeta que el cliente ya tenga en
@@ -484,20 +485,44 @@ export class GenerateController {
           // el árbol del proceso que toca (singular vs. garantía mobiliaria).
           const rel = await relEnCarpetaCedula(f.relPath, banco, proceso);
           if (f.base64) await storage.save(rel, Buffer.from(f.base64, 'base64'), f.mimeType);
-          return storage.urlFor(rel);
+          return { url: storage.urlFor(rel), rel };
         }
-        return fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url;
+        return { url: fileStorage.saveBase64(f.base64, f.filename, f.mimeType).url };
       };
 
-      const fileUrl = await fileRef(doc.archivos?.demanda);
-      const anexosUrl = await fileRef(doc.archivos?.anexos);
-      const antecedentesUrl = await fileRef(doc.archivos?.antecedentes);
+      const demanda = await fileRef(doc.archivos?.demanda);
+      const anexos = await fileRef(doc.archivos?.anexos);
+      const antecedentes = await fileRef(doc.archivos?.antecedentes);
       await documentRepository.update(input.documentId, {
         status: 'GENERATED',
-        fileUrl,
-        anexosUrl,
-        antecedentesUrl,
+        fileUrl: demanda.url,
+        anexosUrl: anexos.url,
+        antecedentesUrl: antecedentes.url,
         notes: doc.notas ?? [],
+      });
+
+      // El nombre puede cambiar al regenerar (p. ej. se corrigió la lectura del
+      // formulario: "SUAD Sexo LOPEZ ROSALES" → "SUAD LOPEZ ROSALES"), y con él el
+      // nombre del .docx. Hay que llevarlo al título, al cliente y a
+      // `demandaRelPath`: la firma convierte ESE .docx, y sin esto firmaría el viejo.
+      const actual = await prisma.document.findUnique({
+        where: { id: input.documentId }, select: { title: true, metadata: true },
+      });
+      const nombre = String(doc.nombre || '').trim();
+      await prisma.document.update({
+        where: { id: input.documentId },
+        data: {
+          ...(nombre && {
+            clientName: nombre,
+            title: actual?.title?.includes(' — ') ? actual.title.replace(/ — .*$/, ` — ${nombre}`) : actual?.title,
+          }),
+          ...(demanda.rel && {
+            metadata: {
+              ...((actual?.metadata as Record<string, unknown> | null) ?? {}),
+              demandaRelPath: demanda.rel,
+            } as Prisma.InputJsonValue,
+          }),
+        },
       });
 
       console.error(`[GENERATE/regenerar] OK — ${input.cedula} en ${((Date.now() - t0) / 1000).toFixed(0)}s`);

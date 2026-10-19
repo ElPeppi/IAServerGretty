@@ -81,6 +81,8 @@ async function leerFormulario(buffer, opts = {}) {
           const trozos = fs[k].filter((f) => f.x >= desde && f.x < hasta);
           if (trozos.length) candidatos.push(trozos.map((t) => t.str).join(' ').replace(/\s+/g, ' ').trim());
         }
+        // Solo los de abajo, antes de sumar el de la derecha (ver valorDebajoEnSeccion).
+        const debajo = [...candidatos];
         // Muchos formularios no ponen el valor DEBAJO sino A LA DERECHA, en la
         // misma fila: el certificado del RUNT es todo así ("MARCA:" y "FORD"), y
         // en el de inscripción el monto también.
@@ -98,6 +100,7 @@ async function leerFormulario(buffer, opts = {}) {
           etiqueta: etiqueta.str.trim(),
           valor: candidatos[0] || '',
           valores: candidatos,
+          debajo,
           derecha,
           pagina: i + 1,
           orden: orden++,
@@ -119,14 +122,32 @@ async function leerFormulario(buffer, opts = {}) {
  *                           sección con la misma forma (letra + punto + número)
  */
 function valorEnSeccion(campos, reSeccion, reEtiqueta, reFin = /^[A-Z]\.\d/) {
+  const hit = campoEnSeccion(campos, reSeccion, reEtiqueta, reFin);
+  return hit ? hit.valor : '';
+}
+
+/**
+ * Como valorEnSeccion, pero SOLO acepta el valor de DEBAJO de la etiqueta, nunca
+ * el de la derecha. Para las secciones donde los rótulos van en una fila y los
+ * valores en la de abajo, como la A.1 del formulario de ejecución: "Primer
+ * Apellido | Segundo Apellido | Primer Nombre | Segundo Nombre | Sexo". Si el
+ * segundo nombre viene VACÍO, a su derecha está el rótulo "Sexo" (sin ":", así
+ * que la guarda de leerFormulario no lo descarta) y la solicitud de Suad López
+ * salió a nombre de "SUAD Sexo LOPEZ ROSALES". Un campo vacío debe dar ''.
+ */
+function valorDebajoEnSeccion(campos, reSeccion, reEtiqueta, reFin = /^[A-Z]\.\d/) {
+  const hit = campoEnSeccion(campos, reSeccion, reEtiqueta, reFin);
+  return hit ? ((hit.debajo || [])[0] || '') : '';
+}
+
+function campoEnSeccion(campos, reSeccion, reEtiqueta, reFin) {
   const ini = campos.findIndex((c) => reSeccion.test(c.etiqueta));
-  if (ini < 0) return '';
+  if (ini < 0) return null;
   let fin = campos.length;
   for (let i = ini + 1; i < campos.length; i++) {
     if (reFin.test(campos[i].etiqueta) && !reSeccion.test(campos[i].etiqueta)) { fin = i; break; }
   }
-  const hit = campos.slice(ini + 1, fin).find((c) => reEtiqueta.test(norm(c.etiqueta)));
-  return hit ? hit.valor : '';
+  return campos.slice(ini + 1, fin).find((c) => reEtiqueta.test(norm(c.etiqueta))) || null;
 }
 
 /**
@@ -157,4 +178,4 @@ function valor(campos, reEtiqueta) {
   return hit ? hit.valor : '';
 }
 
-module.exports = { leerFormulario, valorEnSeccion, valor, valorComo, valorDerecha };
+module.exports = { leerFormulario, valorEnSeccion, valorDebajoEnSeccion, valor, valorComo, valorDerecha };

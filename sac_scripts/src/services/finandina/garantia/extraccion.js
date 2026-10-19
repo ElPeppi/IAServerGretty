@@ -33,7 +33,7 @@
 
 const fs = require('fs');
 
-const { leerFormulario, valor, valorEnSeccion, valorComo, valorDerecha } = require('../../comun/pdfFormulario');
+const { leerFormulario, valor, valorDebajoEnSeccion, valorComo, valorDerecha } = require('../../comun/pdfFormulario');
 const { fragmentosDePdf } = require('../../comun/pdfTexto');
 const { ocrPdf, extraerCamposPagare } = require('../../ocr');
 
@@ -317,9 +317,14 @@ async function extraer(halladas) {
   const eje = (await leerFormulario(fs.readFileSync(documentos.ejecucion.ruta))).campos;
   const ini = (await leerFormulario(fs.readFileSync(documentos.inscripcion.ruta))).campos;
 
-  const v = (re) => valorEnSeccion(eje, SECCION_DEUDOR, re);
+  // En la A.1 los rótulos van en una fila y los valores DEBAJO: solo se acepta el
+  // de abajo. Con el de la derecha, un segundo nombre vacío se llevaba el rótulo
+  // "Sexo" (ver valorDebajoEnSeccion).
+  const v = (re) => valorDebajoEnSeccion(eje, SECCION_DEUDOR, re);
+  // En MAYÚSCULAS, como el resto de la demanda: hay formularios llenados en
+  // minúscula ("ernesto camacho rodriguez").
   const nombre = [v(/^PRIMER NOMBRE/), v(/^SEGUNDO NOMBRE/), v(/^PRIMER APELLIDO/), v(/^SEGUNDO APELLIDO/)]
-    .map(limpio).filter(Boolean).join(' ');
+    .map(limpio).filter(Boolean).join(' ').toUpperCase();
 
   const municipio = limpio(v(/^MUNICIPIO/));
   const direccion = direccionLimpia(v(/^DIRECCION$/));
