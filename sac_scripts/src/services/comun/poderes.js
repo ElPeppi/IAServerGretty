@@ -15,7 +15,7 @@
 const fs     = require('fs');
 const AdmZip = require('adm-zip');
 
-const { reemplazarCampos, aplanarCamposWord, desactivarMailMerge } = require('./docx');
+const { reemplazarCampos, aplanarCamposWord, desactivarMailMerge, docxABuffer } = require('./docx');
 
 function fillPoder(templateBuffer, fieldMap) {
   const zip = new AdmZip(templateBuffer);
@@ -36,12 +36,10 @@ function fillPoder(templateBuffer, fieldMap) {
 
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'));
   // Algunas plantillas (la del poder de PAGO DIRECTO) traen sus entradas con el
-  // bit 3 (data descriptor) del zip activo. adm-zip lo conserva al re-empaquetar y
-  // luego NO puede re-leer su propia salida ("No descriptor present"), lo que rompía
-  // extraerParrafosDocx al sobreponer el poder en el ANEXO 1. Se limpia ese bit para
-  // que toBuffer escriba CRC/tamaños en el encabezado local (sin descriptor).
-  for (const e of zip.getEntries()) e.header.flags &= ~0x8;
-  return zip.toBuffer();
+  // bit 3 (data descriptor) del zip activo. Sin limpiarlo, adm-zip no puede re-leer
+  // su propia salida ("No descriptor present"), lo que rompía extraerParrafosDocx
+  // al sobreponer el poder en el ANEXO 1, y Word la abre como dañada. Ver docxABuffer.
+  return docxABuffer(zip);
 }
 
 // Párrafo con salto de página (separa un poder del siguiente en el doc combinado).
@@ -105,7 +103,7 @@ function generarPoderesCombinado(items, templateDocxPath, opts = {}) {
   const combinado = aplanarCamposWord(head + bloques.join(SALTO_PAGINA) + cola);
   zip.updateFile('word/document.xml', Buffer.from(combinado, 'utf8'));
   desactivarMailMerge(zip);
-  return { buffer: zip.toBuffer(), clientes };
+  return { buffer: docxABuffer(zip), clientes };
 }
 
 module.exports = { fillPoder, generarPoderesCombinado };

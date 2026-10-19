@@ -25,7 +25,7 @@
 const fs = require('fs');
 const AdmZip = require('adm-zip');
 
-const { reemplazarCampos, aplanarCamposWord, desactivarMailMerge, quitarFuentesEmbebidas, estamparFirma } = require('../../comun/docx');
+const { reemplazarCampos, aplanarCamposWord, desactivarMailMerge, quitarFuentesEmbebidas, estamparFirma, docxABuffer } = require('../../comun/docx');
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -151,7 +151,7 @@ function generarDemanda(plantillaPath, fieldMap, opts = {}) {
   if (opts.firmar !== false) {
     try { estamparFirma(zip); } catch (e) { console.error(`[GARANTIA] firma no estampada: ${e.message}`); }
   }
-  return zip.toBuffer();
+  return docxABuffer(zip);
 }
 
 // Los dos renglones que se disputan el ANEXO 4 en el acápite "ANEXOS:". Van uno

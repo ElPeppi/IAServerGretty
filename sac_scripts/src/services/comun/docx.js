@@ -259,6 +259,22 @@ function aplanarCamposWord(xml) {
     (run) => (/<w:(?:fldChar|instrText)\b/.test(run) ? '' : run));
 }
 
+/**
+ * Empaqueta el .docx para entregarlo. USAR SIEMPRE en vez de `zip.toBuffer()`.
+ *
+ * Las plantillas exportadas desde Google Docs traen todas sus entradas con el
+ * bit 3 del zip ("data descriptor": CRC y tamaños van DESPUÉS de los datos).
+ * adm-zip conserva ese bit al re-empaquetar, pero escribe los tamaños en la
+ * cabecera y no agrega el descriptor. Word ve la contradicción y abre el archivo
+ * con "contenido no legible… ¿desea recuperar?" y, si se le dice que no, no
+ * muestra nada. Le pasó a la solicitud de aprehensión cuando su plantilla se
+ * editó en Google Docs (oct-2026). Apagar el bit deja cabeceras coherentes.
+ */
+function docxABuffer(zip) {
+  for (const e of zip.getEntries()) e.header.flags &= ~0x8;
+  return zip.toBuffer();
+}
+
 /** Quita la configuración de combinación de correspondencia del .docx. */
 function desactivarMailMerge(zip) {
   try {
@@ -311,8 +327,10 @@ function quitarFuentesEmbebidas(zip) {
       }
     } catch (_) { /* sin fontTable.xml */ }
 
+    // .odttf (Word) o .ttf (exportación de Google Docs): sin su relación quedarían
+    // como partes huérfanas.
     for (const e of zip.getEntries()) {
-      if (/^word\/fonts\/.*\.odttf$/i.test(e.entryName)) { zip.deleteFile(e.entryName); tocado = true; }
+      if (/^word\/fonts\/.*\.(?:odttf|ttf)$/i.test(e.entryName)) { zip.deleteFile(e.entryName); tocado = true; }
     }
     try { zip.deleteFile('word/_rels/fontTable.xml.rels'); } catch (_) { /* no estaba */ }
 
@@ -340,6 +358,7 @@ module.exports = {
   aplanarCamposWord,
   desactivarMailMerge,
   quitarFuentesEmbebidas,
+  docxABuffer,
   placaCorta,
   ORDINALES,
   ORDINAL_RE,

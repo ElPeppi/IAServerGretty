@@ -135,5 +135,9 @@ export function estamparFirmaDocx(docxBuffer: Buffer, firmaBuffer: Buffer): Buff
   }
   zip.updateFile('word/document.xml', Buffer.from(xml, 'utf8'));
 
+  // Un .docx exportado desde Google Docs trae el bit 3 ("data descriptor") en sus
+  // entradas; adm-zip lo conserva sin escribir el descriptor y Word lo da por
+  // dañado. Se apaga, igual que en el motor (comun/docx.js → docxABuffer).
+  for (const e of zip.getEntries()) e.header.flags &= ~0x8;
   return zip.toBuffer();
 }

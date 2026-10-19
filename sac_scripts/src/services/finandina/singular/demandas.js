@@ -27,7 +27,7 @@ const config = require('../../../config');
 const { fmtCOP } = require('../../../utils/numeros');
 const { resolverCarpetaCedula } = require('../../../utils/carpetas');
 const {
-  estamparFirma, xmlEscape, getParagraphs, textoDe, reemplazarCampos, placaCorta,
+  estamparFirma, xmlEscape, getParagraphs, textoDe, reemplazarCampos, placaCorta, docxABuffer,
   ORDINAL_RE, ORDINALES,
 } = require('../../comun/docx');
 
@@ -329,7 +329,7 @@ function fillDocxTemplate(templateBuffer, fieldMap, vehiculos = [], tieneInmuebl
   //    quisiera volver a estampar en generación.)
   // estamparFirma(zip);
 
-  return zip.toBuffer();
+  return docxABuffer(zip);
 }
 
 // items: [{ fila, vehiculos }] — fila de la Plantilla Singular + vehículos REALES
