@@ -140,7 +140,8 @@ export function DescargarSacModal({ onClose }: Props) {
               ))}
             </div>
             <p className="text-xs text-gray-500 mt-1">
-              Define en qué árbol de carpetas cae el SAC. Para las de aprehensión y entrega, elige <b>Pago directo</b>.
+              Define en qué árbol de carpetas cae el SAC de las cédulas pegadas. Para las de aprehensión y entrega, elige <b>Pago directo</b>.
+              Las personas de una asignación van solas al árbol de su proceso, según el Excel.
             </p>
           </div>
 

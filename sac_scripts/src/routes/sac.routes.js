@@ -35,13 +35,15 @@ function parseCedulas(raw) {
 }
 
 // ─── POST /descargar-sac ──────────────────────────────────────────────────────
-// Body: { cedulas, sacUser?, sacPass?, sacBaseUrl?, outputBaseDir?, proceso?, fechaAsignacion? }
+// Body: { cedulas, sacUser?, sacPass?, sacBaseUrl?, outputBaseDir?, proceso?, fechaAsignacion?, procesoPorCedula? }
 //   El SAC baja SIEMPRE al disco local del motor (caché efímero). El árbol de
 //   Drive donde queda NO lo decide el motor: lo decide el BACKEND al subirlo,
 //   según `proceso`. Por eso `proceso` no cambia `outBase` aquí; solo viaja en el
 //   aviso por cédula para que el backend suba al árbol correcto (singular vs.
-//   garantía mobiliaria). `fechaAsignacion` igual: el motor no la usa, solo la
-//   devuelve para que el backend nombre la carpeta nueva con el mes de la asignación.
+//   garantía mobiliaria). `procesoPorCedula` ({ cedula: proceso }, sale del Excel
+//   de la asignación) manda sobre `proceso` para las cédulas que trae.
+//   `fechaAsignacion` igual: el motor no la usa, solo la devuelve para que el
+//   backend nombre la carpeta nueva con el mes de la asignación.
 router.post('/descargar-sac', async (req, res) => {
   const cedulas = parseCedulas(req.body.cedulas);
   if (!cedulas.length) {
@@ -58,6 +60,13 @@ router.post('/descargar-sac', async (req, res) => {
   const sacPass = req.body.sacPass       || config.SAC_PASS;
   const outBase = req.body.outputBaseDir || config.OUT_DIR;
   const fechaAsignacion = req.body.fechaAsignacion ? String(req.body.fechaAsignacion) : undefined;
+  // Claves solo con dígitos, igual que `cedulas` tras parseCedulas.
+  const procesoPorCedula = {};
+  if (req.body.procesoPorCedula && typeof req.body.procesoPorCedula === 'object') {
+    for (const [ced, p] of Object.entries(req.body.procesoPorCedula)) {
+      procesoPorCedula[String(ced).replace(/\D/g, '')] = String(p).toLowerCase() === 'pago_directo' ? 'pago_directo' : 'singular';
+    }
+  }
 
   console.log(`[${new Date().toISOString()}] /descargar-sac: ${cedulas.length} cédula(s): ${cedulas.join(', ')}`);
 
@@ -73,14 +82,14 @@ router.post('/descargar-sac', async (req, res) => {
     message: `Descarga del SAC iniciada para ${cedulas.length} cédula(s). Se avisa por cada una que termine.`,
   });
 
-  void descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass, proceso, fechaAsignacion });
+  void descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass, proceso, fechaAsignacion, procesoPorCedula });
 });
 
 // Despacha TODAS las cédulas a la cola del SAC y deja que sea ella quien limite
 // cuántas sesiones corren a la vez (SAC_CONCURRENCIA, por defecto 1). Notifica al
 // backend por cada una en cuanto termina. Nunca lanza: un fallo de una cédula no
 // puede tumbar el lote ni el proceso del motor.
-async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass, proceso = 'singular', fechaAsignacion }) {
+async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacPass, proceso = 'singular', fechaAsignacion, procesoPorCedula = {} }) {
   const t0 = Date.now();
   const resultados = [];
 
@@ -145,7 +154,7 @@ async function descargarEnSegundoPlano({ cedulas, outBase, sacUrl, sacUser, sacP
         total: cedulas.length,
         // El backend usa esto para subir el SAC al árbol de Drive correcto
         // (singular vs. garantía mobiliaria). Ver notificationRoutes.
-        proceso,
+        proceso: procesoPorCedula[cedula] || proceso,
         fechaAsignacion,
       },
     });

@@ -126,7 +126,12 @@ export class EngineService implements IEngineService {
   async descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput> {
     const { data } = await axios.post<DescargarSacOutput>(
       `${this.baseUrl}/descargar-sac`,
-      { cedulas: input.cedulas, proceso: input.proceso || 'singular', fechaAsignacion: input.fechaAsignacion },
+      {
+        cedulas: input.cedulas,
+        proceso: input.proceso || 'singular',
+        fechaAsignacion: input.fechaAsignacion,
+        procesoPorCedula: input.procesoPorCedula,
+      },
       {
         // El motor responde 202 apenas encola el lote (el scraping sigue en
         // segundo plano y avisa por SSE), así que basta un timeout corto.

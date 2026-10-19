@@ -122,8 +122,9 @@ function cedulaDeFila(fila: Record<string, unknown>, mapeo: MapeoColumnas = null
 }
 
 // Deriva las personas (cédula + nombre + tipo de proceso) de las filas del Excel.
-// Se usa tanto en el endpoint `personas` como al generar demandas una a una.
-function personasDeFilas(
+// Se usa tanto en el endpoint `personas` como al generar demandas una a una,
+// y en la descarga del SAC (GenerateController) para saber el proceso de cada uno.
+export function personasDeFilas(
   filas: Array<Record<string, unknown>>,
   mapeo: MapeoColumnas = null,
 ): PersonaAsignacion[] {
@@ -218,7 +219,7 @@ function contarCedulas(filas: Array<Record<string, unknown>>, mapeo: MapeoColumn
 }
 
 // Lee el mapeo guardado en la asignación (columna Json `mapeo`) de forma segura.
-function mapeoDe(asig: { mapeo?: unknown } | null | undefined): MapeoColumnas {
+export function mapeoDe(asig: { mapeo?: unknown } | null | undefined): MapeoColumnas {
   const m = asig?.mapeo;
   return m && typeof m === 'object' && !Array.isArray(m) ? (m as Record<string, string>) : null;
 }
@@ -1267,7 +1268,7 @@ export class AsignacionController {
   }
 
   // Revisa en Drive (`GARANTIAS/{cedula}`) los INSUMOS para generar la demanda:
-  //  - sac:    hay SAC_*.pdf (antecedentes/correo). Se sube a Drive al descargar.
+  //  - sac:    hay SAC_*.pdf (antecedentes/correo), en cualquiera de los dos árboles.
   //  - pagare: hay el PDF del pagaré. Regla espejo del motor (anexos.js): PDF que NO
   //            empieza por SAC_, NO es DATACREDITO, y el nombre tiene PAGARE o DECEVAL.
   // Una sola llamada a Drive. Sin storage no se puede verificar → no se bloquea.
@@ -1280,7 +1281,16 @@ export class AsignacionController {
       const carpetas = await carpetasDeCedula(String(cedula), banco);
       const archivos: string[] = [];
       for (const c of carpetas) archivos.push(...(await storage.list(c.relPath)));
-      const sac = archivos.some((f) => /^SAC_.*\.pdf$/i.test(f));
+      const esSac = (f: string) => /^SAC_.*\.pdf$/i.test(f);
+      let sac = archivos.some(esSac);
+      // El SAC pudo caer en el árbol de pago directo: la hidratación lo trae de
+      // ahí también (sacDelOtroArbol), así que aquí cuenta igual. Y el modal del
+      // SAC usa esto para las personas de los dos procesos.
+      if (!sac) {
+        for (const c of await carpetasDeCedula(String(cedula), banco, 'pago_directo')) {
+          if ((await storage.list(c.relPath)).some(esSac)) { sac = true; break; }
+        }
+      }
       const pagare = archivos.some(
         (f) => /\.pdf$/i.test(f) && !/^SAC_/i.test(f) && !/DATACREDITO/i.test(f) && /(PAGARE|DECEVAL)/i.test(f),
       );

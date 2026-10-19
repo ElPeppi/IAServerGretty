@@ -82,6 +82,9 @@ export interface DescargarSacInput {
   // Fecha (ISO) de la asignación desde la que se pidió. El motor no la usa: la
   // devuelve en el aviso por cédula y el backend nombra con ella la carpeta nueva.
   fechaAsignacion?: string;
+  // Proceso de cada cédula según la asignación (manda sobre `proceso`). El motor
+  // tampoco lo usa: devuelve en cada aviso el de esa cédula.
+  procesoPorCedula?: Record<string, 'singular' | 'pago_directo'>;
 }
 
 export interface DescargarSacItem {

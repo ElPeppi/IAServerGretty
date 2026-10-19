@@ -15,6 +15,7 @@ import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { EngineFile } from '../../application/services/IEngineService';
 import { correccionesDeCedulas } from '../../application/services/datosManuales';
 import { fechaDesdeNombre } from '../../infrastructure/services/fechaAsignacion';
+import { personasDeFilas, mapeoDe } from './AsignacionController';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
 const documentRepository = new PrismaDocumentRepository();
@@ -60,16 +61,33 @@ function extraerCedulasDeExcel(buffer: Buffer): string[] {
   return [...out];
 }
 
-// Fecha de una asignación: la guardada o, si no hay, la del nombre del Excel.
-// null si no se pidió desde una asignación (o no existe). No lanza.
-async function fechaDeAsignacion(id: string): Promise<Date | null> {
-  if (!id) return null;
+// Lo que la descarga del SAC necesita de la asignación desde la que se pidió:
+//  - fecha: la guardada o, si no hay, la del nombre del Excel (mes de la carpeta nueva);
+//  - procesoPorCedula: el árbol de Drive de cada persona según SU proceso en el
+//    Excel. Sin esto mandaba el selector del modal ("Ejecutivo singular" por
+//    defecto) y el SAC de los de pago directo caía en EJECUTIVAS SINGULARES, lejos
+//    de su expediente. Quien no sea de ninguno de los dos se queda con el selector.
+// Vacío si no se pidió desde una asignación (o no existe). No lanza.
+async function datosDeAsignacion(id: string): Promise<{
+  fecha: Date | null;
+  procesoPorCedula: Record<string, 'singular' | 'pago_directo'>;
+}> {
+  const vacio = { fecha: null, procesoPorCedula: {} };
+  if (!id) return vacio;
   try {
-    const a = await prisma.asignacion.findUnique({ where: { id }, select: { fechaAsignacion: true, nombre: true } });
-    if (!a) return null;
-    return a.fechaAsignacion ?? fechaDesdeNombre(a.nombre);
+    const a = await prisma.asignacion.findUnique({
+      where: { id }, select: { fechaAsignacion: true, nombre: true, filas: true, mapeo: true },
+    });
+    if (!a) return vacio;
+    const procesoPorCedula: Record<string, 'singular' | 'pago_directo'> = {};
+    const filas = (a.filas as unknown as Array<Record<string, unknown>>) ?? [];
+    for (const p of personasDeFilas(filas, mapeoDe(a))) {
+      if (p.tipo === 'TRÁMITE PAGO DIRECTO') procesoPorCedula[p.cedula] = 'pago_directo';
+      else if (p.tipo === 'EJECUTIVO SINGULAR') procesoPorCedula[p.cedula] = 'singular';
+    }
+    return { fecha: a.fechaAsignacion ?? fechaDesdeNombre(a.nombre), procesoPorCedula };
   } catch {
-    return null;
+    return vacio;
   }
 }
 
@@ -243,11 +261,15 @@ export class GenerateController {
       // (misma carpeta que lee la generación de garantías). Default 'singular'.
       const proceso = String(req.body?.proceso || '').toLowerCase() === 'pago_directo'
         ? 'pago_directo' as const : 'singular' as const;
-      // Si se pidió desde una asignación, su fecha da el mes de la carpeta que se
-      // cree para quien aún no tenga ("{cedula} OCTUBRE 2026"). Sin ella, el de hoy.
-      const fechaAsignacion = await fechaDeAsignacion(String(req.body?.asignacionId ?? ''));
+      // Si se pidió desde una asignación: su fecha da el mes de la carpeta que se
+      // cree para quien aún no tenga ("{cedula} OCTUBRE 2026"; sin ella, el de hoy)
+      // y el proceso de cada persona decide su árbol, por encima del selector.
+      const asig = await datosDeAsignacion(String(req.body?.asignacionId ?? ''));
       const result = await engineService.descargarSac({
-        cedulas, proceso, fechaAsignacion: fechaAsignacion?.toISOString(),
+        cedulas,
+        proceso,
+        fechaAsignacion: asig.fecha?.toISOString(),
+        procesoPorCedula: Object.keys(asig.procesoPorCedula).length ? asig.procesoPorCedula : undefined,
       });
       res.status(202).json(result);
     } catch (error: unknown) {

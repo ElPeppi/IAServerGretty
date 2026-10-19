@@ -16,7 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import { storage } from './index';
-import { BANCO_DEFAULT, unir, type Proceso } from './rutas';
+import { BANCO_DEFAULT, CARPETA_PROCESO, unir, type Proceso } from './rutas';
 import { carpetasDeCedula, carpetaDestino } from './carpetasCedula';
 
 // Artefactos que produce la descarga del SAC (no toca lo demás de la carpeta).
@@ -147,6 +147,7 @@ export async function subirSacDeCedula(
  * distintos), se juntan todas en la carpeta local: al motor le da igual de qué
  * carpeta salió cada archivo, y así no se queda sin el pagaré por estar en otra.
  * Si un nombre se repite entre carpetas, gana el de la más reciente (van primero).
+ * Si en el árbol del proceso no hay SAC, se trae el del otro árbol (`sacDelOtroArbol`).
  */
 export async function hidratarCedula(
   cedula: string,
@@ -203,6 +204,8 @@ export async function hidratarCedula(
     for (let i = 0; i < carpetas.length; i++) {
       await recolectar(carpetas[i]!.relPath, '', listados[i] ?? []);
     }
+    // Sin SAC en el árbol del proceso → el del mismo cliente en el OTRO árbol.
+    const prestadas = await sacDelOtroArbol(ced, banco, proceso, pendientes, yaBajado);
     // Solo lecturas: no crean carpetas, así que no hay carrera posible.
     await enParalelo(pendientes, async ({ rel, nombre }) => {
       try {
@@ -216,7 +219,8 @@ export async function hidratarCedula(
       }
     });
     if (bajados) {
-      const de = carpetas.map((c) => `"${c.nombre}"`).join(', ');
+      const de = carpetas.map((c) => `"${c.nombre}"`).join(', ')
+        + (prestadas ? ` + ${prestadas} del SAC de ${CARPETA_PROCESO[OTRO_PROCESO[proceso]]}` : '');
       // El tiempo va en el log a propósito: es la única forma de comparar el antes
       // y el después de paralelizar, y la latencia real solo se mide desde el servidor.
       const segs = ((Date.now() - t0) / 1000).toFixed(1);
@@ -226,6 +230,44 @@ export async function hidratarCedula(
     console.error('[sacSync] error hidratando', cedula, e instanceof Error ? e.message : e);
   }
   return bajados;
+}
+
+const OTRO_PROCESO: Record<Proceso, Proceso> = { singular: 'pago_directo', pago_directo: 'singular' };
+
+/**
+ * Si entre lo que se va a hidratar no hay ningún SAC, agrega a `pendientes` los
+ * SAC_*.pdf / CONTACTOS_*.csv que el mismo cliente tenga en el OTRO árbol de
+ * proceso. Devuelve cuántos agregó. Solo lee.
+ *
+ * El SAC es la información del banco por CÉDULA, igual sea cual sea el proceso,
+ * pero la descarga lo sube al árbol que se eligió en el modal ("Ejecutivo
+ * singular" por defecto). Así quedó el de las 12 personas de pago directo de la
+ * asignación del 13-oct-2026: en EJECUTIVAS SINGULARES, y la generación de
+ * garantías —que solo miraba GARANTIA MOBILIARIAS— las omitió a todas por
+ * "falta la consulta del SAC".
+ */
+async function sacDelOtroArbol(
+  ced: string,
+  banco: string,
+  proceso: Proceso,
+  pendientes: Array<{ rel: string; nombre: string }>,
+  yaBajado: Set<string>,
+): Promise<number> {
+  if (pendientes.some((p) => SAC_FILE.test(p.nombre))) return 0;
+  let agregados = 0;
+  try {
+    for (const c of await carpetasDeCedula(ced, banco, OTRO_PROCESO[proceso])) {
+      for (const f of await storage.list(c.relPath)) {
+        if (!SAC_FILE.test(f) || yaBajado.has(f)) continue;
+        yaBajado.add(f);
+        pendientes.push({ rel: unir(c.relPath, f), nombre: f });
+        agregados++;
+      }
+    }
+  } catch (e) {
+    console.error('[sacSync] no se pudo buscar el SAC en el otro árbol', ced, e instanceof Error ? e.message : e);
+  }
+  return agregados;
 }
 
 /** Borra la(s) carpeta(s) local(es) de la cédula tras generar (todo ya quedó en Drive). */
