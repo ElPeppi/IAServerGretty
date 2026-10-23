@@ -13,6 +13,8 @@ router.use(authenticate);
 
 // Casos del cuadro jurídico (Libertador no tiene lotes: la unidad es la solicitud).
 router.get('/casos', (req, res) => controller.casos(req, res));
+// Solicitudes que llegaron por correo (n8n) y en qué va su flujo automático.
+router.get('/recibidas', (req, res) => controller.recibidas(req, res));
 // Estados de cuenta de un conjunto de solicitudes (sin asignación de por medio).
 router.post('/estados-cuenta', (req, res) => controller.estadosCuenta(req, res));
 

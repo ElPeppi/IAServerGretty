@@ -311,6 +311,9 @@ export interface DocumentosLibertadorItem {
   archivos?: Array<{ nombre: string; base64: string }>;
   motivo?: string;
   error?: string;
+  // Lo leído del Huella para el formulario de solicitud de documentos. Viene
+  // aunque los anexos fallen; null si ni siquiera se pudo abrir la solicitud.
+  huella?: { poliza: string; estado: string; ciudad: string; errores?: { ciudad?: string } } | null;
 }
 
 export interface DocumentosLibertadorOutput {

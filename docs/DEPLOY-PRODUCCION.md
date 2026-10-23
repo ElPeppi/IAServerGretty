@@ -63,6 +63,18 @@ ENGINE_NOTIFY_SECRET=un-secreto-largo
 # n8n → backend (POST /api/libertador/carpetas). En n8n va como credencial
 # "Header Auth": Name = x-n8n-secret, Value = este mismo valor. Sin él, se rechaza.
 N8N_SECRET=otro-secreto-largo
+
+# Libertador: formulario de Google para pedirle los documentos a Bolívar.
+# Vacío = no se envía. OJO: con el enlace real, cada asignación manda una
+# solicitud de verdad a Bolívar (una sola vez por solicitud: queda registro en
+# la carpeta del caso).
+LIBERTADOR_FORM_URL=
+# Valores fijos (estos son los de por defecto; solo hace falta ponerlos para cambiarlos)
+# LIBERTADOR_FORM_CORREO=jramos@jramosabogado.com
+# LIBERTADOR_FORM_ABOGADO=JAIRO ENRIQUE RAMOS LAZARO
+# LIBERTADOR_FORM_DESPACHO=PEQUEÑAS CAUSAS Y COMPETENCIAS MULTIPLES
+# LIBERTADOR_FORM_DOCUMENTOS=Poder Ejecutivo Subrogado;Declaración de pago;Póliza;Reconocer
+# LIBERTADOR_FORM_OBSERVACIONES=DECLARACION DE PAGO SUBROGADA ACTUALIZADA
 ```
 
 ### sac_scripts/.env

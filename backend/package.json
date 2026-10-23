@@ -17,7 +17,8 @@
     "db:passwordenc": "ts-node-dev src/infrastructure/database/backfillPasswordEnc.ts",
     "db:fechas": "ts-node-dev src/infrastructure/database/backfillFechaAsignacion.ts",
     "db:urls": "ts-node-dev src/infrastructure/database/backfillUrlsRelativas.ts",
-    "drive:ls": "ts-node --transpile-only src/infrastructure/storage/listarDrive.ts"
+    "drive:ls": "ts-node --transpile-only src/infrastructure/storage/listarDrive.ts",
+    "libertador:formulario": "ts-node --transpile-only src/infrastructure/libertador/probarFormulario.ts"
   },
   "keywords": [],
   "author": "",

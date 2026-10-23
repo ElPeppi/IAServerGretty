@@ -1665,7 +1665,7 @@ export class AsignacionController {
 
       const plantilla = await bajarPlantillaConciliacion();
       if (!plantilla) {
-        res.status(400).json({ message: 'No se encontró PLANTILLA PODER DE CONCILIACION en Drive (LIBERTADOR/CREAR PODERES).' });
+        res.status(400).json({ message: 'No se encontró PLANTILLA PODER DE CONCILIACION en Drive (LIBERTADOR/PLANTILLAS/CREAR PODERES).' });
         return;
       }
 

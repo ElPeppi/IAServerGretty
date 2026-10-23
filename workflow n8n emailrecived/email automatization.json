@@ -572,7 +572,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Una carpeta por solicitud en Drive (DOCUMENTOS CLIENTES/<solicitud> <MES> <AÑO>)\n// con una subcarpeta por proceso. Las filas llegan una por proceso: se vuelven a\n// juntar por solicitud y el backend crea lo que falte (si ya existe, la reutiliza).\nconst casos = new Map();\nfor (const { json: f } of $input.all()) {\n  const sol = String(f.noSolicitud || '').trim();\n  if (!sol) continue;\n  if (!casos.has(sol)) casos.set(sol, new Set());\n  casos.get(sol).add(f.proceso);\n}\nreturn [{ json: { casos: [...casos].map(([solicitud, procesos]) => ({ solicitud, procesos: [...procesos] })) } }];\n"
+        "jsCode": "// Una carpeta por solicitud en Drive (DOCUMENTOS CLIENTES/<solicitud> <MES> <AÑO>)\n// con una subcarpeta por proceso. Las filas llegan una por proceso: se vuelven a\n// juntar por solicitud y el backend crea lo que falte (si ya existe, la reutiliza).\n// El resto de la tabla del correo viaja para que la página de Libertador lo muestre.\nconst casos = new Map();\nfor (const { json: f } of $input.all()) {\n  const sol = String(f.noSolicitud || '').trim();\n  if (!sol) continue;\n  if (!casos.has(sol)) {\n    casos.set(sol, {\n      solicitud: sol,\n      procesos: [],\n      tipoAlistamiento: f.tipoAlistamiento || '',\n      estadoSiniestro: f.estadoSiniestro || '',\n      valorCanon: f.valorCanon || 0,\n      valorDeuda: f.valorDeuda || 0,\n      asunto: f.emailSubject || '',\n    });\n  }\n  const c = casos.get(sol);\n  if (!c.procesos.includes(f.proceso)) c.procesos.push(f.proceso);\n}\nreturn [{ json: { casos: [...casos.values()] } }];\n"
       },
       "id": "0e88b7c4-3c11-4cbf-8b6f-c195ea1ddc36",
       "name": "Agrupar por Solicitud",

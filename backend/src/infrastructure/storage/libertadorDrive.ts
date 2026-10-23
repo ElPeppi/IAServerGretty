@@ -63,9 +63,10 @@ async function hijoFolder(parentId: string, nameLike: string): Promise<string | 
 }
 
 // Navega ROOT/DEMANDAS/LIBERTADOR/<sub> y devuelve el folderId de <sub>.
+// `sub` puede traer varios niveles: "PLANTILLAS/CREAR PODERES".
 async function carpetaLibertador(sub: string): Promise<string | null> {
   let p: string | null = ROOT_FOLDER_ID;
-  for (const seg of ['DEMANDAS', 'LIBERTADOR', sub]) {
+  for (const seg of ['DEMANDAS', 'LIBERTADOR', ...sub.split('/')]) {
     p = await hijoFolder(p as string, seg);
     if (!p) return null;
   }
@@ -230,18 +231,36 @@ async function bajarArchivo(f: drive_v3.Schema$File): Promise<Buffer> {
 export async function bajarDeclaracionPagos(
   folderId: string,
 ): Promise<{ buffer: Buffer; name: string } | null> {
-  const items = await listar(`'${folderId}' in parents and trashed=false`);
-  const decls = items.filter((f) => /declaraci.*pago/i.test(f.name || '') && f.mimeType !== FOLDER_MIME && f.mimeType !== GSHEET);
-  if (!decls.length) return null;
-  decls.sort((a, b) => (/\.docx$/i.test(b.name || '') || b.mimeType === GDOC ? 1 : 0)
-    - (/\.docx$/i.test(a.name || '') || a.mimeType === GDOC ? 1 : 0));
-  const f = decls[0];
-  return { buffer: await bajarArchivo(f), name: f.name as string };
+  // Con una carpeta por solicitud y una subcarpeta por proceso, la declaración ya
+  // no siempre está en la raíz: la oficina la deja en EJECUTIVO/, CONCILIACION/…
+  // y a veces dentro de su ANEXOS/. Se busca por niveles, la raíz primero.
+  let nivel = [folderId];
+  for (let prof = 0; prof < 3 && nivel.length; prof++) {
+    const siguiente: string[] = [];
+    for (const id of nivel) {
+      const items = await listar(`'${id}' in parents and trashed=false`);
+      const decls = items.filter((f) => /declaraci.*pago/i.test(f.name || '') && f.mimeType !== FOLDER_MIME && f.mimeType !== GSHEET);
+      if (decls.length) {
+        decls.sort((a, b) => (/\.docx$/i.test(b.name || '') || b.mimeType === GDOC ? 1 : 0)
+          - (/\.docx$/i.test(a.name || '') || a.mimeType === GDOC ? 1 : 0));
+        const f = decls[0];
+        return { buffer: await bajarArchivo(f), name: f.name as string };
+      }
+      siguiente.push(...items.filter((f) => f.mimeType === FOLDER_MIME).map((f) => f.id as string));
+    }
+    nivel = siguiente;
+  }
+  return null;
 }
 
-/** Baja la plantilla PODER DE CONCILIACION desde LIBERTADOR/CREAR PODERES (recursivo). */
+/**
+ * Baja la plantilla PODER DE CONCILIACION desde CREAR PODERES (recursivo). En el
+ * Drive de la oficina esa carpeta está en LIBERTADOR/PLANTILLAS/CREAR PODERES/MODELO
+ * PODERES; se busca también directo bajo LIBERTADOR por si la mueven.
+ */
 export async function bajarPlantillaConciliacion(): Promise<Buffer | null> {
-  const crearPoderesId = await carpetaLibertador('CREAR PODERES');
+  const crearPoderesId = await carpetaLibertador('PLANTILLAS/CREAR PODERES')
+    || await carpetaLibertador('CREAR PODERES');
   if (!crearPoderesId) return null;
 
   const buscar = async (folderId: string): Promise<drive_v3.Schema$File | null> => {
@@ -304,7 +323,17 @@ const MIME_POR_EXT: Record<string, string> = {
   docx: DOCX_MIME,
   xls: 'application/vnd.ms-excel',
   xlsx: XLSX_MIME,
+  txt: 'text/plain',
 };
+
+/** Contenido de un archivo de la carpeta del caso (nombre exacto), o null si no está. */
+export async function leerArchivoCaso(folderId: string, nombre: string): Promise<Buffer | null> {
+  const items = await listar(
+    `'${folderId}' in parents and name='${nombre.replace(/['\\]/g, '\\$&')}' and trashed=false`,
+    'files(id,name,mimeType)',
+  );
+  return items.length ? bajarArchivo(items[0]) : null;
+}
 
 /** Tipo MIME por la extensión del nombre; lo desconocido va como binario. */
 export function mimeDeArchivo(nombre: string): string {

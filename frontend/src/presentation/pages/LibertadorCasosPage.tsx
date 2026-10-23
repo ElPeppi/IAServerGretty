@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { libertadorApi, type LibertadorCaso } from '../../infrastructure/api/libertadorApi';
+import { libertadorApi, type LibertadorCaso, type LibertadorRecibida } from '../../infrastructure/api/libertadorApi';
+import { useRefreshOnNotification } from '../../application/context/NotificationContext';
 import { EstadosCuentaModal } from '../components/Libertador/EstadosCuentaModal';
+import { RecibidasPanel } from '../components/Libertador/RecibidasPanel';
 
 /**
  * Casos de Libertador. A diferencia de Finandina no hay lotes que subir: el
@@ -54,26 +56,53 @@ export function LibertadorCasosPage() {
 
   const [modalEstados, setModalEstados] = useState(false);
 
+  // Lo que llegó por correo: viene de la base de la app, no del cuadro, así que
+  // se carga aparte y un fallo de uno no esconde al otro.
+  const [recibidas, setRecibidas] = useState<LibertadorRecibida[]>([]);
+  const [errorRecibidas, setErrorRecibidas] = useState<string | null>(null);
+
+  // Todo setState va DESPUÉS del await: el esqueleto de carga lo enciende quien
+  // pide la recarga a mano (`recargar`), no esta función. Así la recarga que
+  // dispara un aviso no le borra la tabla a quien la está mirando.
   const cargar = useCallback(async () => {
-    setCargando(true);
-    setError(null);
-    try {
-      const res = await libertadorApi.casos();
-      setCasos(res.casos);
-      setFuente(res.fuente);
-    } catch (err: unknown) {
-      const res = (err as { response?: { status?: number; data?: { message?: string } } }).response;
+    const [cuadro, correo] = await Promise.allSettled([libertadorApi.casos(), libertadorApi.recibidas()]);
+
+    if (cuadro.status === 'fulfilled') {
+      setCasos(cuadro.value.casos);
+      setFuente(cuadro.value.fuente);
+      setError(null);
+    } else {
+      const err = cuadro.reason as { response?: { status?: number; data?: { message?: string } } } & Error;
       setError({
-        mensaje: res?.data?.message ?? (err instanceof Error ? err.message : 'No se pudieron cargar los casos'),
-        sinConfigurar: res?.status === 503,
+        mensaje: err.response?.data?.message ?? (err instanceof Error ? err.message : 'No se pudieron cargar los casos'),
+        sinConfigurar: err.response?.status === 503,
       });
       setCasos([]);
-    } finally {
-      setCargando(false);
     }
+
+    if (correo.status === 'fulfilled') {
+      setRecibidas(correo.value);
+      setErrorRecibidas(null);
+    } else {
+      const err = correo.reason as { response?: { data?: { message?: string } } } & Error;
+      setErrorRecibidas(err.response?.data?.message ?? err.message ?? 'No se pudieron leer las solicitudes recibidas');
+    }
+    setCargando(false);
   }, []);
 
-  useEffect(() => { void cargar(); }, [cargar]);
+  useEffect(() => { void cargar(); }, [cargar]);   // `cargando` ya arranca en true
+  const recargar = () => { setCargando(true); void cargar(); };
+
+  // Cada paso del flujo de una asignación avisa con tipo 'libertador' (llegó,
+  // anexos, formulario): la página se pone al día sola, sin tener que dar Actualizar.
+  useRefreshOnNotification(() => { void cargar(); }, ['libertador']);
+
+  // Solicitudes del cuadro, por número: la celda a veces trae algo más que el
+  // número ("5918715 - …"), así que se comparan solo los dígitos iniciales.
+  const enCuadro = useMemo(
+    () => new Set(casos.map((c) => (String(c.solicitud).match(/\d+/) || [''])[0]).filter(Boolean)),
+    [casos],
+  );
 
   // La pantalla SOLO trata los casos con "MES GRAB" (columna BD) vacío: el resto no
   // se muestra ni se puede pedir. De aquí para abajo "los casos" son estos, no el cuadro entero.
@@ -156,7 +185,7 @@ export function LibertadorCasosPage() {
             Generar estados de cuenta
           </button>
           <button
-            onClick={() => void cargar()}
+            onClick={recargar}
             disabled={cargando}
             className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
           >
@@ -168,6 +197,15 @@ export function LibertadorCasosPage() {
           </button>
         </div>
       </div>
+
+      {!cargando && (
+        <RecibidasPanel
+          recibidas={recibidas}
+          enCuadro={enCuadro}
+          cuadroLeido={!error}
+          error={errorRecibidas}
+        />
+      )}
 
       {/* Sin pendientes no hay nada que filtrar: la barra solo estorbaría encima
           del aviso de error o del vacío. */}
@@ -228,7 +266,7 @@ export function LibertadorCasosPage() {
           <p className="mt-0.5">{error.mensaje}</p>
           <button
             type="button"
-            onClick={() => void cargar()}
+            onClick={recargar}
             className="mt-3 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium transition-colors"
           >
             Reintentar

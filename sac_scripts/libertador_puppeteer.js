@@ -313,6 +313,7 @@ async function leerFichaSiniestro(page) {
       .find((t) => /^Siniestro\s*-\s*\S/.test(t) && t.length < 60);
     return {
       solicitud,
+      poliza: campos.get('# Póliza') || '',
       estado: campos.get('Estado Siniestro') || '',
       fechaMora: campos.get('Fecha de Mora') || '',
       arrendatario: campos.get('Arrendatario') || '',
@@ -742,6 +743,156 @@ async function leerNitInmobiliaria(page) {
   return { nit, inmobiliaria: datos.nombre || campo.nombre };
 }
 
+/**
+ * Marca (con `attr`) el ÚLTIMO elemento visible cuyo texto es exactamente `texto`.
+ * El último porque AgentWeb deja en el DOM los workspaces anteriores, y el recién
+ * abierto queda al final.
+ */
+async function marcarPorTextoExacto(page, texto, attr, selector = '[role="tab"],li,a,span,div,button') {
+  return page.evaluate((t, a, sel) => {
+    for (const el of document.querySelectorAll(`[${a}]`)) el.removeAttribute(a);
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    const hits = [...document.querySelectorAll(sel)].filter((el) => visible(el) && norm(el.textContent) === t);
+    const internos = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
+    const el = internos[internos.length - 1];
+    if (!el) return false;
+    el.setAttribute(a, '1');
+    return true;
+  }, texto, attr, selector);
+}
+
+// ─── Ciudad del arrendatario ──────────────────────────────────────────────────
+// La pide el formulario de solicitud de documentos ("Ciudad del despacho"). En la
+// ficha del siniestro: pestaña "Arrendatarios y Terceros" → grid Arrendatarios →
+// "Abrir" de la PRIMERA fila → ficha de la persona → "Datos demográficos" →
+// "Ciudad de Residencia". La primera fila es lo acordado por ahora; con varios
+// arrendatarios o codeudores la oficina definirá cuál va.
+async function leerCiudadArrendatario(page) {
+  if (await marcarPorTextoExacto(page, 'Arrendatarios y Terceros', 'data-arr-tab')) {
+    await pulsar(await page.$('[data-arr-tab="1"]'));
+    await waitMs(1500);
+  }
+
+  // El grid de Arrendatarios es un datagrid de JET como el de la búsqueda; se
+  // reconoce por sus columnas. La "primera" fila es la primera que pinta el DOM.
+  const fila = await page.waitForFunction(() => {
+    for (const el of document.querySelectorAll('[data-arr-abrir]')) el.removeAttribute('data-arr-abrir');
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const grids = [...document.querySelectorAll('.oj-datagrid')].filter((g) => g.offsetParent !== null);
+    for (const g of grids.reverse()) {
+      const headers = [...g.querySelectorAll('.oj-datagrid-header-cell-text')].map((h) => norm(h.textContent));
+      const iNombre = headers.findIndex((h) => /^nombre completo$/i.test(h));
+      const iTipo = headers.findIndex((h) => /^tipo de contacto$/i.test(h));
+      if (iNombre < 0 || iTipo < 0) continue;
+      const celdas = [...g.querySelectorAll('.oj-datagrid-cell[row-id][column-id]')];
+      if (!celdas.length) continue;
+      const rowId = celdas[0].getAttribute('row-id');
+      const deLaFila = celdas.filter((c) => c.getAttribute('row-id') === rowId);
+      const abrir = deLaFila.map((c) => c.querySelector('.recordCommandLink')).find(Boolean);
+      if (!abrir) continue;
+      abrir.setAttribute('data-arr-abrir', '1');
+      const val = (i) => norm((deLaFila.find((c) => +c.getAttribute('column-id') === i) || {}).textContent);
+      return { nombre: val(iNombre), tipo: val(iTipo) };
+    }
+    return false;
+  }, { timeout: 30000 }).then((h) => h.jsonValue()).catch(() => null);
+  if (!fila) {
+    const shot = path.join(TEMP_DIR, 'libertador_arrendatarios.png');
+    await page.screenshot({ path: shot }).catch(() => {});
+    throw new Error(`No encontré el grid de Arrendatarios (columnas "Nombre completo" / "Tipo de Contacto"). Pantallazo en ${shot}`);
+  }
+  log(`Arrendatarios: abro la primera fila (${fila.nombre}, ${fila.tipo || 'sin tipo'})…`);
+  await pulsar(await page.$('[data-arr-abrir="1"]'));
+
+  // La pestaña "Datos demográficos" aparece cuando carga la ficha de la persona.
+  const hayPestana = await page.waitForFunction(
+    () => [...document.querySelectorAll('[role="tab"],li,a,span')].some((el) =>
+      el.getClientRects().length > 0 && (el.textContent || '').replace(/\s+/g, ' ').trim() === 'Datos demográficos'),
+    { timeout: 45000 },
+  ).then(() => true).catch(() => false);
+  if (!hayPestana || !await marcarPorTextoExacto(page, 'Datos demográficos', 'data-arr-demo')) {
+    const shot = path.join(TEMP_DIR, 'libertador_persona.png');
+    await page.screenshot({ path: shot }).catch(() => {});
+    throw new Error(`Abrí a ${fila.nombre} pero no apareció la pestaña "Datos demográficos". Pantallazo en ${shot}`);
+  }
+  await pulsar(await page.$('[data-arr-demo="1"]'));
+
+  let ciudad = '';
+  const hasta = Date.now() + 30000;
+  while (!ciudad && Date.now() < hasta) {
+    await waitMs(1000);
+    ciudad = await page.evaluate(() => {
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+      const etiquetaDe = (el) => {
+        const lab = el.labels && el.labels[0];
+        if (lab) return norm(lab.innerText);
+        const by = el.getAttribute('aria-labelledby');
+        if (by) { const n = document.getElementById(by.split(' ')[0]); if (n) return norm(n.innerText); }
+        return norm(el.getAttribute('aria-label'));
+      };
+      const hits = [...document.querySelectorAll('input')]
+        .filter((el) => el.getClientRects().length > 0 && /^ciudad de residencia$/i.test(etiquetaDe(el)));
+      const v = hits.length ? norm(hits[hits.length - 1].value) : '';
+      return /^\[?sin valor\]?$/i.test(v) ? '' : v;
+    }).catch(() => '');
+  }
+  if (!ciudad) {
+    const shot = path.join(TEMP_DIR, 'libertador_persona.png');
+    await page.screenshot({ path: shot }).catch(() => {});
+    throw new Error(`${fila.nombre} no tiene "Ciudad de Residencia" en Datos demográficos (o no la encontré). Pantallazo en ${shot}`);
+  }
+  return { ciudad, arrendatario: fila.nombre };
+}
+
+/**
+ * Vuelve a la sub-pestaña del siniestro después de abrir otra ficha (la de la
+ * inmobiliaria). Su píldora dice "<solicitud>-<amparo>" ("11752770-AMPARO BASICO");
+ * se busca por el prefijo, porque el amparo de la franja verde viene con tildes
+ * y en otra caja. La pestaña grande de arriba dice lo mismo, así que se prueban
+ * todas, de la última a la primera, hasta que la ficha del siniestro esté a la vista.
+ * Devuelve false si no lo logra: el llamador recarga y busca de nuevo.
+ */
+async function volverAlSiniestro(page, num) {
+  const marcar = (i) => page.evaluate((prefijo, idx) => {
+    for (const el of document.querySelectorAll('[data-volver-sin]')) el.removeAttribute('data-volver-sin');
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    const hits = [...document.querySelectorAll('[role="tab"],li,a,span,div,button')]
+      .filter((el) => visible(el) && norm(el.textContent).startsWith(prefijo) && norm(el.textContent).length < 80);
+    const internos = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
+    if (idx >= 0 && internos[idx]) internos[idx].setAttribute('data-volver-sin', '1');
+    return internos.length;
+  }, `${num}-`, i);
+
+  const total = await marcar(-1);
+  for (let i = total - 1; i >= 0; i--) {
+    await marcar(i);
+    const el = await page.$('[data-volver-sin="1"]');
+    if (!el) continue;
+    await pulsar(el);
+    await waitMs(2500);
+    // "# Solicitud" visible = la ficha del siniestro está al frente (la de la
+    // inmobiliaria no tiene ese campo).
+    const ficha = await leerFichaSiniestro(page).catch(() => null);
+    if (ficha && ficha.solicitud === num) return true;
+  }
+  return false;
+}
+
+/** Busca la solicitud y deja abierta la ficha de un siniestro. Devuelve sus datos o { error }. */
+async function abrirFichaSolicitud(page, num) {
+  await buscarSolicitud(page, num);
+  let ficha = await leerFichaSiniestro(page);
+  if (ficha && ficha.solicitud === num) return { ficha };
+  if (!await page.$('.oj-datagrid-cell .recordCommandLink')) return { error: 'la búsqueda no devolvió resultados en el portal' };
+  const sel = await abrirSiniestroVigente(page, { cualquiera: true });
+  if (sel.omitido) return { error: 'la solicitud no tiene siniestros que abrir' };
+  ficha = await leerFichaSiniestro(page);
+  if (!ficha || ficha.solicitud !== num) return { error: `abrí un siniestro pero la ficha a la vista no es la de ${num}` };
+  return { ficha: { ...ficha, estado: ficha.estado || sel.estado } };
+}
+
 // ─── Modo exploración ─────────────────────────────────────────────────────────
 // Tras el login, AgentWeb es un SPA con el workspace dentro de iframes. Para NO
 // adivinar selectores, volcamos a disco el árbol de frames + inputs/botones/
@@ -1038,13 +1189,20 @@ async function procesarSolicitudes(solicitudes, opts = {}) {
 }
 
 /**
- * NIT de la inmobiliaria de cada solicitud, con un solo login. Cualquier
- * siniestro de la solicitud sirve: la inmobiliaria es la misma en todos.
- * Nunca lanza por un caso suelto.
+ * Lo que la etapa de documentos necesita del Huella, por solicitud y con un solo
+ * login:
+ *  - NIT de la inmobiliaria: para bajar los anexos del portal de Bolívar.
+ *  - póliza, estado del siniestro y ciudad del arrendatario: para el formulario
+ *    de solicitud de documentos.
+ * Cualquier siniestro sirve para la inmobiliaria (es la misma en todos); el estado
+ * es el del siniestro que se abre (Vigente o Desocupado si los hay).
  *
- * Devuelve [{ solicitud, success, nit?, inmobiliaria?, error? }]
+ * `success` = se obtuvo el NIT. Lo que falle del formulario no lo tumba: va en
+ * `errores` ({ ciudad }) para que los anexos se bajen igual. Nunca lanza por un caso.
+ *
+ * Devuelve [{ solicitud, success, nit?, inmobiliaria?, poliza?, estado?, ciudad?, errores?, error? }]
  */
-async function nitsDeSolicitudes(solicitudes, opts = {}) {
+async function datosDeSolicitudes(solicitudes, opts = {}) {
   if (!USER || !PASS) {
     throw new Error('Faltan credenciales: LIBERTADOR_SAC_USER / LIBERTADOR_SAC_PASS en sac_scripts/.env');
   }
@@ -1070,34 +1228,46 @@ async function nitsDeSolicitudes(solicitudes, opts = {}) {
     page.setDefaultNavigationTimeout(NAV_TIMEOUT);
 
     await login(page);
-    log(`Sesión abierta; leyendo la inmobiliaria de ${lista.length} solicitud(es).`);
+    log(`Sesión abierta; leyendo ${lista.length} solicitud(es) en el Huella.`);
+
+    const recargar = async () => {   // workspace limpio, igual que en procesarSolicitudes
+      await page.goto(AGENTWEB_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+      await waitMs(3000);
+    };
 
     let primera = true;
     for (const num of lista) {
       try {
-        if (!primera) {   // workspace limpio, igual que en procesarSolicitudes
-          await page.goto(AGENTWEB_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
-          await waitMs(3000);
-        }
+        if (!primera) await recargar();
         primera = false;
 
-        await buscarSolicitud(page, num);
-        const ficha = await leerFichaSiniestro(page);
-        if (!(ficha && ficha.solicitud === num)) {
-          if (!await page.$('.oj-datagrid-cell .recordCommandLink')) {
-            resultados.push({ solicitud: num, success: false, error: 'la búsqueda no devolvió resultados en el portal' });
-            continue;
-          }
-          const sel = await abrirSiniestroVigente(page, { cualquiera: true });
-          if (sel.omitido) {
-            resultados.push({ solicitud: num, success: false, error: 'la solicitud no tiene siniestros que abrir' });
-            continue;
-          }
+        const abierta = await abrirFichaSolicitud(page, num);
+        if (abierta.error) {
+          resultados.push({ solicitud: num, success: false, error: abierta.error });
+          continue;
         }
-
+        const { poliza, estado } = abierta.ficha;
         const { nit, inmobiliaria } = await leerNitInmobiliaria(page);
-        resultados.push({ solicitud: num, success: true, nit, inmobiliaria });
-        log(`✓ ${num}: ${inmobiliaria} — NIT ${nit}`);
+        const r = { solicitud: num, success: true, nit, inmobiliaria, poliza, estado, errores: {} };
+        log(`✓ ${num}: ${inmobiliaria} — NIT ${nit} | póliza ${poliza || '?'} | ${estado || 'sin estado'}`);
+
+        // La ciudad está en otra ficha: hay que volver al siniestro (lo dejó atrás
+        // la inmobiliaria). Si la píldora no responde, se recarga y se busca otra vez.
+        try {
+          if (!await volverAlSiniestro(page, num)) {
+            log(`${num}: no pude volver a la ficha del siniestro; recargo y la abro de nuevo.`);
+            await recargar();
+            const otra = await abrirFichaSolicitud(page, num);
+            if (otra.error) throw new Error(otra.error);
+          }
+          const { ciudad, arrendatario } = await leerCiudadArrendatario(page);
+          r.ciudad = ciudad;
+          log(`✓ ${num}: ciudad ${ciudad} (de ${arrendatario})`);
+        } catch (e) {
+          r.errores.ciudad = e.message;
+          log(`⚠ ${num}: sin ciudad del arrendatario: ${e.message}`);
+        }
+        resultados.push(r);
       } catch (e) {
         resultados.push({ solicitud: num, success: false, error: e.message });
         log(`✗ ${num}: ${e.message}`);
@@ -1112,7 +1282,7 @@ async function nitsDeSolicitudes(solicitudes, opts = {}) {
 // `login` y `buscarSolicitud` se exportan para poder sondear el portal desde un
 // script suelto cuando algo cambia de sitio: sin ellos, cada diagnóstico tendría
 // que duplicar el login (y el User-Agent, que es lo que evita el 401).
-module.exports = { procesarSolicitudes, nitsDeSolicitudes, login, buscarSolicitud, UA_PORTAL };
+module.exports = { procesarSolicitudes, datosDeSolicitudes, login, buscarSolicitud, UA_PORTAL };
 
 // Solo se autoejecuta como CLI; al requerirlo desde el motor, no.
 if (require.main === module) {

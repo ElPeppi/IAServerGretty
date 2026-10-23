@@ -6,7 +6,7 @@
  * El portal busca por NIT de la inmobiliaria + nº de solicitud, y la asignación
  * solo trae la solicitud. Por eso el NIT se lee antes en el Huella (AgentWeb):
  * ficha del siniestro → campo Inmobiliaria → ⋮ → Abrir → "Número de
- * Identificación" (nitsDeSolicitudes, en libertador_puppeteer.js).
+ * Identificación" (datosDeSolicitudes, en libertador_puppeteer.js).
  *
  * En el portal: login NetIQ (registro.segurosbolivar.com) → menú "Solicitar
  * documentos" → NIT + solicitud → BUSCAR → "Ver Anexos" → un "Descargar
@@ -33,7 +33,7 @@ const crypto = require('crypto');
 
 try { require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true }); } catch (_) {}
 
-const { nitsDeSolicitudes } = require('./libertador_puppeteer');
+const { datosDeSolicitudes } = require('./libertador_puppeteer');
 
 const LOGIN_URL = process.env.BOLIVAR_DOCS_URL
   || 'https://registro.segurosbolivar.com/nidp/idff/sso?id=620&sid=0&option=credential&sid=0&target=https://www.segurosbolivar.com/indemnizaciones-web/login.html';
@@ -535,13 +535,19 @@ async function descargarDocumentos(casos, opts = {}) {
   if (!porSolicitud.size) return [];
   const resultados = new Map();
 
-  // 1) NIT de la inmobiliaria, en el Huella, para los que no lo traen.
+  // 1) Huella, para los que no traen NIT: el NIT y, de paso, lo que pide el
+  //    formulario de solicitud de documentos (póliza, estado, ciudad).
   const sinNit = [...porSolicitud.values()].filter((c) => !c.nit).map((c) => c.solicitud);
   if (sinNit.length) {
-    for (const r of await nitsDeSolicitudes(sinNit, opts)) {
+    for (const r of await datosDeSolicitudes(sinNit, opts)) {
       const c = porSolicitud.get(r.solicitud);
-      if (r.success) { c.nit = r.nit; c.inmobiliaria = r.inmobiliaria; }
-      else resultados.set(r.solicitud, { solicitud: r.solicitud, success: false, error: `Huella: ${r.error}` });
+      if (r.success) {
+        c.nit = r.nit;
+        c.inmobiliaria = r.inmobiliaria;
+        c.huella = { poliza: r.poliza || '', estado: r.estado || '', ciudad: r.ciudad || '', errores: r.errores || {} };
+      } else {
+        resultados.set(r.solicitud, { solicitud: r.solicitud, success: false, error: `Huella: ${r.error}` });
+      }
     }
   }
   const conNit = [...porSolicitud.values()].filter((c) => c.nit);
@@ -602,7 +608,8 @@ async function descargarDocumentos(casos, opts = {}) {
     }
   }
 
-  return [...porSolicitud.keys()].map((s) => resultados.get(s));
+  // Los datos del Huella viajan aunque los anexos fallen: el formulario no depende de ellos.
+  return [...porSolicitud.values()].map((c) => ({ ...resultados.get(c.solicitud), huella: c.huella || null }));
 }
 
 module.exports = { descargarDocumentos };

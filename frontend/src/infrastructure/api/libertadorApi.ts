@@ -33,7 +33,38 @@ export interface LibertadorCasosResponse {
   casos: LibertadorCaso[];
 }
 
+// Una solicitud que llegó en un correo de ASIGNACION (n8n → backend), con en qué
+// va cada paso automático. Llega al instante, antes de aparecer en el cuadro.
+export type EstadoCarpeta = 'creada' | 'existente' | 'error';
+export type EstadoAnexos = 'pendiente' | 'ok' | 'sin_anexos' | 'error';
+export type EstadoFormulario = 'pendiente' | 'enviado' | 'ya_enviado' | 'error' | 'apagado';
+
+export interface LibertadorRecibida {
+  solicitud: string;
+  procesos: string[];
+  tipoAlistamiento: string | null;
+  estadoSiniestro: string | null;
+  canon: number | null;
+  deuda: number | null;
+  asuntoCorreo: string | null;
+  vecesRecibida: number;
+  recibidaEn: string;        // ISO: primera vez que llegó
+  ultimaRecepcion: string;   // ISO
+  carpetaEstado: EstadoCarpeta | null;
+  carpetaNombre: string | null;
+  carpetaDetalle: string | null;
+  anexosEstado: EstadoAnexos | null;
+  anexosCantidad: number | null;
+  anexosDetalle: string | null;
+  formularioEstado: EstadoFormulario | null;
+  formularioDetalle: string | null;
+}
+
 export const libertadorApi = {
+  // Lo que llegó por correo en los últimos 60 días, lo más reciente primero.
+  recibidas: () =>
+    apiClient.get<{ solicitudes: LibertadorRecibida[] }>('/libertador/recibidas').then((r) => r.data.solicitudes),
+
   // Pide los estados de cuenta de un conjunto de solicitudes. Responde 202: el
   // portal tarda minutos y el resultado llega por notificación.
   estadosCuenta: (solicitudes: string[]) =>

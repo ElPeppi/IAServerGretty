@@ -194,3 +194,36 @@ model DatoManual {
 
   @@map("datos_manuales")
 }
+
+// Solicitudes de Libertador que llegaron en un correo de ASIGNACION (n8n →
+// POST /api/libertador/carpetas). Una fila por solicitud: si vuelve a llegar se
+// actualiza. Guarda en qué va cada paso automático para que la página muestre lo
+// que llegó al instante, sin esperar a que aparezca en el cuadro jurídico.
+//   carpetaEstado:    creada | existente | error
+//   anexosEstado:     pendiente | ok | sin_anexos | error
+//   formularioEstado: pendiente | enviado | ya_enviado | error | apagado
+model LibertadorSolicitud {
+  solicitud         String   @id
+  procesos          String[]                // EJECUTIVO, RESTITUCION, CONCILIACION, RESIDUAL
+  tipoAlistamiento  String?                 // tal como viene en el correo ("MIXTO CON CONCILIACION")
+  estadoSiniestro   String?
+  canon             Int?
+  deuda             Int?
+  asuntoCorreo      String?
+  vecesRecibida     Int      @default(1)
+  recibidaEn        DateTime @default(now()) // primera vez que llegó
+  ultimaRecepcion   DateTime @default(now())
+  carpetaEstado     String?
+  carpetaNombre     String?
+  carpetaId         String?
+  carpetaDetalle    String?                 // subcarpetas creadas, o el error
+  anexosEstado      String?
+  anexosCantidad    Int?
+  anexosDetalle     String?
+  formularioEstado  String?
+  formularioDetalle String?
+  updatedAt         DateTime @updatedAt
+
+  @@index([ultimaRecepcion])
+  @@map("libertador_solicitudes")
+}

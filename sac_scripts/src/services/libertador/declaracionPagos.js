@@ -112,10 +112,14 @@ function parseDeclaracion(texto) {
   if (mDir) { direccion = norm(mDir[1]); ciudad = norm(mDir[2]); }
 
   // Arrendatarios: "siguientes arrendatarios X." (hasta el primer punto).
+  // Hay PDF que pegan la frase siguiente al punto ("…BRAYAN ENRIQUE.Como
+  // consecuencia…", solicitud 11954028) y la captura se comía el párrafo: se corta
+  // en un punto seguido de mayúscula + minúscula. Sin /i a propósito, para que una
+  // sigla ("S.A.S") no corte.
   const arrendatarios = primera(t, [
     /siguientes arrendatarios\s+(.+?)\.\s/i,
     /arrendatarios?\s+([A-ZÁÉÍÓÚÑ].+?)\.(?:\s|$)/i,
-  ]);
+  ]).split(/\.(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ])/)[0].trim();
 
   // Identificación del representante: en la firma, tras C.C./C.e./CC No. (antes del NIT).
   // Se busca en la ÚLTIMA parte del texto (bloque de firma) para no tomar otros números.
@@ -156,6 +160,13 @@ function aFieldMapPoder(campos) {
     REPRESENTANTE_LEGAL_INMOBILIARIA: campos.representante || '',
     IDENTIFICACION_REPRESENTANTE_LEGAL_INMOB: campos.identificacion || '',
     ARRENDATARIOS: campos.arrendatarios || '',
+    // Desde oct-2026 la plantilla separa «ARRENDATARIO» y «DEUDOR_SOLIDARIO» (la
+    // oficina los escribe seguidos: "VÍCTOR HUGO PRENTT BOSSIO MEYRA ISABEL BOSSIO
+    // BOSSIO"). La declaración los trae juntos ("A y B") y partirlos a ciegas
+    // rompería razones sociales con " Y " ("ESTUDIOS Y GESTION SAS"): va la lista
+    // completa en el primero y el segundo vacío, que deja el mismo texto final.
+    ARRENDATARIO: campos.arrendatarios || '',
+    DEUDOR_SOLIDARIO: '',
     DIRECCION_INMUEBLE_: campos.direccion || '',
   };
 }

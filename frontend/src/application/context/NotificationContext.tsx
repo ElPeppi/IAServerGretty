@@ -223,11 +223,14 @@ export function useRefreshOnNotification(
 
   useEffect(() => {
     const latest = items[0];
-    if (!latest) return;
-    // Primera ejecución: marcar el backlog como visto, no refrescar.
-    if (lastSeen.current === null) { lastSeen.current = latest.id; return; }
-    if (latest.id === lastSeen.current) return;
+    // Primera ejecución: lo que ya hubiera se marca como visto, no refresca. Con la
+    // lista VACÍA también hay que marcar: antes se esperaba al primer aviso para
+    // tomarlo como "backlog", y así el primer aviso real de la sesión se perdía.
+    if (lastSeen.current === null) { lastSeen.current = latest?.id ?? ''; return; }
+    if (!latest || latest.id === lastSeen.current) return;
     lastSeen.current = latest.id;
+    // El backlog que el backend reenvía al conectar viene marcado `replay`: no es nuevo.
+    if (latest.replay) return;
     if (typesRef.current.includes(latest.type)) cb.current();
   }, [items]);
 }

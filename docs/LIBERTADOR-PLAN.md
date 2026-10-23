@@ -285,6 +285,16 @@ end-to-end (motor+backend+DB+Drive juntos) y un botón en la UI para disparar
 
 Nota: la plantilla del poder la baja el backend desde Drive (no requiere sync local).
 
+Corregido el 2026-10-23 (probado con 3 declaraciones reales: 10742975, 11954028, 12018644):
+- La plantilla está en `LIBERTADOR/PLANTILLAS/CREAR PODERES/MODELO PODERES/`, no en
+  `LIBERTADOR/CREAR PODERES`: antes el backend respondía "No se encontró PLANTILLA…".
+- Con una carpeta por solicitud, la DECLARACION DE PAGOS suele estar en una
+  subcarpeta (`EJECUTIVO/`, a veces `EJECUTIVO/ANEXOS/`): se busca también ahí.
+- La oficina cambió la plantilla: «ARRENDATARIOS» pasó a «ARRENDATARIO» +
+  «DEUDOR_SOLIDARIO». Va la lista completa en el primero y el segundo vacío.
+- Arrendatarios: hay PDF que pegan la frase siguiente al punto ("…ENRIQUE.Como
+  consecuencia…"); el extractor ya corta ahí.
+
 ## 13. Carpetas del caso en Drive — estructura nueva (oct-2026)
 
 Desde ahora cada solicitud tiene **una sola carpeta** para todos sus procesos:
@@ -332,7 +342,7 @@ a todos los procesos). Avisa al terminar con una notificación.
 Flujo (definido por la oficina):
 1. **Huella** (AgentWeb): buscar la solicitud → abrir el siniestro → campo
    *Inmobiliaria* → ⋮ → *Abrir* → leer el **NIT** ("Número de Identificación").
-   `nitsDeSolicitudes` + `leerNitInmobiliaria` en `libertador_puppeteer.js`.
+   `datosDeSolicitudes` + `leerNitInmobiliaria` en `libertador_puppeteer.js`.
    Comprueba que el "Nombre" de la ficha abierta sea la inmobiliaria del siniestro.
 2. **Portal de documentos** (`registro.segurosbolivar.com` → `indemnizaciones-web`):
    login → menú *Solicitar documentos* → NIT + solicitud → *BUSCAR* → *Ver Anexos* →
@@ -361,3 +371,70 @@ node libertador_documentos.js 11752770 900504995    # con el NIT, salta el Huell
 ```
 Si un paso falla deja pantallazo + HTML en `SAC_TEMP_DIR/bolivar_docs/`; si falla
 el ⋮ de la inmobiliaria, en `SAC_TEMP_DIR/libertador_inmobiliaria_*.html`.
+
+## 15. Formulario de solicitud de documentos (Google Forms de Bolívar)
+
+Por cada solicitud se llena el formulario "Datos del siniestro" de Seguros Bolívar
+(https://docs.google.com/forms/d/e/1FAIpQLSfTIxr-lU3sAUbnkk3a1G0O7AWcf6PCGslJ5usOfa0ltEd9zg/viewform).
+**No exige iniciar sesión** (verificado sin sesión el 2026-10-22): el correo es un campo
+que se escribe y a ese correo llega la copia de la respuesta. Por eso el backend lo
+envía con un POST directo a `/formResponse`, sin navegador.
+
+| Pregunta | Valor |
+|---|---|
+| Correo electrónico | fijo: jramos@jramosabogado.com |
+| Nro. de Póliza | Huella: "# Póliza" de la ficha del siniestro |
+| Nro. de solicitud | la de la asignación |
+| Estado del siniestro | Huella: el del siniestro abierto (tiene que ser una opción) |
+| Nombres y Apellidos (Abogado) | fijo: JAIRO ENRIQUE RAMOS LAZARO |
+| Nombre despacho judicial | fijo: PEQUEÑAS CAUSAS Y COMPETENCIAS MULTIPLES |
+| Ciudad del despacho | Huella: Arrendatarios (PRIMERA fila) → Abrir → Datos demográficos → Ciudad de Residencia |
+| Documentos a solicitar | fijo: Poder Ejecutivo Subrogado, Declaración de pago, Póliza, Reconocer |
+| Observaciones adicionales | fijo: DECLARACION DE PAGO SUBROGADA ACTUALIZADA |
+
+Piezas: el motor lee póliza/estado/ciudad en la misma pasada del NIT
+(`datosDeSolicitudes`, `leerCiudadArrendatario`) y los devuelve como `huella` en
+`/documentos-libertador`; el backend (`formularioSolicitud.ts`, `LibertadorController.formularioCaso`)
+arma y envía. Las preguntas se reconocen por TÍTULO, no por id: sirve para el real y
+para una copia; una pregunta obligatoria desconocida hace fallar sin enviar nada.
+
+Una sola vez por solicitud: lo enviado queda en `SOLICITUD DE DOCUMENTOS - FORMULARIO.txt`
+en la carpeta del caso, con el id del formulario (un envío a la copia de prueba no
+cuenta como enviado al real).
+
+Config: `LIBERTADOR_FORM_URL` en backend/.env (vacío = apagado) y los valores fijos
+`LIBERTADOR_FORM_*` (ver DEPLOY-PRODUCCION.md). Probar sin Huella ni Drive:
+```
+cd backend
+npm run libertador:formulario -- <url> 11752770 14104 Vigente "SANTA MARTA"            # solo muestra
+npm run libertador:formulario -- <url-copia> 11752770 14104 Vigente "SANTA MARTA" --enviar
+```
+
+Pendiente: confirmar con la oficina (1) que puede salir con el correo escrito y sin
+iniciar sesión con la cuenta del jefe, y (2) qué fila de Arrendatarios usar cuando hay
+varias (hoy: la primera).
+
+## 16. Llegadas por correo en la página (oct-2026)
+
+n8n ya llamaba al backend con cada asignación (`POST /api/libertador/carpetas`), pero
+el backend no la guardaba: la página solo leía el cuadro jurídico, y n8n escribe en una
+hoja de PRUEBA. Ahora cada solicitud queda en la tabla `libertador_solicitudes`
+(migración `20261023120000_libertador_solicitudes`) con en qué va cada paso:
+
+| Campo | Valores |
+|---|---|
+| carpetaEstado | creada · existente · error |
+| anexosEstado | pendiente · ok · sin_anexos · error (+ cantidad y detalle) |
+| formularioEstado | pendiente · enviado · ya_enviado · error · apagado |
+
+Si la solicitud vuelve a llegar se actualiza: suma procesos nuevos y cuenta las veces.
+Todo es best-effort (`solicitudesRecibidas.ts`): si Postgres falla, el flujo de Drive
+sigue igual. `GET /api/libertador/recibidas` (con sesión) devuelve los últimos 60 días.
+
+Página: panel "Llegadas por correo" encima del cuadro, con una columna "Cuadro" que
+dice si la solicitud ya aparece en él. Se recarga sola con los avisos de tipo
+`libertador` (los del flujo de asignaciones; los de estados de cuenta siguen como
+`generacion`).
+
+El nodo "Agrupar por Solicitud" de n8n manda además tipo de alistamiento, estado del
+siniestro, canon, deuda y asunto del correo (opcionales: sin ellos funciona igual).
