@@ -3,17 +3,20 @@
  * se le piden a Seguros Bolívar los documentos de una solicitud de Libertador
  * (poder subrogado, declaración de pago, póliza, reconocer).
  *
- * El formulario NO pide iniciar sesión: el correo es un campo que escribe quien
- * responde, y a ese correo le llega la copia de la respuesta. Por eso se envía
- * con un POST directo a /formResponse, sin navegador ni cuenta de Google.
+ * NO se envía solo: el botón "Enviar" de la última página tiene reCAPTCHA
+ * (invisible para una persona en un navegador, pero un POST directo recibe 400) y
+ * no se esquiva. Lo que hace el sistema es armar el ENLACE PRELLENADO
+ * (viewform?usp=pp_url&…) con todas las respuestas; una persona lo abre, revisa,
+ * da Siguiente y Enviar. Abierto sin sesión de Google (incógnito) trae también el
+ * correo; con sesión, Google deja el correo vacío y hay que escribirlo.
  *
  * Las preguntas se reconocen por su TÍTULO (sin tildes ni mayúsculas), no por su
  * id: así el mismo código sirve para el formulario real y para una copia de
  * prueba. Y si Bolívar agrega una pregunta obligatoria que no conocemos, no se
- * manda nada a medias: falla diciendo cuál es.
+ * arma un enlace a medias: falla diciendo cuál es.
  *
- * Config (backend/.env):
- *   LIBERTADOR_FORM_URL            enlace …/viewform. Vacío = no se envía nada.
+ * Config (backend/.env), todo opcional:
+ *   LIBERTADOR_FORM_URL            enlace …/viewform (por defecto, el de Bolívar). "off" = no se arma.
  *   LIBERTADOR_FORM_CORREO         correo del abogado
  *   LIBERTADOR_FORM_ABOGADO        nombres y apellidos, en MAYÚSCULA
  *   LIBERTADOR_FORM_DESPACHO       nombre del despacho judicial
@@ -34,25 +37,30 @@ interface Pregunta {
   entrada: number;
   opciones: string[];   // vacío = respuesta de texto
   obligatoria: boolean;
+  pagina: number;       // 0 = primera; los saltos de sección separan páginas
 }
 
 export interface Formulario {
   id: string;
   titulo: string;
-  accion: string;
+  vista: string;        // …/viewform
+  accion: string;       // …/formResponse
   paginas: number;
   preguntas: Pregunta[];
   correo: 'ninguno' | 'escrito' | 'verificado';
-  fbzx: string;
 }
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 const valorEnv = (k: string, porDefecto: string) => (process.env[k] ?? '').trim() || porDefecto;
 
+// Formulario "Datos del siniestro" de Seguros Bolívar (Libertador).
+const FORM_BOLIVAR = 'https://docs.google.com/forms/d/e/1FAIpQLSfTIxr-lU3sAUbnkk3a1G0O7AWcf6PCGslJ5usOfa0ltEd9zg/viewform';
+
 export function configFormulario() {
+  const url = valorEnv('LIBERTADOR_FORM_URL', FORM_BOLIVAR);
   return {
-    url: (process.env.LIBERTADOR_FORM_URL || '').trim(),
+    url: /^(off|no|0|false)$/i.test(url) ? '' : url,
     correo: valorEnv('LIBERTADOR_FORM_CORREO', 'jramos@jramosabogado.com'),
     abogado: valorEnv('LIBERTADOR_FORM_ABOGADO', 'JAIRO ENRIQUE RAMOS LAZARO'),
     despacho: valorEnv('LIBERTADOR_FORM_DESPACHO', 'PEQUEÑAS CAUSAS Y COMPETENCIAS MULTIPLES'),
@@ -89,18 +97,21 @@ export async function leerFormulario(url: string): Promise<Formulario> {
   const items: unknown[][] = f[1] || [];
 
   // Cada pregunta: [id, título, descripción, tipo, [[idEntrada, opciones, obligatoria, …]], …].
-  // El tipo 8 es un salto de página.
-  const preguntas: Pregunta[] = items
-    .filter((it) => Array.isArray(it[4]) && (it[4] as unknown[]).length)
-    .map((it) => {
-      const e = (it[4] as unknown[][])[0];
-      return {
-        titulo: String(it[1] ?? ''),
-        entrada: Number(e[0]),
-        opciones: ((e[1] as unknown[][]) || []).map((o) => String(o[0])),
-        obligatoria: e[2] === 1,
-      };
+  // El tipo 8 es un salto de sección: lo que viene después va en la página siguiente.
+  const preguntas: Pregunta[] = [];
+  let pagina = 0;
+  for (const it of items) {
+    if (it[3] === 8) { pagina++; continue; }
+    if (!Array.isArray(it[4]) || !(it[4] as unknown[]).length) continue;
+    const e = (it[4] as unknown[][])[0];
+    preguntas.push({
+      titulo: String(it[1] ?? ''),
+      entrada: Number(e[0]),
+      opciones: ((e[1] as unknown[][]) || []).map((o) => String(o[0])),
+      obligatoria: e[2] === 1,
+      pagina,
     });
+  }
 
   // f[10][6]: cómo recoge el correo. 2 = verificado (exige sesión de Google),
   // 3 = lo escribe quien responde. Comprobado contra el formulario real (3) y la
@@ -111,20 +122,18 @@ export async function leerFormulario(url: string): Promise<Formulario> {
   return {
     id,
     titulo: (html.match(/<title>([^<]*)<\/title>/) || [])[1]?.trim() || id,
+    vista: `https://docs.google.com/forms/d/e/${id}/viewform`,
     accion: `https://docs.google.com/forms/d/e/${id}/formResponse`,
-    paginas: items.filter((it) => it[3] === 8).length + 1,
+    paginas: pagina + 1,
     preguntas,
     correo,
-    fbzx: (html.match(/name="fbzx" value="([^"]+)"/) || [])[1] || '',
   };
 }
 
-/** Respuesta del formulario como pares (nombre, valor) del POST. Lanza si algo no cuadra. */
+/** Respuestas como pares (nombre, valor) del enlace prellenado. Lanza si algo no cuadra. */
 export function armarRespuesta(form: Formulario, d: DatosFormulario, cfg = configFormulario()): Array<[string, string]> {
-  if (form.correo === 'verificado') {
-    throw new Error('El formulario recoge el correo VERIFICADO: exige iniciar sesión con Google y no se puede enviar automático.');
-  }
   const pares: Array<[string, string]> = [];
+  // Con correo "verificado" lo pone Google desde la cuenta de quien lo abre: no va en el enlace.
   if (form.correo === 'escrito') pares.push(['emailAddress', cfg.correo]);
 
   const problemas: string[] = [];
@@ -166,36 +175,20 @@ export function armarRespuesta(form: Formulario, d: DatosFormulario, cfg = confi
   return pares;
 }
 
-/** Envía la respuesta. Lanza si Google no la registró. */
-export async function enviarFormulario(form: Formulario, pares: Array<[string, string]>): Promise<void> {
-  const body = new URLSearchParams(pares);
-  body.append('fvv', '1');
-  // Todas las páginas de una vez: se le dice a Google que se recorrieron todas.
-  body.append('pageHistory', Array.from({ length: form.paginas }, (_, i) => i).join(','));
-  if (form.fbzx) body.append('fbzx', form.fbzx);
-
-  const res = await axios.post<string>(form.accion, body.toString(), {
-    responseType: 'text',
-    timeout: 30000,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
-    validateStatus: () => true,
-  });
-  const html = String(res.data || '');
-  if (res.status >= 400) throw new Error(`Google respondió HTTP ${res.status} al enviar el formulario.`);
-  // Cuando la acepta, Google pinta la confirmación (con el enlace "Enviar otra
-  // respuesta", usp=form_confirm). Si algún campo no le gustó, vuelve a pintar el
-  // formulario, que trae otra vez su FB_PUBLIC_LOAD_DATA_.
-  if (/FB_PUBLIC_LOAD_DATA_/.test(html) && !/form_confirm/.test(html)) {
-    throw new Error('Google devolvió el formulario sin registrar la respuesta: algún campo no le gustó.');
-  }
+/** Enlace del formulario con todas las respuestas puestas (Google lo llama "prellenado"). */
+export function enlacePrellenado(form: Formulario, pares: Array<[string, string]>): string {
+  return `${form.vista}?usp=pp_url&${new URLSearchParams(pares).toString()}`;
 }
 
-/** Texto legible de lo enviado, para dejarlo en la carpeta del caso. */
-export function textoDelEnvio(form: Formulario, pares: Array<[string, string]>, cuando = new Date()): string {
+/**
+ * Las respuestas, legibles. Va al registro que se deja en la carpeta del caso
+ * cuando alguien marca el formulario como enviado. Lleva el id del formulario:
+ * es lo que se busca para no volver a ofrecer el mismo formulario a esa solicitud.
+ */
+export function textoDeRespuestas(form: Formulario, pares: Array<[string, string]>): string {
   const titulos = new Map(form.preguntas.map((p) => [`entry.${p.entrada}`, p.titulo.split('\n')[0]]));
   const porCampo = new Map<string, string[]>();
   for (const [k, v] of pares) porCampo.set(k, [...(porCampo.get(k) || []), v]);
-  const fecha = cuando.toLocaleString('es-CO', { timeZone: 'America/Bogota' });
   const lineas = [...porCampo].map(([k, vs]) => `  ${k === 'emailAddress' ? 'Correo electrónico' : titulos.get(k) || k}: ${vs.join(' | ')}`);
-  return [`Formulario "${form.titulo}" (${form.id})`, `Enviado: ${fecha}`, ...lineas, ''].join('\n');
+  return [`Formulario "${form.titulo}" (${form.id})`, ...lineas].join('\n');
 }

@@ -12,7 +12,9 @@ import { prisma } from '../database/prisma/client';
 
 export type EstadoCarpeta = 'creada' | 'existente' | 'error';
 export type EstadoAnexos = 'pendiente' | 'ok' | 'sin_anexos' | 'error';
-export type EstadoFormulario = 'pendiente' | 'enviado' | 'ya_enviado' | 'error' | 'apagado';
+// El formulario no se envía solo (reCAPTCHA): "listo" = enlace prellenado armado;
+// "enviado" = una persona lo envió y lo marcó en la página.
+export type EstadoFormulario = 'pendiente' | 'listo' | 'enviado' | 'error' | 'apagado';
 
 export interface RecepcionLibertador {
   solicitud: string;
@@ -36,12 +38,14 @@ async function seguro<T>(que: string, fn: () => Promise<T>): Promise<T | null> {
 /**
  * Anota que llegó la solicitud. Si ya estaba, suma los procesos nuevos (una
  * conciliación puede llegar primero y el ejecutivo después) y deja los pasos en
- * "pendiente", porque el flujo vuelve a correr.
+ * "pendiente", porque el flujo vuelve a correr. Un formulario ya enviado se queda
+ * enviado: no se vuelve a ofrecer.
  */
 export async function registrarRecepcion(r: RecepcionLibertador, formularioActivo: boolean): Promise<void> {
   const formularioEstado: EstadoFormulario = formularioActivo ? 'pendiente' : 'apagado';
   await seguro(`registrar ${r.solicitud}`, async () => {
     const previa = await prisma.libertadorSolicitud.findUnique({ where: { solicitud: r.solicitud } });
+    const yaEnviado = previa?.formularioEstado === 'enviado';
     const datos = {
       tipoAlistamiento: r.tipoAlistamiento || previa?.tipoAlistamiento || null,
       estadoSiniestro: r.estadoSiniestro || previa?.estadoSiniestro || null,
@@ -51,8 +55,7 @@ export async function registrarRecepcion(r: RecepcionLibertador, formularioActiv
       anexosEstado: 'pendiente',
       anexosCantidad: null,
       anexosDetalle: null,
-      formularioEstado,
-      formularioDetalle: null,
+      ...(yaEnviado ? {} : { formularioEstado, formularioDetalle: null, formularioEnlace: null, formularioTexto: null }),
     };
     if (!previa) {
       await prisma.libertadorSolicitud.create({ data: { solicitud: r.solicitud, procesos: r.procesos, ...datos } });
@@ -90,7 +93,7 @@ export async function marcarCarpeta(
     // El formulario apagado sigue apagado: no es que haya fallado, es que no se usa.
     if (estado === 'error') {
       await prisma.libertadorSolicitud.updateMany({
-        where: { solicitud, NOT: { formularioEstado: 'apagado' } },
+        where: { solicitud, NOT: { formularioEstado: { in: ['apagado', 'enviado'] } } },
         data: { formularioEstado: 'error', formularioDetalle: 'no hay carpeta del caso' },
       });
     }
@@ -109,6 +112,31 @@ export async function marcarFormulario(solicitud: string, estado: EstadoFormular
     where: { solicitud },
     data: { formularioEstado: estado, formularioDetalle: detalle ?? null },
   }));
+}
+
+/** Enlace prellenado armado: queda "listo" para que una persona lo envíe. */
+export async function marcarFormularioListo(solicitud: string, enlace: string, texto: string): Promise<void> {
+  await seguro(`formulario listo ${solicitud}`, () => prisma.libertadorSolicitud.update({
+    where: { solicitud },
+    data: { formularioEstado: 'listo', formularioDetalle: null, formularioEnlace: enlace, formularioTexto: texto },
+  }));
+}
+
+/** Una persona lo envió y lo marcó en la página. Este SÍ lanza: lo pide el usuario y tiene que enterarse. */
+export async function marcarFormularioEnviado(solicitud: string, quien: string) {
+  return prisma.libertadorSolicitud.update({
+    where: { solicitud },
+    data: {
+      formularioEstado: 'enviado',
+      formularioDetalle: null,
+      formularioEnviadoPor: quien,
+      formularioEnviadoEn: new Date(),
+    },
+  });
+}
+
+export async function obtenerRecibida(solicitud: string) {
+  return seguro(`leer ${solicitud}`, () => prisma.libertadorSolicitud.findUnique({ where: { solicitud } }));
 }
 
 /** Las que llegaron en los últimos `dias`, la más reciente primero. */

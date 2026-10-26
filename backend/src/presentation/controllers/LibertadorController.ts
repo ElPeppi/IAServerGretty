@@ -6,11 +6,13 @@ import {
   asegurarCarpetaCaso, normalizarProceso, ProcesoLibertador, CarpetaCasoAsegurada, mimeDeArchivo, leerArchivoCaso,
 } from '../../infrastructure/storage/libertadorDrive';
 import {
-  Formulario, formularioActivo, configFormulario, leerFormulario, armarRespuesta, enviarFormulario, textoDelEnvio,
+  Formulario, formularioActivo, configFormulario, leerFormulario, armarRespuesta, enlacePrellenado, textoDeRespuestas,
 } from '../../infrastructure/libertador/formularioSolicitud';
 import {
   RecepcionLibertador, registrarRecepcion, marcarCarpeta, marcarAnexos, marcarFormulario, listarRecibidas,
+  marcarFormularioListo, marcarFormularioEnviado, obtenerRecibida,
 } from '../../infrastructure/libertador/solicitudesRecibidas';
+import { prisma } from '../../infrastructure/database/prisma/client';
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
@@ -67,7 +69,8 @@ export class LibertadorController {
    */
   async recibidas(_req: AuthRequest, res: Response): Promise<void> {
     try {
-      res.json({ solicitudes: await listarRecibidas() });
+      // El correo va para la página: con sesión de Google el enlace NO lo trae puesto.
+      res.json({ solicitudes: await listarRecibidas(), formularioCorreo: configFormulario().correo });
     } catch (error: unknown) {
       res.status(500).json({ message: error instanceof Error ? error.message : 'No se pudieron leer las solicitudes recibidas' });
     }
@@ -201,7 +204,7 @@ export class LibertadorController {
     notificationHub.broadcast({
       type: TIPO_AVISO, level: 'info', title: 'Documentos Libertador',
       message: `Bajando los anexos de ${solicitudes.length <= 5 ? solicitudes.join(', ') : `${solicitudes.length} solicitudes`} del portal de Bolívar`
-        + (conFormulario ? ' y enviando el formulario de solicitud de documentos…' : '…'),
+        + (conFormulario ? ' y preparando el formulario de solicitud de documentos…' : '…'),
       meta: { solicitudes },
     });
 
@@ -250,7 +253,7 @@ export class LibertadorController {
         // El formulario no depende de los anexos, solo de lo leído en el Huella.
         // Sin `huella` el aviso de arriba ya dice por qué (no se abrió la solicitud).
         if (conFormulario && item.huella) {
-          const f = await this.formularioCaso(item.solicitud, folderId, item.huella, obtenerFormulario);
+          const f = await this.prepararFormulario(item.solicitud, folderId, item.huella, obtenerFormulario);
           if (f) partes.push(f);
         } else if (conFormulario) {
           await marcarFormulario(item.solicitud, 'error', `no se leyeron sus datos en el Huella: ${item.error || 'sin detalle'}`);
@@ -280,12 +283,15 @@ export class LibertadorController {
   }
 
   /**
-   * Manda el formulario de solicitud de documentos de UNA solicitud, salvo que ya
-   * se haya mandado a ese mismo formulario: lo enviado queda escrito en su carpeta
-   * (REGISTRO_FORMULARIO), y n8n vuelve a disparar esto con cada correo de
-   * asignación. Devuelve el fragmento para el resumen, o null si falló (ya avisado).
+   * Deja listo el formulario de solicitud de documentos de UNA solicitud: arma el
+   * enlace prellenado con lo leído del Huella y lo guarda para que la página lo
+   * ofrezca. NO lo envía: el "Enviar" de Google tiene reCAPTCHA y lo da una persona
+   * (que después lo marca con "Ya lo envié", ver formularioEnviado).
+   * No se vuelve a ofrecer si ya se envió: lo dice la base o el registro de la
+   * carpeta (REGISTRO_FORMULARIO). Devuelve el fragmento para el resumen, o null si
+   * falló (ya avisado).
    */
-  private async formularioCaso(
+  private async prepararFormulario(
     solicitud: string,
     folderId: string,
     huella: { poliza: string; estado: string; ciudad: string; errores?: { ciudad?: string } },
@@ -295,10 +301,12 @@ export class LibertadorController {
     const fallo = async (message: string) => {
       await marcarFormulario(solicitud, 'error', message);
       notificationHub.broadcast({
-        type: TIPO_AVISO, level: 'warning', title: 'Formulario sin enviar',
+        type: TIPO_AVISO, level: 'warning', title: 'Formulario sin preparar',
         message: `${solicitud}: ${message}`, meta: { solicitud },
       });
     };
+    if ((await obtenerRecibida(solicitud))?.formularioEstado === 'enviado') return 'formulario ya enviado antes';
+
     const faltan = [
       !huella.poliza && 'la póliza',
       !huella.estado && 'el estado del siniestro',
@@ -311,32 +319,63 @@ export class LibertadorController {
 
     try {
       const form = await obtenerFormulario();
-      const previo = (await leerArchivoCaso(folderId, REGISTRO_FORMULARIO))?.toString('utf8') || '';
-      // El id del formulario va en el registro: lo enviado a la copia de prueba no
+      // El id del formulario va en el registro: lo enviado a una copia de prueba no
       // cuenta como enviado al de Bolívar.
+      const previo = (await leerArchivoCaso(folderId, REGISTRO_FORMULARIO))?.toString('utf8') || '';
       if (previo.includes(`(${form.id})`)) {
-        await marcarFormulario(solicitud, 'ya_enviado', `ya estaba en ${REGISTRO_FORMULARIO}`);
+        await marcarFormularioEnviado(solicitud, `ya estaba registrado en ${REGISTRO_FORMULARIO}`);
         return 'formulario ya enviado antes';
       }
-
       const pares = armarRespuesta(form, { solicitud, ...huella });
-      await enviarFormulario(form, pares);
-      await marcarFormulario(solicitud, 'enviado', `póliza ${huella.poliza} · ${huella.estado} · ${huella.ciudad}`);
-      try {
-        const texto = `${previo}${previo ? '\n' : ''}${textoDelEnvio(form, pares)}`;
-        await subirArchivoCaso(folderId, REGISTRO_FORMULARIO, Buffer.from(texto, 'utf8'), mimeDeArchivo(REGISTRO_FORMULARIO));
-      } catch (e: unknown) {
-        notificationHub.broadcast({
-          type: TIPO_AVISO, level: 'warning', title: 'Formulario sin registro',
-          message: `${solicitud}: el formulario SÍ se envió, pero no pude dejar el registro en su carpeta `
-            + `(${e instanceof Error ? e.message : 'error de Drive'}). Si se vuelve a disparar, se mandaría otra vez.`,
-          meta: { solicitud },
-        });
-      }
-      return 'formulario enviado';
+      await marcarFormularioListo(solicitud, enlacePrellenado(form, pares), textoDeRespuestas(form, pares));
+      return 'formulario listo para enviar';
     } catch (e: unknown) {
-      await fallo(e instanceof Error ? e.message : 'no se pudo enviar el formulario.');
+      await fallo(e instanceof Error ? e.message : 'no se pudo armar el formulario.');
       return null;
+    }
+  }
+
+  /**
+   * POST /api/libertador/recibidas/:solicitud/formulario-enviado
+   * La persona que envió el formulario lo marca: queda en la base (quién y cuándo)
+   * y en el registro de la carpeta del caso, para que no se vuelva a ofrecer.
+   */
+  async formularioEnviado(req: AuthRequest, res: Response): Promise<void> {
+    const solicitud = String(req.params.solicitud || '').trim();
+    const fila = await obtenerRecibida(solicitud);
+    if (!fila) {
+      res.status(404).json({ message: `La solicitud ${solicitud} no está entre las recibidas.` });
+      return;
+    }
+    try {
+      const usuario = req.user?.userId
+        ? await prisma.user.findUnique({ where: { id: req.user.userId }, select: { name: true, email: true } })
+        : null;
+      const quien = usuario?.name || usuario?.email || 'un usuario';
+      const marcada = await marcarFormularioEnviado(solicitud, quien);
+
+      // Registro en la carpeta: lo que se mandó, cuándo y quién lo marcó. Un fallo
+      // aquí no deshace la marca; se le avisa a quien lo pidió.
+      let registroEnCarpeta = false;
+      if (fila.carpetaId) {
+        try {
+          const previo = (await leerArchivoCaso(fila.carpetaId, REGISTRO_FORMULARIO))?.toString('utf8') || '';
+          const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
+          const bloque = [
+            fila.formularioTexto || `Formulario de solicitud de documentos — solicitud ${solicitud}`,
+            `  Enviado (marcado en la app): ${cuando} por ${quien}`,
+            fila.formularioEnlace ? `  Enlace: ${fila.formularioEnlace}` : '',
+          ].filter(Boolean).join('\n');
+          const texto = `${previo}${previo ? '\n\n' : ''}${bloque}\n`;
+          await subirArchivoCaso(fila.carpetaId, REGISTRO_FORMULARIO, Buffer.from(texto, 'utf8'), mimeDeArchivo(REGISTRO_FORMULARIO));
+          registroEnCarpeta = true;
+        } catch (e: unknown) {
+          console.error(`[LIB-FORM] ${solicitud}: no pude dejar el registro en la carpeta: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+      res.json({ success: true, solicitud: marcada, registroEnCarpeta });
+    } catch (e: unknown) {
+      res.status(500).json({ message: e instanceof Error ? e.message : 'No se pudo marcar el formulario' });
     }
   }
 

@@ -15,6 +15,8 @@ router.use(authenticate);
 router.get('/casos', (req, res) => controller.casos(req, res));
 // Solicitudes que llegaron por correo (n8n) y en qué va su flujo automático.
 router.get('/recibidas', (req, res) => controller.recibidas(req, res));
+// "Ya lo envié": la persona envió el formulario de Bolívar con el enlace prellenado.
+router.post('/recibidas/:solicitud/formulario-enviado', (req, res) => controller.formularioEnviado(req, res));
 // Estados de cuenta de un conjunto de solicitudes (sin asignación de por medio).
 router.post('/estados-cuenta', (req, res) => controller.estadosCuenta(req, res));
 

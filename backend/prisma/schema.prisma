@@ -201,7 +201,9 @@ model DatoManual {
 // que llegó al instante, sin esperar a que aparezca en el cuadro jurídico.
 //   carpetaEstado:    creada | existente | error
 //   anexosEstado:     pendiente | ok | sin_anexos | error
-//   formularioEstado: pendiente | enviado | ya_enviado | error | apagado
+//   formularioEstado: pendiente | listo | enviado | error | apagado
+// El formulario de Bolívar NO se envía solo (su "Enviar" tiene reCAPTCHA): se deja
+// el enlace prellenado ("listo") y una persona lo envía y lo marca ("enviado").
 model LibertadorSolicitud {
   solicitud         String   @id
   procesos          String[]                // EJECUTIVO, RESTITUCION, CONCILIACION, RESIDUAL
@@ -222,6 +224,10 @@ model LibertadorSolicitud {
   anexosDetalle     String?
   formularioEstado  String?
   formularioDetalle String?
+  formularioEnlace  String?                 // enlace prellenado del formulario de Bolívar
+  formularioTexto   String?                 // las respuestas, legibles (van al registro de la carpeta)
+  formularioEnviadoPor String?              // quién lo marcó como enviado
+  formularioEnviadoEn  DateTime?
   updatedAt         DateTime @updatedAt
 
   @@index([ultimaRecepcion])
