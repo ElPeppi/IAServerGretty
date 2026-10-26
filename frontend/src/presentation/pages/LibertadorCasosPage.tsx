@@ -60,6 +60,7 @@ export function LibertadorCasosPage() {
   // se carga aparte y un fallo de uno no esconde al otro.
   const [recibidas, setRecibidas] = useState<LibertadorRecibida[]>([]);
   const [errorRecibidas, setErrorRecibidas] = useState<string | null>(null);
+  const [formularioCorreo, setFormularioCorreo] = useState('');
 
   // Todo setState va DESPUÉS del await: el esqueleto de carga lo enciende quien
   // pide la recarga a mano (`recargar`), no esta función. Así la recarga que
@@ -81,7 +82,8 @@ export function LibertadorCasosPage() {
     }
 
     if (correo.status === 'fulfilled') {
-      setRecibidas(correo.value);
+      setRecibidas(correo.value.solicitudes);
+      setFormularioCorreo(correo.value.formularioCorreo);
       setErrorRecibidas(null);
     } else {
       const err = correo.reason as { response?: { data?: { message?: string } } } & Error;
@@ -204,6 +206,8 @@ export function LibertadorCasosPage() {
           enCuadro={enCuadro}
           cuadroLeido={!error}
           error={errorRecibidas}
+          formularioCorreo={formularioCorreo}
+          onCambio={() => { void cargar(); }}
         />
       )}
 

@@ -376,9 +376,12 @@ el ⋮ de la inmobiliaria, en `SAC_TEMP_DIR/libertador_inmobiliaria_*.html`.
 
 Por cada solicitud se llena el formulario "Datos del siniestro" de Seguros Bolívar
 (https://docs.google.com/forms/d/e/1FAIpQLSfTIxr-lU3sAUbnkk3a1G0O7AWcf6PCGslJ5usOfa0ltEd9zg/viewform).
-**No exige iniciar sesión** (verificado sin sesión el 2026-10-22): el correo es un campo
-que se escribe y a ese correo llega la copia de la respuesta. Por eso el backend lo
-envía con un POST directo a `/formResponse`, sin navegador.
+**No se envía solo.** No exige iniciar sesión, pero el "Enviar" de la última página tiene
+**reCAPTCHA** (invisible para una persona; un POST directo recibe 400, comprobado el
+2026-10-23) y no se esquiva. El sistema arma el **enlace prellenado**
+(`viewform?usp=pp_url&…`) con todas las respuestas; una persona lo abre, revisa, da
+Siguiente ×3 y Enviar, y lo marca en la página con "Ya lo envié". Abierto en incógnito
+el correo viene puesto; con sesión de Google, Google lo deja vacío y hay que escribirlo.
 
 | Pregunta | Valor |
 |---|---|
@@ -394,38 +397,39 @@ envía con un POST directo a `/formResponse`, sin navegador.
 
 Piezas: el motor lee póliza/estado/ciudad en la misma pasada del NIT
 (`datosDeSolicitudes`, `leerCiudadArrendatario`) y los devuelve como `huella` en
-`/documentos-libertador`; el backend (`formularioSolicitud.ts`, `LibertadorController.formularioCaso`)
-arma y envía. Las preguntas se reconocen por TÍTULO, no por id: sirve para el real y
-para una copia; una pregunta obligatoria desconocida hace fallar sin enviar nada.
+`/documentos-libertador`; el backend (`formularioSolicitud.ts`,
+`LibertadorController.prepararFormulario`) arma el enlace y lo deja "listo" en la
+página. Las preguntas se reconocen por TÍTULO, no por id: sirve para el real y para una
+copia; una pregunta obligatoria desconocida hace fallar sin armar un enlace a medias.
 
-Una sola vez por solicitud: lo enviado queda en `SOLICITUD DE DOCUMENTOS - FORMULARIO.txt`
-en la carpeta del caso, con el id del formulario (un envío a la copia de prueba no
-cuenta como enviado al real).
+Una sola vez por solicitud: "Ya lo envié" (`POST /api/libertador/recibidas/:solicitud/formulario-enviado`)
+lo marca en la base (quién y cuándo) y agrega lo enviado a
+`SOLICITUD DE DOCUMENTOS - FORMULARIO.txt` en la carpeta del caso, con el id del
+formulario. Si la solicitud vuelve a llegar, no se vuelve a ofrecer.
 
-Config: `LIBERTADOR_FORM_URL` en backend/.env (vacío = apagado) y los valores fijos
-`LIBERTADOR_FORM_*` (ver DEPLOY-PRODUCCION.md). Probar sin Huella ni Drive:
+Config: `LIBERTADOR_FORM_URL` (por defecto, el de Bolívar; `off` = no se arma) y los
+valores fijos `LIBERTADOR_FORM_*` (ver DEPLOY-PRODUCCION.md). Armar el enlace de un
+caso a mano, sin Huella ni Drive:
 ```
 cd backend
-npm run libertador:formulario -- <url> 11752770 14104 Vigente "SANTA MARTA"            # solo muestra
-npm run libertador:formulario -- <url-copia> 11752770 14104 Vigente "SANTA MARTA" --enviar
+npm run libertador:formulario -- 7279864 14001 Vigente "SANTA MARTA"
 ```
 
-Pendiente: confirmar con la oficina (1) que puede salir con el correo escrito y sin
-iniciar sesión con la cuenta del jefe, y (2) qué fila de Arrendatarios usar cuando hay
-varias (hoy: la primera).
+Pendiente: qué fila de Arrendatarios usar cuando hay varias (hoy: la primera).
 
 ## 16. Llegadas por correo en la página (oct-2026)
 
 n8n ya llamaba al backend con cada asignación (`POST /api/libertador/carpetas`), pero
 el backend no la guardaba: la página solo leía el cuadro jurídico, y n8n escribe en una
 hoja de PRUEBA. Ahora cada solicitud queda en la tabla `libertador_solicitudes`
-(migración `20261023120000_libertador_solicitudes`) con en qué va cada paso:
+(migraciones `20261023120000_libertador_solicitudes` y `20261023180000_libertador_formulario_enlace`,
+que agrega el enlace prellenado y quién lo marcó como enviado) con en qué va cada paso:
 
 | Campo | Valores |
 |---|---|
 | carpetaEstado | creada · existente · error |
 | anexosEstado | pendiente · ok · sin_anexos · error (+ cantidad y detalle) |
-| formularioEstado | pendiente · enviado · ya_enviado · error · apagado |
+| formularioEstado | pendiente · listo (enlace armado) · enviado (lo marcó una persona) · error · apagado |
 
 Si la solicitud vuelve a llegar se actualiza: suma procesos nuevos y cuenta las veces.
 Todo es best-effort (`solicitudesRecibidas.ts`): si Postgres falla, el flujo de Drive

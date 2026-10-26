@@ -37,7 +37,9 @@ export interface LibertadorCasosResponse {
 // va cada paso automático. Llega al instante, antes de aparecer en el cuadro.
 export type EstadoCarpeta = 'creada' | 'existente' | 'error';
 export type EstadoAnexos = 'pendiente' | 'ok' | 'sin_anexos' | 'error';
-export type EstadoFormulario = 'pendiente' | 'enviado' | 'ya_enviado' | 'error' | 'apagado';
+// El formulario de Bolívar no se envía solo (su "Enviar" tiene reCAPTCHA): "listo" =
+// hay enlace prellenado para que una persona lo envíe; "enviado" = ya lo marcó.
+export type EstadoFormulario = 'pendiente' | 'listo' | 'enviado' | 'error' | 'apagado';
 
 export interface LibertadorRecibida {
   solicitud: string;
@@ -58,12 +60,28 @@ export interface LibertadorRecibida {
   anexosDetalle: string | null;
   formularioEstado: EstadoFormulario | null;
   formularioDetalle: string | null;
+  formularioEnlace: string | null;      // enlace prellenado del formulario de Bolívar
+  formularioEnviadoPor: string | null;
+  formularioEnviadoEn: string | null;   // ISO
+}
+
+export interface LibertadorRecibidasResponse {
+  solicitudes: LibertadorRecibida[];
+  // Con sesión de Google el enlace NO trae el correo puesto: hay que escribirlo.
+  formularioCorreo: string;
 }
 
 export const libertadorApi = {
   // Lo que llegó por correo en los últimos 60 días, lo más reciente primero.
-  recibidas: () =>
-    apiClient.get<{ solicitudes: LibertadorRecibida[] }>('/libertador/recibidas').then((r) => r.data.solicitudes),
+  recibidas: () => apiClient.get<LibertadorRecibidasResponse>('/libertador/recibidas').then((r) => r.data),
+
+  // "Ya lo envié": queda en la base y en el registro de la carpeta del caso.
+  marcarFormularioEnviado: (solicitud: string) =>
+    apiClient
+      .post<{ success: boolean; registroEnCarpeta: boolean }>(
+        `/libertador/recibidas/${encodeURIComponent(solicitud)}/formulario-enviado`,
+      )
+      .then((r) => r.data),
 
   // Pide los estados de cuenta de un conjunto de solicitudes. Responde 202: el
   // portal tarda minutos y el resultado llega por notificación.

@@ -64,11 +64,11 @@ ENGINE_NOTIFY_SECRET=un-secreto-largo
 # "Header Auth": Name = x-n8n-secret, Value = este mismo valor. Sin él, se rechaza.
 N8N_SECRET=otro-secreto-largo
 
-# Libertador: formulario de Google para pedirle los documentos a Bolívar.
-# Vacío = no se envía. OJO: con el enlace real, cada asignación manda una
-# solicitud de verdad a Bolívar (una sola vez por solicitud: queda registro en
-# la carpeta del caso).
-LIBERTADOR_FORM_URL=
+# Libertador: formulario de Google para pedirle los documentos a Bolívar. NO se
+# envía solo (su "Enviar" tiene reCAPTCHA): el sistema deja el enlace prellenado en
+# la página y una persona lo envía. Por defecto usa el formulario de Bolívar;
+# "off" lo apaga. Solo hace falta ponerla para cambiar de formulario.
+# LIBERTADOR_FORM_URL=off
 # Valores fijos (estos son los de por defecto; solo hace falta ponerlos para cambiarlos)
 # LIBERTADOR_FORM_CORREO=jramos@jramosabogado.com
 # LIBERTADOR_FORM_ABOGADO=JAIRO ENRIQUE RAMOS LAZARO
@@ -331,3 +331,87 @@ Evitamos lo caro: **sin RDS, sin ALB, sin NAT Gateway** (todo en un EC2 = ~**$35
 
 **Ahorro real**: 12h × 5 días ≈ 260 h/mes ≈ **$11/mes de cómputo** (vs $30 en 24/7). EBS + IP se siguen pagando. El ahorro es modesto; si la disponibilidad importa, deja 24/7.
 ```
+
+---
+
+## 13. n8n en el servidor (https://jramosabogados.com/n8n/)
+
+Hasta ahora n8n corría en Docker en un PC de la oficina: si el PC se apagaba, nadie leía los correos. Se pasa al EC2, también en Docker, detrás de Nginx en la ruta `/n8n/` (no hace falta subdominio). Los archivos son [deploy/n8n/docker-compose.yml](../deploy/n8n/docker-compose.yml) y [deploy/n8n/nginx-n8n.conf](../deploy/n8n/nginx-n8n.conf).
+
+Se copia el volumen entero del PC. Con él llegan el usuario dueño, los workflows, las credenciales y el archivo `config` con la llave que las descifra. Gmail no hay que volver a conectarlo.
+
+### 13.1 En el PC (PowerShell): parar n8n y sacar el respaldo
+```powershell
+docker update --restart=no gretty-n8n
+docker stop gretty-n8n
+New-Item -ItemType Directory -Force C:\n8n-respaldo | Out-Null
+docker run --rm -v iaservergretty_n8n_data:/data -v C:\n8n-respaldo:/backup alpine tar czf /backup/n8n_data.tgz -C /data .
+scp C:\n8n-respaldo\n8n_data.tgz <usuario>@<servidor>:~/
+```
+- n8n se para **antes** de copiar, por dos razones: la base SQLite queda cerrada y entera, y no quedan dos n8n leyendo el mismo Gmail. Si quedaran dos, cada asignación se procesaría dos veces y saldrían carpetas duplicadas en Drive.
+- `scp` va con el mismo usuario y la misma llave con que entras por SSH (`-i llave.pem` si usas llave).
+- El `.tgz` trae las credenciales **y** la llave que las descifra. No lo subas al repo y bórralo cuando el servidor funcione.
+
+### 13.1-bis Sin SSH: el paquete por la terminal web
+Si al servidor solo se entra por una terminal en el navegador (consola de AWS), no hay `scp`. En ese caso no se pasa el volumen. Se pasa un paquete de unos 20 KB con los exportes oficiales de n8n: los workflows y las credenciales **descifradas**.
+
+1. **En el PC.** Sobre una copia del respaldo se corren `n8n export:workflow --all` y `n8n export:credentials --all --decrypted`, y se empaquetan en un `.tgz`. Ese `.tgz` va en base64 dentro de un texto para pegar en la terminal del servidor. El texto trae un heredoc `base64 -d` y un `sha256sum -c` que verifica la copia.
+2. **En el servidor.**
+   - Se levanta n8n vacío: 13.2, sin el paso de restaurar.
+   - Se configura Nginx (13.3).
+   - Se crea el usuario en `/n8n/`.
+   - Se importa el paquete:
+   ```bash
+   docker exec -i gretty-n8n sh -c 'mkdir -p /tmp/imp && tar xzf - -C /tmp/imp && n8n import:credentials --input=/tmp/imp/credenciales.json && n8n import:workflow --input=/tmp/imp/workflows.json; rm -rf /tmp/imp' < ~/n8n_import.tgz
+   rm ~/n8n_import.tgz
+   ```
+3. **Qué llega.** Las credenciales conservan su ID, así que los nodos quedan enlazados solos. Gmail sigue conectado porque viaja su token. Lo único que no se pasa es el historial de ejecuciones.
+
+> El texto pegado vale lo mismo que las contraseñas. Se pega con un espacio al inicio, para que no quede en el historial de la terminal, y se borra del PC al terminar.
+
+### 13.2 En el servidor
+```bash
+# Docker (solo si `docker --version` falla)
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER        # luego salir y volver a entrar por SSH
+
+# Restaurar el volumen ANTES del primer arranque ($HOME = donde quedó el .tgz)
+docker volume create gretty_n8n_data
+docker run --rm -v gretty_n8n_data:/data -v "$HOME":/backup alpine \
+  sh -c 'tar xzf /backup/n8n_data.tgz -C /data && chown -R 1000:1000 /data'
+
+# Levantar desde el repo (los archivos llegan con el git pull del deploy)
+cd /home/appuser/IAServerGretty
+docker compose -f deploy/n8n/docker-compose.yml up -d
+curl -s http://127.0.0.1:5678/healthz          # → {"status":"ok"}
+```
+> Si se arranca antes de restaurar, n8n crea una base vacía con otra llave. Para arreglarlo: `docker compose -f deploy/n8n/docker-compose.yml down`, luego `docker volume rm gretty_n8n_data`, y se repite la restauración.
+
+### 13.3 Nginx
+Pegar [deploy/n8n/nginx-n8n.conf](../deploy/n8n/nginx-n8n.conf) en `/etc/nginx/sites-available/gretty`:
+- el `map` va arriba del archivo, fuera de los `server { }`;
+- los dos `location` van dentro del `server` que tiene `listen 443 ssl` (el que dejó Certbot).
+
+Luego: `sudo nginx -t && sudo systemctl reload nginx`.
+
+La `/` al final de `proxy_pass http://127.0.0.1:5678/;` es obligatoria porque es lo que le quita el `/n8n/` a la ruta. Sin ella, los assets del editor salen como HTML y la página queda en blanco.
+
+### 13.4 Comprobar y activar
+1. Abrir https://jramosabogados.com/n8n/ y entrar con el mismo usuario de n8n que había en el PC.
+2. En *Credentials*, "Gmail account" debe salir conectada. Probar "email automatization" a mano (*Execute workflow*), como se hacía en el PC.
+3. Activarlo (*Publish* / *Active*) para que lea el Gmail solo. En el PC los tres workflows estaban inactivos: se corrían a mano.
+4. Borrar `~/n8n_data.tgz` del servidor y la carpeta `C:\n8n-respaldo` del PC.
+
+### 13.5 Gmail: que no se desloguee
+- La credencial guarda un *refresh token*. Con él, n8n renueva el acceso solo, sin navegador ni sesión abierta.
+- Google vence ese token **a los 7 días** si el cliente OAuth es de un proyecto de Google Cloud en **Testing** con usuarios **External**. Hay dos salidas:
+  - pasar el proyecto a **In production** (Google Auth Platform → Audience);
+  - ponerlo en **Internal**, si la cuenta de Gmail es del Workspace de jramosabogados.com.
+- Si toca reconectar, primero hay que agregar esta URL a *Authorized redirect URIs* del cliente OAuth: `https://jramosabogados.com/n8n/rest/oauth2-credential/callback`.
+
+### 13.6 Después
+- El nodo "Backend - Carpetas Drive Libertador" ya llama `https://jramosabogados.com/api/libertador/carpetas`, así que no cambia.
+- La versión queda fija en 2.42.6. Para subirla: respaldar el volumen (como en 13.1, pero en el servidor), cambiar la etiqueta en el compose y correr `up -d`.
+- En el `docker-compose.yml` de la raíz, el n8n del PC quedó detrás del perfil `n8n`. `docker compose up -d` ya no lo levanta; solo arranca con `--profile n8n`.
+- `deploy.sh` no toca n8n. Si el EC2 se apaga y se vuelve a encender (§12), Docker lo levanta solo.

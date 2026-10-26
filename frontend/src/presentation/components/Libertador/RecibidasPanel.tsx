@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import type { LibertadorRecibida } from '../../../infrastructure/api/libertadorApi';
+import { libertadorApi, type LibertadorRecibida } from '../../../infrastructure/api/libertadorApi';
 
 /**
  * Solicitudes que llegaron por correo (n8n → backend) y en qué va su flujo
  * automático: carpeta en Drive, anexos del portal de Bolívar y formulario de
  * solicitud de documentos. Sale al instante, antes de que la solicitud aparezca
  * en el cuadro jurídico; la columna "Cuadro" dice si ya está ahí.
+ *
+ * El formulario de Bolívar NO se envía solo (su "Enviar" tiene reCAPTCHA): el
+ * sistema deja el enlace prellenado, una persona lo abre, da Siguiente y Enviar, y
+ * vuelve aquí a marcar "Ya lo envié".
  */
 
 interface Props {
@@ -15,6 +19,9 @@ interface Props {
   // Si el cuadro no se pudo leer no se puede afirmar que falte en él.
   cuadroLeido: boolean;
   error: string | null;
+  // Correo del formulario: con sesión de Google el enlace no lo trae puesto.
+  formularioCorreo: string;
+  onCambio: () => void;
 }
 
 const VISIBLES = 5;
@@ -46,13 +53,82 @@ function chipAnexos(r: LibertadorRecibida): Chip | null {
 
 function chipFormulario(r: LibertadorRecibida): Chip | null {
   switch (r.formularioEstado) {
-    case 'pendiente': return { texto: 'Pendiente', clase: AMBAR };
+    case 'pendiente': return { texto: 'Preparando…', clase: AMBAR };
+    case 'listo': return { texto: 'Listo para enviar', clase: AMBAR };
     case 'enviado': return { texto: 'Enviado', clase: VERDE };
-    case 'ya_enviado': return { texto: 'Ya enviado', clase: VERDE };
-    case 'error': return { texto: 'Sin enviar', clase: ROJO };
+    case 'error': return { texto: 'Sin preparar', clase: ROJO };
     case 'apagado': return { texto: 'Apagado', clase: GRIS };
     default: return null;
   }
+}
+
+async function copiar(texto: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(texto);
+    return true;
+  } catch {
+    // Sin permiso de portapapeles: se muestra para copiarlo a mano.
+    window.prompt('Copia el texto:', texto);
+    return false;
+  }
+}
+
+function CeldaFormulario({ r, onCambio }: { r: LibertadorRecibida; onCambio: () => void }) {
+  const [copiado, setCopiado] = useState(false);
+  const [marcando, setMarcando] = useState(false);
+  const chip = chipFormulario(r);
+
+  const detalle = r.formularioEstado === 'apagado'
+    ? 'El formulario está apagado (LIBERTADOR_FORM_URL=off en el servidor).'
+    : r.formularioEstado === 'enviado'
+      ? [r.formularioEnviadoPor && `Marcado por ${r.formularioEnviadoPor}`, r.formularioEnviadoEn && fechaHora(r.formularioEnviadoEn)].filter(Boolean).join(' · ')
+      : r.formularioDetalle;
+
+  const marcar = async () => {
+    if (!window.confirm(`¿Ya enviaste el formulario de la solicitud ${r.solicitud}? Quedará registrado y no se volverá a ofrecer.`)) return;
+    setMarcando(true);
+    try {
+      const res = await libertadorApi.marcarFormularioEnviado(r.solicitud);
+      if (!res.registroEnCarpeta) {
+        window.alert('Quedó marcado como enviado, pero no se pudo dejar el registro en la carpeta del caso en Drive.');
+      }
+      onCambio();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } }).response?.data?.message;
+      window.alert(msg || 'No se pudo marcar como enviado.');
+    } finally {
+      setMarcando(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      <Estado chip={chip} detalle={detalle} />
+      {r.formularioEstado === 'listo' && r.formularioEnlace && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs whitespace-nowrap">
+          <a href={r.formularioEnlace} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+            Abrir
+          </a>
+          <button
+            type="button"
+            onClick={async () => { if (await copiar(r.formularioEnlace as string)) { setCopiado(true); setTimeout(() => setCopiado(false), 2000); } }}
+            title="Pégalo en una ventana de incógnito: ahí el correo viene puesto"
+            className="text-blue-600 hover:underline"
+          >
+            {copiado ? 'Copiado ✓' : 'Copiar enlace'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void marcar()}
+            disabled={marcando}
+            className="text-green-700 font-medium hover:underline disabled:opacity-50"
+          >
+            {marcando ? 'Marcando…' : 'Ya lo envié'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Estado({ chip, detalle }: { chip: Chip | null; detalle?: string | null }) {
@@ -73,9 +149,11 @@ const fechaHora = (iso: string) => new Date(iso).toLocaleString('es-CO', {
 
 const pesos = (n: number | null) => (n ? `$${n.toLocaleString('es-CO')}` : '');
 
-export function RecibidasPanel({ recibidas, enCuadro, cuadroLeido, error }: Props) {
+export function RecibidasPanel({ recibidas, enCuadro, cuadroLeido, error, formularioCorreo, onCambio }: Props) {
   const [todas, setTodas] = useState(false);
+  const [correoCopiado, setCorreoCopiado] = useState(false);
   const lista = todas ? recibidas : recibidas.slice(0, VISIBLES);
+  const listos = recibidas.filter((r) => r.formularioEstado === 'listo').length;
 
   return (
     <section className="border border-gray-200 rounded-xl">
@@ -102,6 +180,22 @@ export function RecibidasPanel({ recibidas, enCuadro, cuadroLeido, error }: Prop
       </div>
 
       {error && <p className="px-4 py-3 text-sm text-red-700">{error}</p>}
+
+      {!error && listos > 0 && (
+        <p className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
+          {listos} formulario(s) de Bolívar listo(s) para enviar. Ábrelo, revisa, da Siguiente y Enviar, y luego
+          marca «Ya lo envié». Si lo abres con tu sesión de Google, el correo no viene puesto: escribe{' '}
+          <button
+            type="button"
+            onClick={async () => { if (await copiar(formularioCorreo)) { setCorreoCopiado(true); setTimeout(() => setCorreoCopiado(false), 2000); } }}
+            className="font-medium underline"
+            title="Copiar el correo"
+          >
+            {correoCopiado ? 'copiado ✓' : formularioCorreo}
+          </button>
+          {' '}(o pega el enlace en una ventana de incógnito, ahí sí viene).
+        </p>
+      )}
 
       {!error && lista.length > 0 && (
         <div className="overflow-x-auto">
@@ -156,14 +250,7 @@ export function RecibidasPanel({ recibidas, enCuadro, cuadroLeido, error }: Prop
                       <Estado chip={chipCarpeta(r)} detalle={[r.carpetaNombre, r.carpetaDetalle].filter(Boolean).join('\n')} />
                     </td>
                     <td className="px-4 py-2.5"><Estado chip={chipAnexos(r)} detalle={r.anexosDetalle} /></td>
-                    <td className="px-4 py-2.5">
-                      <Estado
-                        chip={chipFormulario(r)}
-                        detalle={r.formularioEstado === 'apagado'
-                          ? 'El envío del formulario está apagado (LIBERTADOR_FORM_URL vacío en el servidor).'
-                          : r.formularioDetalle}
-                      />
-                    </td>
+                    <td className="px-4 py-2.5"><CeldaFormulario r={r} onCambio={onCambio} /></td>
                     <td className="px-4 py-2.5">
                       {!cuadroLeido
                         ? <span className="text-gray-400">—</span>

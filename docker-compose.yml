@@ -2,7 +2,7 @@
 # El backend, el frontend y el motor siguen corriendo con `npm run dev` en el host;
 # esto solo levanta los servicios que antes vivían en Docker.
 #
-#   docker compose up -d          levantar
+#   docker compose up -d          levantar (solo la base; n8n va aparte, ver abajo)
 #   docker compose ps             estado
 #   docker compose logs -f db     logs de postgres
 #   docker compose down           parar (los datos sobreviven en los volúmenes)
@@ -31,8 +31,12 @@ services:
       timeout: 5s
       retries: 10
 
+  # El n8n de verdad corre en el servidor (deploy/n8n/). Este solo arranca a
+  # propósito, con `docker compose --profile n8n up -d`: dos n8n leyendo el mismo
+  # Gmail procesarían cada asignación dos veces (carpetas duplicadas en Drive).
   n8n:
-    image: docker.n8n.io/n8nio/n8n
+    profiles: ["n8n"]
+    image: docker.n8n.io/n8nio/n8n:2.42.6
     container_name: gretty-n8n
     restart: unless-stopped
     ports:

@@ -1,0 +1,53 @@
+# n8n en el SERVIDOR, servido por Nginx en https://jramosabogados.com/n8n/
+# (el docker-compose.yml de la raíz es el de desarrollo en el PC).
+#
+#   docker compose -f deploy/n8n/docker-compose.yml up -d        levantar / aplicar cambios
+#   docker compose -f deploy/n8n/docker-compose.yml logs -f      logs
+#   docker compose -f deploy/n8n/docker-compose.yml down         parar (los datos quedan en el volumen)
+#
+# Migración desde el PC, Nginx y Gmail: docs/DEPLOY-PRODUCCION.md §13.
+# deploy.sh NO toca n8n: un push a main no lo reinicia.
+
+name: gretty-n8n
+
+services:
+  n8n:
+    # Versión fija: es la que creó la base (SQLite) que se trae del PC. Subirla es
+    # una decisión aparte: n8n migra la base al arrancar y no hay vuelta atrás.
+    image: docker.n8n.io/n8nio/n8n:2.42.6
+    container_name: gretty-n8n
+    restart: unless-stopped
+    ports:
+      # Solo local: se entra por Nginx (https). El Security Group no abre 5678.
+      - "127.0.0.1:5678:5678"
+    environment:
+      GENERIC_TIMEZONE: America/Bogota
+      TZ: America/Bogota
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      # Detrás de Nginx en una subruta. Nginx le quita el /n8n/ a la petición;
+      # N8N_PATH es para que n8n arme sus enlaces y sus assets con él.
+      N8N_PATH: /n8n/
+      N8N_HOST: jramosabogados.com
+      N8N_PROTOCOL: https
+      N8N_PORT: "5678"
+      N8N_EDITOR_BASE_URL: https://jramosabogados.com/n8n/
+      # URL pública de los webhooks y del callback de OAuth (Gmail):
+      # https://jramosabogados.com/n8n/rest/oauth2-credential/callback
+      WEBHOOK_URL: https://jramosabogados.com/n8n/
+      # Una capa de proxy (Nginx): así lee la IP real y el https de X-Forwarded-*.
+      N8N_PROXY_HOPS: "1"
+      N8N_SECURE_COOKIE: "true"
+    extra_hosts:
+      # Por si un workflow llama al motor o al backend del propio servidor
+      # (http://host.docker.internal:3456 / :3001) en vez de ir por el dominio.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:
+    # Nombre fijo (sin prefijo del proyecto) para poder restaurar en él el respaldo
+    # del PC ANTES del primer arranque. Ahí van los workflows, las credenciales y
+    # el archivo `config` con la llave que las descifra.
+    name: gretty_n8n_data
