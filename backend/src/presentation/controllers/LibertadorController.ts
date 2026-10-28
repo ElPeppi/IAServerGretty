@@ -194,8 +194,8 @@ export class LibertadorController {
   }
 
   /**
-   * Baja los anexos de cada solicitud y los deja en la raíz de su carpeta y, si
-   * LIBERTADOR_FORM_URL está configurado, manda el formulario de solicitud de
+   * Baja los anexos de cada solicitud y los deja en la raíz de su carpeta y, si el
+   * formulario no está apagado, prepara el enlace prellenado de la solicitud de
    * documentos con los datos que el motor leyó del Huella. No lanza.
    */
   private async documentosBg(carpetas: Map<string, string>): Promise<void> {

@@ -362,7 +362,7 @@ Si al servidor solo se entra por una terminal en el navegador (consola de AWS), 
    - Se crea el usuario en `/n8n/`.
    - Se importa el paquete:
    ```bash
-   docker exec -i gretty-n8n sh -c 'mkdir -p /tmp/imp && tar xzf - -C /tmp/imp && n8n import:credentials --input=/tmp/imp/credenciales.json && n8n import:workflow --input=/tmp/imp/workflows.json; rm -rf /tmp/imp' < ~/n8n_import.tgz
+   sudo docker exec -i gretty-n8n sh -c 'mkdir -p /tmp/imp && tar xzf - -C /tmp/imp && n8n import:credentials --input=/tmp/imp/credenciales.json && n8n import:workflow --input=/tmp/imp/workflows.json; rm -rf /tmp/imp' < ~/n8n_import.tgz
    rm ~/n8n_import.tgz
    ```
 3. **Qué llega.** Las credenciales conservan su ID, así que los nodos quedan enlazados solos. Gmail sigue conectado porque viaja su token. Lo único que no se pasa es el historial de ejecuciones.
@@ -370,23 +370,28 @@ Si al servidor solo se entra por una terminal en el navegador (consola de AWS), 
 > El texto pegado vale lo mismo que las contraseñas. Se pega con un espacio al inicio, para que no quede en el historial de la terminal, y se borra del PC al terminar.
 
 ### 13.2 En el servidor
+Todo n8n se maneja con un usuario que tenga `sudo`. En el EC2 es `ubuntu`. Desde la consola de AWS hay dos formas de entrar con él:
+- *Conectar* → *EC2 Instance Connect*, con ese nombre de usuario;
+- *Session Manager*, que entra como `ssm-user` y también tiene `sudo`.
+
+`appuser` no tiene `sudo`, y tampoco conviene meterlo al grupo `docker`. El runner de GitHub corre como `appuser`, y ese grupo equivale a root: cualquier push a `main` podría hacer cualquier cosa en el servidor.
+
 ```bash
-# Docker (solo si `docker --version` falla)
+# Docker (solo si `sudo docker --version` falla)
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
 sudo systemctl enable --now docker
-sudo usermod -aG docker $USER        # luego salir y volver a entrar por SSH
+free -h        # n8n suma unos 300 MB a backend + motor + Postgres
 
 # Restaurar el volumen ANTES del primer arranque ($HOME = donde quedó el .tgz)
-docker volume create gretty_n8n_data
-docker run --rm -v gretty_n8n_data:/data -v "$HOME":/backup alpine \
+sudo docker volume create gretty_n8n_data
+sudo docker run --rm -v gretty_n8n_data:/data -v "$HOME":/backup alpine \
   sh -c 'tar xzf /backup/n8n_data.tgz -C /data && chown -R 1000:1000 /data'
 
 # Levantar desde el repo (los archivos llegan con el git pull del deploy)
-cd /home/appuser/IAServerGretty
-docker compose -f deploy/n8n/docker-compose.yml up -d
+sudo docker compose -f /home/appuser/IAServerGretty/deploy/n8n/docker-compose.yml up -d
 curl -s http://127.0.0.1:5678/healthz          # → {"status":"ok"}
 ```
-> Si se arranca antes de restaurar, n8n crea una base vacía con otra llave. Para arreglarlo: `docker compose -f deploy/n8n/docker-compose.yml down`, luego `docker volume rm gretty_n8n_data`, y se repite la restauración.
+> Si se arranca antes de restaurar, n8n crea una base vacía con otra llave. Para arreglarlo: `sudo docker compose -f /home/appuser/IAServerGretty/deploy/n8n/docker-compose.yml down`, luego `sudo docker volume rm gretty_n8n_data`, y se repite la restauración.
 
 ### 13.3 Nginx
 Pegar [deploy/n8n/nginx-n8n.conf](../deploy/n8n/nginx-n8n.conf) en `/etc/nginx/sites-available/gretty`:

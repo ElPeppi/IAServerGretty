@@ -640,8 +640,13 @@ async function volcarAlrededor(page, marca, nombre) {
 }
 
 async function leerNitInmobiliaria(page) {
-  // 1) El botón ⋮ del campo "Inmobiliaria" de la ficha visible.
-  const campo = await page.evaluate(() => {
+  // 1) El botón ⋮ del campo "Inmobiliaria" de la ficha visible. Huella le da a cada
+  //    campo un nombre ("Siniestro_Siniestro_POLIZA235") que va en el id de su input
+  //    y en el de su ⋮: <oj-menu-button id="commandButton<nombre>">. Se busca por ese
+  //    id. Buscarlo solo por cercanía pulsó en producción el ⋮ de Póliza: el de
+  //    Inmobiliaria aún no se había pintado, y Póliza no tiene etiqueta, así que no
+  //    contaba como "otro campo".
+  const buscarBoton = (porCercania) => page.evaluate((cercania) => {
     for (const m of ['data-inmob-campo', 'data-inmob-menu']) {
       for (const el of document.querySelectorAll(`[${m}]`)) el.removeAttribute(m);
     }
@@ -658,25 +663,53 @@ async function leerNitInmobiliaria(page) {
     const input = inputs[inputs.length - 1];   // la del workspace recién abierto
     if (!input) return { error: 'No encontré el campo "Inmobiliaria" en la ficha del siniestro.' };
     input.setAttribute('data-inmob-campo', '1');
+    const marcar = (b, pista) => {
+      b.setAttribute('data-inmob-menu', '1');
+      return { nombre: norm(input.value), pista };
+    };
 
-    // Se sube por los contenedores hasta encontrar botones, sin pasarse a uno que
-    // ya incluya OTRO campo con etiqueta (sería el botón de otro campo).
+    // a) Por id: el ⋮ con el nombre de campo de este input. Si Huella cambiara el
+    //    id del input, sirve uno cuyo nombre diga INMOBILIARIA.
+    const PRE = 'commandButton';
+    const claveDe = (el) => { const d = el.closest(`[id^="${PRE}"]`); return d ? d.id.slice(PRE.length) : null; };
+    const mismoCampo = (k) => !!k && (input.id || '').includes(k);
+    const deInmobiliaria = (k) => mismoCampo(k) || /inmobiliaria/i.test(k || '');
+    const menus = [...document.querySelectorAll(`[id^="${PRE}"]`)].filter((d) =>
+      deInmobiliaria(d.id.slice(PRE.length)) && (visible(d) || [...d.querySelectorAll('button')].some(visible)));
+    const exactos = menus.filter((d) => mismoCampo(d.id.slice(PRE.length)));
+    const porId = (exactos.length ? exactos : menus).pop();
+    if (porId) return marcar(porId.querySelector('button') || porId, porId.id);
+    if (!cercania) return null;   // puede que aún no se pinte: el que llama reintenta
+
+    // b) Por cercanía, por si Huella no usara ese id: se sube por los contenedores
+    //    hasta encontrar botones, sin pasarse a uno que ya incluya OTRO campo con
+    //    etiqueta y sin aceptar nunca un ⋮ cuyo id es de otro campo.
     const pista = (b) => norm(`${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''} ${b.className || ''} ${b.id || ''}`);
     let cont = input.parentElement;
     for (let i = 0; i < 8 && cont; i++, cont = cont.parentElement) {
       const ajenos = [...cont.querySelectorAll('input')].some((x) => x !== input && visible(x) && etiquetaDe(x) && !/^inmobiliaria$/i.test(etiquetaDe(x)));
       if (ajenos) break;
-      const botones = [...cont.querySelectorAll('button,[role="button"],a,oj-button')].filter((b) => visible(b) && !b.contains(input));
+      const botones = [...cont.querySelectorAll('button,[role="button"],a,oj-button')]
+        .filter((b) => visible(b) && !b.contains(input) && (claveDe(b) === null || deInmobiliaria(claveDe(b))));
       if (!botones.length) continue;
       const menu = botones.find((b) => /men[uú]|more|m[aá]s|acci[oó]n|context|kebab|ellipsis|overflow|dots|options|opciones/i.test(pista(b)))
         || botones.find((b) => !/arrow|flecha|open|desplegar|dropdown|clear|borrar|search|buscar/i.test(pista(b)));
-      if (menu) {
-        menu.setAttribute('data-inmob-menu', '1');
-        return { nombre: norm(input.value), pista: pista(menu).slice(0, 120) };
-      }
+      if (menu) return marcar(menu, pista(menu).slice(0, 120));
     }
-    return { error: 'No encontré el botón ⋮ junto al campo "Inmobiliaria".' };
-  });
+    const vistos = [...document.querySelectorAll(`[id^="${PRE}"]`)].filter(visible).map((d) => d.id.slice(PRE.length));
+    return { error: `No encontré el botón ⋮ del campo "Inmobiliaria" (${input.id || 'sin id'}; ⋮ a la vista: ${vistos.slice(-6).join(', ') || 'ninguno'}).` };
+  }, porCercania);
+
+  // El ⋮ se pinta después que el campo: se le dan 20 s antes de ir por cercanía.
+  let campo = null;
+  const limiteBoton = Date.now() + 20000;
+  while (Date.now() < limiteBoton) {
+    campo = await buscarBoton(false).catch(() => null);
+    if (campo && !campo.error) break;
+    campo = null;
+    await waitMs(1000);
+  }
+  if (!campo) campo = await buscarBoton(true);
   if (campo.error) {
     const dump = await volcarAlrededor(page, 'data-inmob-campo', 'libertador_inmobiliaria_campo.html');
     throw new Error(campo.error + (dump ? ` HTML del campo en ${dump}` : ''));
@@ -1282,7 +1315,9 @@ async function datosDeSolicitudes(solicitudes, opts = {}) {
 // `login` y `buscarSolicitud` se exportan para poder sondear el portal desde un
 // script suelto cuando algo cambia de sitio: sin ellos, cada diagnóstico tendría
 // que duplicar el login (y el User-Agent, que es lo que evita el 401).
-module.exports = { procesarSolicitudes, datosDeSolicitudes, login, buscarSolicitud, UA_PORTAL };
+// `leerNitInmobiliaria`, para probarla contra una réplica de la ficha sin entrar
+// al portal.
+module.exports = { procesarSolicitudes, datosDeSolicitudes, login, buscarSolicitud, leerNitInmobiliaria, UA_PORTAL };
 
 // Solo se autoejecuta como CLI; al requerirlo desde el motor, no.
 if (require.main === module) {
