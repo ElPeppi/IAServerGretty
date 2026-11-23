@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { storage } from '../../infrastructure/storage';
 import { BANCO_DEFAULT, CARPETA_PROCESO, unir, type Proceso } from '../../infrastructure/storage/rutas';
 import { carpetasDeCedula } from '../../infrastructure/storage/carpetasCedula';
+import { prioridadPagare } from '../../infrastructure/storage/archivoPagare';
 import { correosPoderDisponibles } from '../../infrastructure/storage/correosPoder';
 import { obtenerDatoManual, guardarDatoManual } from '../../application/services/datosManuales';
 import { AuthRequest } from '../middlewares/authMiddleware';
@@ -16,14 +17,18 @@ import { AuthRequest } from '../middlewares/authMiddleware';
  * que desde aquí sí se pueden ver y borrar de verdad.
  */
 
-/** Tipo de documento, deducido del nombre. Ordena y agrupa la vista. */
-function clasificar(nombre: string): string {
+/**
+ * Tipo de documento, deducido del nombre. Ordena y agrupa la vista. `hermanos` =
+ * los nombres de la misma carpeta: el certificado Deceval del banco llega como
+ * "{NOMBRE}.pdf" y solo se reconoce por ir junto a "{NOMBRE} DATACREDITO.pdf".
+ */
+function clasificar(nombre: string, hermanos: string[] = []): string {
   if (/^SAC_.*DIRYTEL/i.test(nombre)) return 'SAC';
   if (/^SAC_.*RUNT/i.test(nombre)) return 'RUNT';
   if (/^SAC_/i.test(nombre)) return 'SAC';
   if (/^CONTACTOS_/i.test(nombre)) return 'CONTACTOS';
   if (/DATACREDITO/i.test(nombre)) return 'DATACREDITO';
-  if (/(PAGARE|DECEVAL)/i.test(nombre)) return 'PAGARE';
+  if (prioridadPagare(nombre, hermanos) > 0) return 'PAGARE';
   if (/^DEMANDA/i.test(nombre)) return 'DEMANDA';
   if (/^ANEXOS/i.test(nombre)) return 'ANEXOS';
   if (/^ANTECEDENTES/i.test(nombre)) return 'ANTECEDENTES';
@@ -128,20 +133,23 @@ export class ExpedienteController {
         procesos.map(async (proceso) => {
           const suyas = await carpetasDeCedula(cedula, banco, proceso);
           return Promise.all(
-            suyas.map(async (c) => ({
-              proceso,
-              procesoNombre: CARPETA_PROCESO[proceso],
-              nombre: c.nombre,
-              relPath: c.relPath,
-              archivos: (await storage.list(c.relPath))
-                .map((nombre) => ({
-                  nombre,
-                  relPath: unir(c.relPath, nombre),
-                  url: storage.urlFor(unir(c.relPath, nombre)),
-                  tipo: clasificar(nombre),
-                }))
-                .sort((a, b) => a.tipo.localeCompare(b.tipo) || a.nombre.localeCompare(b.nombre)),
-            })),
+            suyas.map(async (c) => {
+              const nombres = await storage.list(c.relPath);
+              return {
+                proceso,
+                procesoNombre: CARPETA_PROCESO[proceso],
+                nombre: c.nombre,
+                relPath: c.relPath,
+                archivos: nombres
+                  .map((nombre) => ({
+                    nombre,
+                    relPath: unir(c.relPath, nombre),
+                    url: storage.urlFor(unir(c.relPath, nombre)),
+                    tipo: clasificar(nombre, nombres),
+                  }))
+                  .sort((a, b) => a.tipo.localeCompare(b.tipo) || a.nombre.localeCompare(b.nombre)),
+              };
+            }),
           );
         }),
       );

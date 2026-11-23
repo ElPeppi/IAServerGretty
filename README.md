@@ -264,6 +264,22 @@ los documentos que genera el motor. El motor hace lo mismo en disco
 > Sin esto, un cliente con carpeta `1143152167-AGOSTO 2026` daba **0 archivos**: el gate
 > abortaba su demanda por "falta el pagaré" aunque el pagaré estuviera ahí.
 
+**Cuál PDF es el pagaré** — también por nombre, con la MISMA regla en el gate del backend
+(`infrastructure/storage/archivoPagare.ts`) y en el motor (`services/comun/archivoPagare.js`):
+
+| Nombre | Por qué |
+|---|---|
+| `… PAGARE.pdf`, `… DECEVAL.pdf`, `Pagaré.pdf` | el nombre lo dice (sin importar tildes) |
+| `{NOMBRE}.pdf` junto a `{NOMBRE} DATACREDITO.pdf` | así trae el ZIP del banco el certificado Deceval **desde nov-2026** (antes `{NOMBRE} DECEVAL.pdf`) |
+| `PAG.pdf` | abreviatura que usa la oficina |
+
+Nunca cuentan la demanda, los anexos, los antecedentes ni el poder que la oficina sube armados:
+**copian** el certificado adentro y el motor los tomaba por el pagaré (los renombraba a
+`… PAGARE.pdf` y anexaba la demanda entera de 9 MB).
+
+> Nov-2026: el lote del 18-nov (23 clientes Deceval) no generaba ninguna demanda — "falta el
+> pagaré" — porque el certificado venía como `{NOMBRE}.pdf`.
+
 ## 6.d Notificaciones en vivo (SSE)
 
 `GET /api/notifications/stream?token=JWT` → el navegador escucha con `EventSource`.

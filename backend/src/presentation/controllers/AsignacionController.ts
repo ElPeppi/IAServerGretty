@@ -14,6 +14,7 @@ import {
 } from '../../infrastructure/storage/rutas';
 import { hidratarCedula, limpiarLocalCedula, enParalelo } from '../../infrastructure/storage/sacSync';
 import { carpetasDeCedula, relEnCarpetaCedula } from '../../infrastructure/storage/carpetasCedula';
+import { hayPagare } from '../../infrastructure/storage/archivoPagare';
 import { sincronizarInsumos } from '../../infrastructure/storage/sincronizarInsumos';
 import {
   resolverCarpetaCaso, bajarDeclaracionPagos, bajarPlantillaConciliacion,
@@ -1269,8 +1270,9 @@ export class AsignacionController {
 
   // Revisa en Drive (`GARANTIAS/{cedula}`) los INSUMOS para generar la demanda:
   //  - sac:    hay SAC_*.pdf (antecedentes/correo), en cualquiera de los dos árboles.
-  //  - pagare: hay el PDF del pagaré. Regla espejo del motor (anexos.js): PDF que NO
-  //            empieza por SAC_, NO es DATACREDITO, y el nombre tiene PAGARE o DECEVAL.
+  //  - pagare: hay el PDF del pagaré. Misma regla que el motor (archivoPagare): el
+  //            nombre dice PAGARE/DECEVAL, o es "{NOMBRE}.pdf" junto a su DataCrédito
+  //            (así llega el certificado Deceval desde nov-2026), o "PAG.pdf".
   // Una sola llamada a Drive. Sin storage no se puede verificar → no se bloquea.
   private async insumosSac(cedula: string, banco: string): Promise<{ sac: boolean; pagare: boolean }> {
     if (!storage.enabled) return { sac: true, pagare: true };
@@ -1291,10 +1293,7 @@ export class AsignacionController {
           if ((await storage.list(c.relPath)).some(esSac)) { sac = true; break; }
         }
       }
-      const pagare = archivos.some(
-        (f) => /\.pdf$/i.test(f) && !/^SAC_/i.test(f) && !/DATACREDITO/i.test(f) && /(PAGARE|DECEVAL)/i.test(f),
-      );
-      return { sac, pagare };
+      return { sac, pagare: hayPagare(archivos) };
     } catch {
       return { sac: false, pagare: false };
     }

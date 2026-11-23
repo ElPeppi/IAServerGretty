@@ -21,6 +21,7 @@ const sacQueue = require('./colaSac');
 const { extraerCedulaDePDFs } = require('./cedulas');
 const { correrPuppeteerLote, enriquecerClientes } = require('./puppeteerRunner');
 const { mkdirpSync, resolverCarpetaEscritura } = require('../utils/carpetas');
+const { noEsPagare, normalizar } = require('./comun/archivoPagare');
 const { notificarBackend } = require('./notifier');
 
 // ─── Contraseña del ZIP desde el cuerpo del correo ────────────────────────────
@@ -108,14 +109,17 @@ function extraerConPowerShell(zipBuffer, fileName, destDir) {
 // ─── Renombrado de pagarés con nombre raro ────────────────────────────────────
 // Regla: si el PDF contiene texto de pagaré pero su nombre NO tiene "PAGARE"/"PAGARÉ",
 //        se renombra a "{NOMBRE} PAGARE.pdf" usando el nombre del cliente.
+// Nunca se tocan la demanda, los anexos, los antecedentes, el poder ni el
+// DataCrédito (noEsPagare): la demanda que la oficina sube armada COPIA el
+// certificado Deceval y, sin esta exclusión, acababa anexada como "el pagaré".
 async function renombrarPagarePDFs(cedula, outputDir) {
   let pdfs;
-  try { pdfs = fs.readdirSync(outputDir).filter(f => f.toLowerCase().endsWith('.pdf') && !f.startsWith('SAC_')); }
+  try { pdfs = fs.readdirSync(outputDir).filter(f => f.toLowerCase().endsWith('.pdf') && !noEsPagare(f)); }
   catch (_) { return; }
 
   for (const archivo of pdfs) {
     // Saltar los que ya tienen PAGARE en el nombre
-    if (/PAGARE|PAGAR[EÉ]/i.test(archivo)) continue;
+    if (/PAGARE|PAGAR[EÉ]/i.test(normalizar(archivo))) continue;
 
     const fullPath = path.join(outputDir, archivo);
     try {
@@ -133,7 +137,9 @@ async function renombrarPagarePDFs(cedula, outputDir) {
       );
       let nombre = '';
       if (refFile) {
-        nombre = refFile.replace(/\s*(DATACREDITO|DECEVAL)\.pdf$/i, '').trim();
+        // "X DATACREDITO.pdf" y también "DATACREDITO X.pdf" → "X"
+        nombre = refFile.replace(/\.pdf$/i, '').replace(/\b(DATACREDITO|DECEVAL)\b/gi, '')
+          .replace(/\s+/g, ' ').trim();
       } else {
         // Extraer nombre del texto del propio pagaré (OTORGANTE)
         const m = texto.match(/OTORGANTE\s+([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ ]{4,50}?)(?=\s{2,}|\bCC\b|\bNIT\b|\d)/);

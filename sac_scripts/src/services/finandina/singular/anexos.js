@@ -29,6 +29,7 @@ const fs   = require('fs');
 const { PDFDocument, StandardFonts } = require('pdf-lib');
 
 const { resolverCarpetaCedula } = require('../../../utils/carpetas');
+const { pdfsPagare } = require('../../comun/archivoPagare');
 // Maquinaria común de anexos: carátulas, pegar PDFs, texto justificado y los
 // certificados compartidos con el trámite de pago directo.
 const {
@@ -69,8 +70,7 @@ async function generarAnexos(cedula, sacDocsDir, numeroPagare = '', correoPoderB
   if (!fs.existsSync(dir)) return '';
 
   const archivos = fs.readdirSync(dir);
-  const pagare   = archivos.find(f => /\.pdf$/i.test(f) && !f.startsWith('SAC_')
-                    && !/DATACREDITO/i.test(f) && /(PAGARE|DECEVAL)/i.test(f));
+  const pagare   = pdfsPagare(archivos)[0];
   const dirytel  = archivos.find(f => /^SAC_.*DIRYTEL\.pdf$/i.test(f));
   const datacred = archivos.find(f => /DATACREDITO\.pdf$/i.test(f));
   const poderDoc = archivos.find(f => /^PODER SINGULAR .*\.docx$/i.test(f) && !f.startsWith('~$'));

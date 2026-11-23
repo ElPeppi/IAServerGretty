@@ -15,6 +15,7 @@ const pdfParse = require('pdf-parse');
 
 const { resolverCarpetaCedula } = require('../../../utils/carpetas');
 const { MESES_MAP } = require('../../../utils/fechas');
+const { pdfsPagare } = require('../../comun/archivoPagare');
 
 // ─── Contactos CSV ────────────────────────────────────────────────────────────
 
@@ -275,16 +276,9 @@ async function leerDatosDeDeceval(cedula, sacDocsDir) {
   let escaneadoPath  = ''; // pagaré sin texto (imagen) → candidato a OCR (tipo FINANDINA)
   let certificadoPath = ''; // PDF que se detectó como certificado DECEVAL
 
-  // PDFs de pagaré: DECEVAL.pdf, PAGARE.pdf, PAGARE 001.pdf, etc.
-  // Excluir: DATACREDITO.pdf, FOR EJE.pdf, FOR INI.pdf, PRENDA.pdf, TESTIGO.pdf, SAC_*.pdf
-  const EXCLUIR_RE = /(?:DATACREDITO|FOR\s+(?:EJE|INI)|PRENDA|TESTIGO)/i;
-  const pdfs = fs.readdirSync(dir).filter(f => {
-    const up = f.toUpperCase();
-    return f.toLowerCase().endsWith('.pdf')
-      && !f.startsWith('SAC_')
-      && !EXCLUIR_RE.test(f)
-      && (up.includes('DECEVAL') || up.includes('PAGARE'));
-  });
+  // PDFs de pagaré: "… PAGARE.pdf", "… DECEVAL.pdf", "{NOMBRE}.pdf" junto a su
+  // DataCrédito (ZIP del banco), "PAG.pdf"… — regla en comun/archivoPagare.js.
+  const pdfs = pdfsPagare(fs.readdirSync(dir));
 
   result.tienePdf = pdfs.length > 0;
 
