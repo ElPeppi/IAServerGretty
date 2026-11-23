@@ -180,6 +180,24 @@ bajarlos de Drive hay que **conservar la fecha** (`fs.utimesSync`); la migració
 dejó todos los `modifiedTime` iguales, así que conviene derivar la fecha del **nombre**
 ("10 DE JULIO DE 2026"). Solo mira `.pdf`.
 
+**El correo del poder (ANEXO 1) se revisa y se limpia solo** (`sac_scripts/src/services/comun/correoPoder.js`).
+Es la impresión de Gmail del mensaje del banco y el motor le escribe ENCIMA el poder de cada
+cliente; el cuerpo del mensaje (saludo, firma con logos, dos AVISO LEGAL) había que borrarlo a mano.
+
+| Lo que trae la página 1 | Qué pasa |
+|---|---|
+| solo el encabezado de Gmail (`1 mensaje`, `Para:`) | se usa tal cual |
+| encabezado + cuerpo | se tapa en blanco todo lo que está debajo de `Para:` y se genera normal |
+| sin encabezado de Gmail (p. ej. el Word de los poderes, que vive en la misma carpeta y con el mismo nombre de asignación) o remitente ≠ `bancofinandina.com` (un reenvío) | el backend **rechaza** la generación antes de empezar: `400 CORREO_NO_VALIDO` |
+
+Escaneados y PDF con fuentes ilegibles se leen con OCR (Tesseract, 1–3 s; se cachea por contenido).
+Ojo: lo tapado sigue dentro del PDF bajo el rectángulo blanco (no se ve ni se imprime, pero se
+puede copiar).
+
+> Nov-2026: el pago directo del 13-nov salió con dos poderes montados en el ANEXO 1 porque se
+> eligió `PODER PAGO DIRECTO … (13 NOVIEMBRE 2026).pdf` (el Word de los poderes) en vez de
+> `OTORGAMIENTO PODER PAGO DIRECTO ASIGNACION (13 noviembre 2026).pdf`.
+
 ## 6. Estado de la migración NAS → Drive
 
 | Fase | Qué | Estado |

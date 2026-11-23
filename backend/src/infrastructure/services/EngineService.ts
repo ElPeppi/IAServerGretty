@@ -26,6 +26,7 @@ import {
   EstadosCuentaLibertadorInput,
   EstadosCuentaLibertadorOutput,
   DocumentosLibertadorOutput,
+  RevisionCorreoPoder,
 } from '../../application/services/IEngineService';
 
 const XLSX_MIME =
@@ -224,6 +225,23 @@ export class EngineService implements IEngineService {
       { timeout: 30000 },
     );
     return data.destinos ?? [];
+  }
+
+  /** Mira si el PDF es el correo del banco y si trae cuerpo sin borrar (ANEXO 1). */
+  async revisarCorreoPoder(pdf: Buffer): Promise<RevisionCorreoPoder> {
+    const form = new FormData();
+    form.append('archivo', pdf, { filename: 'correo.pdf', contentType: 'application/pdf' });
+    try {
+      const { data } = await axios.post<RevisionCorreoPoder>(`${this.baseUrl}/correo-poder/revisar`, form, {
+        headers: form.getHeaders(),
+        // Con OCR (escaneados) tarda unos segundos; la primera vez, además, carga el idioma.
+        timeout: 90000,
+        maxBodyLength: Infinity,
+      });
+      return data;
+    } catch (e) {
+      throw new Error(mensajeDeFallo(e, this.baseUrl));
+    }
   }
 
   async subirInsumo(input: SubirInsumoInput): Promise<void> {

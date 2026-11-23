@@ -324,7 +324,21 @@ export interface DocumentosLibertadorOutput {
   error?: string;
 }
 
+// ─── Revisión del correo del poder (ANEXO 1) ─────────────────────────────────
+// limpio: solo el encabezado de Gmail · con_texto: trae el cuerpo del mensaje (el
+// motor lo tapa solo) · no_es_correo: no sirve (sin encabezado de Gmail o con un
+// remitente que no es el banco) · ilegible: no se pudo leer ni con OCR.
+export interface RevisionCorreoPoder {
+  estado: 'limpio' | 'con_texto' | 'no_es_correo' | 'ilegible';
+  paginas: number;
+  caracteresCuerpo: number;
+  muestra?: string;
+  fuente?: 'texto' | 'ocr';
+  mensaje?: string; // motivo legible cuando estado = no_es_correo
+}
+
 export interface IEngineService {
+  revisarCorreoPoder(pdf: Buffer): Promise<RevisionCorreoPoder>;
   generateSingular(input: GenerateSingularInput): Promise<GenerateSingularOutput>;
   descargarSac(input: DescargarSacInput): Promise<DescargarSacOutput>;
   generarPoderes(input: GenerarPoderesInput): Promise<GenerarPoderesOutput>;

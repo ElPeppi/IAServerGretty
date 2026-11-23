@@ -15,6 +15,7 @@ import { hidratarCedula, limpiarLocalCedula } from '../../infrastructure/storage
 import { notificationHub } from '../../infrastructure/services/NotificationHub';
 import { EngineFile } from '../../application/services/IEngineService';
 import { correccionesDeCedulas } from '../../application/services/datosManuales';
+import { revisarCorreoPoder } from '../../application/services/revisarCorreoPoder';
 import { fechaDesdeNombre } from '../../infrastructure/services/fechaAsignacion';
 import { personasDeFilas, mapeoDe } from './AsignacionController';
 import { AuthRequest } from '../middlewares/authMiddleware';
@@ -199,14 +200,20 @@ export class GenerateController {
       res.status(404).json({ message: 'Abogado no encontrado' });
       return;
     }
+    const revision = correoFile ? await revisarCorreoPoder(engineService, correoFile.buffer) : {};
+    if (revision.bloqueo) {
+      res.status(400).json(revision.bloqueo);
+      return;
+    }
 
     // Responder de INMEDIATO: la generación corre en SEGUNDO PLANO. Los lotes
     // grandes tardan varios minutos (scraping por cliente) y excederían el
     // timeout del navegador. Las demandas aparecen en Documentos al terminar.
+    const inicio = 'Generación iniciada en segundo plano. Las demandas aparecerán en Documentos en unos minutos.';
     res.status(202).json({
       success: true,
       started: true,
-      message: 'Generación iniciada en segundo plano. Las demandas aparecerán en Documentos en unos minutos.',
+      message: revision.aviso ? `${inicio} ${revision.aviso}` : inicio,
     });
 
     // Avisar a todos los logueados que arrancó la generación.
@@ -376,11 +383,17 @@ export class GenerateController {
         });
         return;
       }
+      const revision = await revisarCorreoPoder(engineService, correoPoder);
+      if (revision.bloqueo) {
+        res.status(400).json(revision.bloqueo);
+        return;
+      }
 
+      const inicio = 'Regeneración iniciada en segundo plano. La demanda se actualizará en unos momentos.';
       res.status(202).json({
         success: true,
         started: true,
-        message: 'Regeneración iniciada en segundo plano. La demanda se actualizará en unos momentos.',
+        message: revision.aviso ? `${inicio} ${revision.aviso}` : inicio,
       });
 
       const meta = (document.metadata ?? {}) as { fechaAsignacion?: string | null };

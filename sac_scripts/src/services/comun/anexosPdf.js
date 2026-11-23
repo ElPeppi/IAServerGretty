@@ -20,9 +20,10 @@
 const path = require('path');
 const fs   = require('fs');
 const AdmZip = require('adm-zip');
-const { PDFDocument, StandardFonts } = require('pdf-lib');
+const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 
 const config = require('../../config');
+const { analizarCorreoPoder, motivoNoEsCorreo } = require('./correoPoder');
 
 function archivoMasReciente(dir, predicado) {
   let best = null, bestMtime = -1;
@@ -225,7 +226,11 @@ function extraerParrafosDocx(docxBuffer) {
   return parrafos;
 }
 
-// Sobrepone el texto del poder en el cuerpo en blanco del correo (página 1).
+// Sobrepone el texto del poder en el cuerpo del correo (página 1). Antes se
+// TAPA en blanco todo lo que haya debajo del encabezado del mensaje: el correo
+// llega con saludo, firma, logos y avisos legales, y si nadie los borró a mano
+// quedaban montados bajo el poder (ver comun/correoPoder.js). En un correo ya
+// limpio el rectángulo no cambia nada.
 // El tamaño de fuente se reduce hasta que todo el poder quepa entre el
 // encabezado del correo y el pie de página.
 async function paginaPoderOverlay(out, correoBuffer, parrafos) {
@@ -234,8 +239,26 @@ async function paginaPoderOverlay(out, correoBuffer, parrafos) {
   const { width, height } = page.getSize();
   const cFont  = await correo.embedFont(StandardFonts.Helvetica);
 
+  let revision = null;
+  try {
+    revision = await analizarCorreoPoder(correoBuffer);
+  } catch (e) {
+    console.error(`[ANEXOS] no se pudo revisar el correo del poder (${e.message}); se usa tal cual`);
+  }
+  const corte = revision && revision.corte != null ? Math.min(revision.corte, height) : null;
+  if (corte != null) {
+    page.drawRectangle({ x: 0, y: 0, width, height: corte, color: rgb(1, 1, 1) });
+    if (revision.estado === 'con_texto') {
+      console.error(`[ANEXOS] correo del poder con texto en el cuerpo (${revision.caracteresCuerpo} car.: "${revision.muestra}…") → limpiado`);
+    }
+  } else if (revision && revision.estado === 'no_es_correo') {
+    console.error(`[ANEXOS] ⚠ ${motivoNoEsCorreo(revision)}`);
+  }
+
   const left = 75, maxW = width - 150;
-  const startY = height - 180;   // debajo del encabezado del correo
+  // Debajo del encabezado del correo; más abajo si el encabezado es más largo
+  // de lo normal (asunto en dos líneas, "Cc:"…), para no pisarlo.
+  const startY = corte != null ? Math.min(height - 180, corte - 12) : height - 180;
   const bottom = 35;             // encima del pie (URL de Gmail)
   const available = startY - bottom;
 

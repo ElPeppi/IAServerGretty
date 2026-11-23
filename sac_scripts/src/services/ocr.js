@@ -76,6 +76,31 @@ function armar(numPages, pages, motor) {
   return { numPages, pages, motor, text: pages.map((p) => p.text).join('\n\n') };
 }
 
+/**
+ * Líneas de la PRIMERA página con su posición, para saber DÓNDE está cada cosa
+ * (no solo qué dice). Siempre con Tesseract: es letra de imprenta y el dato que
+ * importa es la caja, que Vision no devuelve en el mismo formato.
+ * @returns {Promise<{ alto:number, lineas:Array<{texto:string, arriba:number, abajo:number}> }>}
+ *   `alto`, `arriba` y `abajo` en puntos PDF, medidos desde el borde SUPERIOR.
+ */
+async function lineasPrimeraPagina(buffer, { lang = 'spa', scale = 2 } = {}) {
+  const { pdf } = await import('pdf-to-img');
+  const doc = await pdf(buffer, { scale });
+  let png = null;
+  for await (const page of doc) { png = page; break; }
+  if (!png) return { alto: 0, lineas: [] };
+  const worker = await getWorker(lang);
+  const { data } = await worker.recognize(png, {}, { blocks: true });
+  const lineas = (data.blocks || [])
+    .flatMap((b) => b.paragraphs || [])
+    .flatMap((p) => p.lines || [])
+    .map((l) => ({ texto: String(l.text || '').trim(), arriba: l.bbox.y0 / scale, abajo: l.bbox.y1 / scale }))
+    .filter((l) => l.texto);
+  // Alto de la página a partir de la imagen (PNG: alto en los bytes 20–23).
+  const alto = png.length > 24 ? png.readUInt32BE(20) / scale : 0;
+  return { alto, lineas };
+}
+
 // ─── Fechas ─────────────────────────────────────────────────────────────────
 const MESES = { enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6, julio:7,
                 agosto:8, septiembre:9, setiembre:9, octubre:10, noviembre:11, diciembre:12 };
@@ -157,4 +182,4 @@ function extraerCamposPagare(text) {
   return { nombre, cedula, direccion, telefono, ciudad, fecha, fechaCorta, numeroPagare, diligenciado };
 }
 
-module.exports = { ocrPdf, extraerCamposPagare, cerrarOcr };
+module.exports = { ocrPdf, extraerCamposPagare, cerrarOcr, lineasPrimeraPagina };

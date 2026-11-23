@@ -15,6 +15,7 @@ import {
 import { hidratarCedula, limpiarLocalCedula, enParalelo } from '../../infrastructure/storage/sacSync';
 import { carpetasDeCedula, relEnCarpetaCedula } from '../../infrastructure/storage/carpetasCedula';
 import { hayPagare } from '../../infrastructure/storage/archivoPagare';
+import { revisarCorreoPoder } from '../../application/services/revisarCorreoPoder';
 import { sincronizarInsumos } from '../../infrastructure/storage/sincronizarInsumos';
 import {
   resolverCarpetaCaso, bajarDeclaracionPagos, bajarPlantillaConciliacion,
@@ -757,13 +758,24 @@ export class AsignacionController {
         });
         return;
       }
+      // ¿Es de verdad el correo del banco? (y si trae el cuerpo sin borrar, avisar).
+      const revision = await revisarCorreoPoder(engineService, correoPoder);
+      if (revision.bloqueo) {
+        // No dejar enlazado a la asignación un PDF que no sirve.
+        if (correoPoderUrl !== asignacion.correoPoderUrl) {
+          await prisma.asignacion.update({ where: { id: asignacion.id }, data: { correoPoderUrl: asignacion.correoPoderUrl } });
+        }
+        res.status(400).json(revision.bloqueo);
+        return;
+      }
 
+      const inicio = soloCedulas.length
+        ? `Generación de ${soloCedulas.length} demanda(s) iniciada en segundo plano. Aparecerán en Documentos en unos minutos.`
+        : 'Generación de demandas iniciada en segundo plano. Aparecerán en Documentos en unos minutos.';
       res.status(202).json({
         success: true,
         started: true,
-        message: soloCedulas.length
-          ? `Generación de ${soloCedulas.length} demanda(s) iniciada en segundo plano. Aparecerán en Documentos en unos minutos.`
-          : 'Generación de demandas iniciada en segundo plano. Aparecerán en Documentos en unos minutos.',
+        message: revision.aviso ? `${inicio} ${revision.aviso}` : inicio,
       });
 
       notificationHub.broadcast({
@@ -1017,10 +1029,18 @@ export class AsignacionController {
         res.status(400).json({ codigo: correoPoder.codigo, message: correoPoder.message });
         return;
       }
+      // Que el elegido sea el CORREO del banco y no el Word de los poderes: los dos
+      // viven en PODERES con el mismo nombre de asignación (pasó el 13-nov-2026).
+      const revision = await revisarCorreoPoder(engineService, correoPoder.buffer);
+      if (revision.bloqueo) {
+        res.status(400).json(revision.bloqueo);
+        return;
+      }
 
+      const inicio = 'Generación de solicitudes de aprehensión iniciada en segundo plano.';
       res.json({
         started: true,
-        message: 'Generación de solicitudes de aprehensión iniciada en segundo plano.',
+        message: revision.aviso ? `${inicio} ${revision.aviso}` : inicio,
       });
 
       generacionEnCurso.add(asignacion.id);
