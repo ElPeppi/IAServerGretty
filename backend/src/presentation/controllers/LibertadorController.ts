@@ -36,6 +36,48 @@ function enCola<T>(fn: () => Promise<T>): Promise<T> {
   return p;
 }
 
+// Adjuntos del correo de asignación que se guardan en la carpeta del caso. Desde
+// nov-2026 Bolívar manda uno por correo ("Asignacion_Caso_<solicitud>.pdf"); solo
+// se aceptan PDF.
+const MAX_ADJUNTO = 8 * 1024 * 1024;
+type AdjuntoGuardado = { nombre: string; solicitud?: string; error?: string };
+
+async function guardarAdjuntosCorreo(
+  crudos: unknown,
+  carpetas: { solicitud: string; folderId?: string }[],
+): Promise<AdjuntoGuardado[]> {
+  const out: AdjuntoGuardado[] = [];
+  for (const a of (Array.isArray(crudos) ? crudos : []) as Record<string, unknown>[]) {
+    const nombre = String(a?.nombre ?? '').replace(/[\\/]/g, '_').trim();
+    const base64 = String(a?.base64 ?? '');
+    if (!nombre || !base64) continue;
+    if (!/\.pdf$/i.test(nombre)) {
+      out.push({ nombre, error: 'solo se guardan PDF' });
+      continue;
+    }
+    // Va a la solicitud cuyo número trae el nombre; si no trae ninguno, solo
+    // cuando el correo es de una sola solicitud (no hay cómo saber de cuál es).
+    const numeros: string[] = nombre.match(/\d+/g) ?? [];
+    const destino = carpetas.find((c) => numeros.includes(c.solicitud)) ?? (carpetas.length === 1 ? carpetas[0] : undefined);
+    if (!destino?.folderId) {
+      out.push({ nombre, error: 'no se supo de qué solicitud es' });
+      continue;
+    }
+    const contenido = Buffer.from(base64, 'base64');
+    if (contenido.length > MAX_ADJUNTO || contenido.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      out.push({ nombre, solicitud: destino.solicitud, error: contenido.length > MAX_ADJUNTO ? 'pesa más de 8 MB' : 'no es un PDF válido' });
+      continue;
+    }
+    try {
+      await subirArchivoCaso(destino.folderId, nombre, contenido, 'application/pdf');
+      out.push({ nombre, solicitud: destino.solicitud });
+    } catch (e: unknown) {
+      out.push({ nombre, solicitud: destino.solicitud, error: e instanceof Error ? e.message : 'error de Drive' });
+    }
+  }
+  return out;
+}
+
 /**
  * LibertadorController — los casos de Libertador.
  *
@@ -79,7 +121,8 @@ export class LibertadorController {
   /**
    * POST /api/libertador/carpetas   (lo llama n8n; header x-n8n-secret)
    * body: { casos: [{ solicitud, procesos: string[], tipoAlistamiento?, estadoSiniestro?,
-   *                   valorCanon?, valorDeuda?, asunto? }] }
+   *                   valorCanon?, valorDeuda?, asunto? }],
+   *         adjuntos?: [{ nombre, base64 }] }   ← PDF del correo, a la raíz de la carpeta
    *
    * Al llegar una asignación por correo, deja lista en Drive la carpeta de cada
    * solicitud ("<solicitud> <MES> <AÑO>" en DOCUMENTOS CLIENTES) con una
@@ -173,18 +216,24 @@ export class LibertadorController {
       completadas ? `${completadas} con subcarpetas agregadas` : '',
       listas ? `${listas} ya estaba(n) lista(s)` : '',
     ].filter(Boolean);
+    // Un adjunto que no se pudo guardar no frena la asignación: solo se avisa.
+    const adjuntos = await enCola(() => guardarAdjuntosCorreo(req.body?.adjuntos, ok));
+    const adjuntosGuardados = adjuntos.filter((a) => !a.error);
+    const adjuntosFallidos = adjuntos.filter((a) => a.error);
     notificationHub.broadcast({
       type: TIPO_AVISO,
-      level: fallidas.length || ignorados.length ? 'warning' : 'success',
+      level: fallidas.length || ignorados.length || adjuntosFallidos.length ? 'warning' : 'success',
       title: 'Asignación Libertador',
       message: `Llegó ${sols.length <= 5 ? `la solicitud ${sols.join(', ')}` : `${sols.length} solicitudes`}`
         + (partes.length ? `: ${partes.join(', ')}` : '')
         + (ignorados.length ? `. Tipo de proceso sin reconocer: ${ignorados.map((x) => `${x.solicitud} (${x.proceso})`).join(', ')}` : '')
-        + (fallidas.length ? `. Fallaron: ${fallidas.map((r) => `${r.solicitud} (${r.error})`).join(', ')}` : '') + '.',
+        + (fallidas.length ? `. Fallaron: ${fallidas.map((r) => `${r.solicitud} (${r.error})`).join(', ')}` : '')
+        + (adjuntosGuardados.length ? `. PDF guardado en la carpeta: ${adjuntosGuardados.map((a) => a.nombre).join(', ')}` : '')
+        + (adjuntosFallidos.length ? `. No se guardó: ${adjuntosFallidos.map((a) => `${a.nombre} (${a.error})`).join(', ')}` : '') + '.',
       meta: { solicitudes: sols },
     });
 
-    res.status(fallidas.length ? 502 : 200).json({ success: !fallidas.length, resultados, ignorados });
+    res.status(fallidas.length ? 502 : 200).json({ success: !fallidas.length, resultados, ignorados, adjuntos });
 
     // Con la carpeta lista se bajan sus anexos (contrato, reconocimientos…) del
     // portal de Bolívar. Son minutos (dos portales, cada uno con su login): va
